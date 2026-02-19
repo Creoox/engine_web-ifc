@@ -16,7 +16,6 @@
 #include <cstdint>
 #include <spdlog/spdlog.h>
 #include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtx/norm.hpp>
 #include "../representation/geometry.h"
 #include "../representation/IfcGeometry.h"
 #include <mapbox/earcut.hpp>
@@ -118,11 +117,11 @@ namespace webifc::geometry
 		return bimGeometry::computeSafeNormal(v1, v2, v3, normal, eps);
 	}
 
-	inline bool GetBasisFromCoplanarPoints(std::vector<glm::dvec3>& points, glm::dvec3& v1, glm::dvec3& v2, glm::dvec3& v3)
+	inline bool GetBasisFromCoplanarPoints(std::vector<glm::dvec3> &points, glm::dvec3 &v1, glm::dvec3 &v2, glm::dvec3 &v3)
 	{
 		v1 = points[0];
 
-		for (auto& p : points)
+		for (auto &p : points)
 		{
 			if (v1 != p)
 			{
@@ -152,7 +151,7 @@ namespace webifc::geometry
 			{
 				EPS = 1e-03;
 			}
-			for (auto& p : points)
+			for (auto &p : points)
 			{
 				if (computeSafeNormal(v1, v2, p, normal, EPS))
 				{
@@ -164,7 +163,7 @@ namespace webifc::geometry
 
 		double d1 = 0;
 
-		for (auto& p : points)
+		for (auto &p : points)
 		{
 			double d2 = glm::distance(v1, p);
 			if (d1 < d2)
@@ -175,7 +174,7 @@ namespace webifc::geometry
 		}
 
 		d1 = 0;
-		for (auto& p : points)
+		for (auto &p : points)
 		{
 			double d2 = glm::distance(v1, p);
 			double d3 = glm::distance(v2, p);
