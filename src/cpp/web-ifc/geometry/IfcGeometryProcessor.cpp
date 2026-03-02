@@ -1837,20 +1837,23 @@ namespace webifc::geometry
         if (composedMesh.hasGeometry && geomIt != _expressIDToGeometry.end())
         {
             IfcGeometry meshGeom = geomIt->second;
-            std::vector<IfcGeometry> transformedGeoms = transformIfcGeometry(meshGeom, newMat, transformationBreaksWinding);
-
-            IfcGeometry geometryResult = BoolProcess(transformedGeoms, secondGroups, op, _settings);
-
-            glm::dmat4 invMat = glm::inverse(newMat);
-            transformationBreaksWinding = MatrixFlipsTriangles(invMat);
-
-            std::vector<IfcGeometry> localGeom = transformIfcGeometry(geometryResult, invMat, transformationBreaksWinding);
-            IfcGeometry localGeomMerged;
-            for (const auto &geom : localGeom)
+            if (meshGeom.numFaces <= _settings._CSG_MAX_NUM_FACES)
             {
-                localGeomMerged.MergeGeometry(geom);
+                std::vector<IfcGeometry> transformedGeoms = transformIfcGeometry(meshGeom, newMat, transformationBreaksWinding);
+
+                IfcGeometry geometryResult = BoolProcess(transformedGeoms, secondGroups, op, _settings);
+
+                glm::dmat4 invMat = glm::inverse(newMat);
+                transformationBreaksWinding = MatrixFlipsTriangles(invMat);
+
+                std::vector<IfcGeometry> localGeom = transformIfcGeometry(geometryResult, invMat, transformationBreaksWinding);
+                IfcGeometry localGeomMerged;
+                for (const auto& geom : localGeom)
+                {
+                    localGeomMerged.MergeGeometry(geom);
+                }
+                _expressIDToGeometry[composedMesh.expressID] = localGeomMerged;
             }
-            _expressIDToGeometry[composedMesh.expressID] = localGeomMerged;
         }
         for (auto &c : composedMesh.children)
         {

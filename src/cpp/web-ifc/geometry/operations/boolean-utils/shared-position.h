@@ -1276,6 +1276,13 @@ namespace fuzzybools
 
             auto triangles = cdt.triangles;
 
+            // Copy constraint edges into a contiguous vector so isInsideBoundary()
+            // iterates sequentially (cache-friendly) instead of chasing BST pointers.
+            // The crossing count in isInsideBoundary is order-independent (each edge
+            // contributes independently), so the result is identical to using the set.
+            // The set itself is unchanged and was already used for CDT edge insertion.
+            std::vector<std::pair<size_t, size_t>> edgesVec(edges.begin(), edges.end());
+
             // auto contourLoop = FindLargestEdgeLoop(projectedPoints, edges);
 
 #ifdef CSG_DEBUG_OUTPUT
@@ -1338,7 +1345,7 @@ namespace fuzzybools
                 glm::dvec2 t2 = projectedPoints[tri.vertices[1]];
                 glm::dvec2 t3 = projectedPoints[tri.vertices[2]];
 
-                bool inside2d = isInsideBoundary(t1, t2, t3, edges, projectedPoints);
+                bool inside2d = isInsideBoundary(t1, t2, t3, edgesVec, projectedPoints);
 
                 if (!inside2d)
                 {
@@ -1857,7 +1864,6 @@ namespace fuzzybools
                 {
                     AddSegments(planeA, sp, intersectionLine, segments);
                     AddSegments(planeB, sp, intersectionLine, segments);
-                    // gets stuck at 7.35% when converting 0008.ifc with sp.points.size == 35k, sp.planes.size == 557
                 }
             }
         }
