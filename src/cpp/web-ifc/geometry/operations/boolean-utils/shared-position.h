@@ -116,7 +116,7 @@ namespace fuzzybools
                         direction is always stored normalised (set via Plane::AddLine or
                         PlanePlaneIsect, both of which normalise before assignment).
             */
-            const Vec3 &d = direction;   // already unit-length – no normalize needed
+            const Vec3 &d = direction;   // already unit-length - no normalize needed
             Vec3 v = a - origin;
             /*
                         Drop a perpendicular from point a to the line.  The quantity t
@@ -164,7 +164,7 @@ namespace fuzzybools
         bool IsEqualTo(const Vec3 &pos, const Vec3 &dir) const
         {
             // check dir
-            // 'dir' is an external parameter – normalise it.
+            // 'dir' is an external parameter - normalise it.
             // 'direction' is already unit-length (set via AddLine / PlanePlaneIsect).
             Vec3 unitDir = glm::normalize(dir);
             const Vec3 &unitDirection = direction;
@@ -1536,7 +1536,7 @@ namespace fuzzybools
         // parameter t along lineA and u along the candidate line in O(1).  We
         // then verify the distance is within tolerance and that u falls within
         // the covered extent [points.front(), points.back()] of the line's sorted
-        // point list — which is equivalent to checking every segment but O(1).
+        // point list - which is equivalent to checking every segment but O(1).
         // -----------------------------------------------------------------------
         std::vector<double> distances;
         distances.reserve(p.lines.size());
@@ -1596,7 +1596,7 @@ namespace fuzzybools
         // Use the infinite-line nearest-approach formula (same as ComputeInitialIntersections)
         // to find that single point in O(1), then verify it falls within an actual segment
         // of each line in O(Sa + Sb).  Replaces the original O(Sa × Sb) nested loop that
-        // called LineLineIntersection for every segment pair — redundantly computing the
+        // called LineLineIntersection for every segment pair - redundantly computing the
         // same intersection point up to Sa×Sb times.
 
         if (lineA.points.size() < 2 || lineB.points.size() < 2) return;
@@ -1628,7 +1628,7 @@ namespace fuzzybools
             u > lineB.points.back().first  + SCALED_EPS_BIG) return;
 
         // Identify which segment of lineA contains t and which of lineB contains u.
-        // (Typically only 1–5 segments per line, so this is effectively O(1) in practice.)
+        // (Typically only 1-5 segments per line, so this is effectively O(1) in practice.)
         auto findSegIdx = [](const std::vector<std::pair<double, size_t>> &pts,
                               double param) -> size_t
         {
@@ -1651,7 +1651,7 @@ namespace fuzzybools
         const auto segB = std::make_pair(lineB.points[segIdxB].second,
                                          lineB.points[segIdxB + 1].second);
 
-        // Skip if the containing segments already share an endpoint — the intersection
+        // Skip if the containing segments already share an endpoint - the intersection
         // point is already part of both lines.
         if (p.HasOverlap(segA, segB)) return;
 

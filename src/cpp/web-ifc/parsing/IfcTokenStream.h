@@ -76,26 +76,43 @@ namespace webifc::parsing
             IfcFileStream(const std::function<uint32_t(char *, size_t, size_t)> &requestData, const uint32_t size);
             ~IfcFileStream();
             void Go(const uint32_t ref);
-            void Forward();
-            void Back();
-            size_t GetRef();
-            char Next();
-            char Prev();
-            bool IsAtEnd();
-            char Get();
-            void Clear();
+
+            // Hot-path methods inlined here so the compiler sees them in every translation unit and can eliminate the call/return overhead.
+
+            // Advance one character. The fast path (still inside the current in-memory buffer) is a single increment; load() is called only when
+            // the buffer boundary is crossed - that happens rarely.
+            void Forward() {
+                if (++_pointer == _currentSize && _currentSize != 0) {
+                    _startRef += _currentSize;
+                    load(); // slow path: fetch next buffer chunk
+                }
+            }
+
+            // Step back one character.  Fast path is a simple decrement.
+            void Back() {
+                if (_pointer > 0) { --_pointer; }
+                else if (_startRef > 0) { --_startRef; load(); }
+            }
+
+            size_t GetRef()  const { return _startRef + _pointer; }
+            char   Next();
+            char   Prev()    const { return (_pointer > 0) ? _buffer[_pointer - 1] : prev; }
+            bool   IsAtEnd() const { return _pointer == _currentSize && _currentSize == 0; }
+            char   Get()     const { return _buffer[_pointer]; }
+
+            void   Clear();
             size_t GetNoLines();
             IfcFileStream * Clone();
           private:
             void load();
             std::function<uint32_t(char *, size_t, size_t)> _dataSource;
-            size_t _pointer=0;
+            size_t _pointer     = 0;
             size_t _size;
-            char prev;
-            size_t _currentSize=0;
-            size_t _startRef=0;
+            char   prev         = 0;
+            size_t _currentSize = 0;
+            size_t _startRef    = 0;
             char * _buffer;
-            size_t noLines=0;
+            size_t noLines      = 0;
         };
         class IfcTokenChunk
         {

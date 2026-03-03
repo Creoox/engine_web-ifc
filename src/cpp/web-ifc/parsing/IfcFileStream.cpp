@@ -47,59 +47,12 @@
       load();
    }
        
-  void IfcTokenStream::IfcFileStream::Forward() 
-   { 
-     _pointer++;
-     if (_pointer == _currentSize && _currentSize != 0)
-     {
-       _startRef += _currentSize;
-       load();
-     }
-   }
-
-   void IfcTokenStream::IfcFileStream::Back()
-   {
-      if (_pointer == 0)
-      {
-        if (_startRef > 0) {
-          _startRef--;
-          load();
-          _pointer = 0;
-        }
-      } 
-      else
-      {
-        _pointer--;
-      }
-   } 
-
-   void IfcTokenStream::IfcFileStream::Clear() 
+   void IfcTokenStream::IfcFileStream::Clear()
    {
       delete[] _buffer;
       _buffer=nullptr;
    }
    
-   char IfcTokenStream::IfcFileStream::Prev() 
-   {
-     if (_pointer == 0) return prev;
-     return _buffer[_pointer-1]; 
-   }
-   
-   bool IfcTokenStream::IfcFileStream::IsAtEnd() 
-   {
-     return _pointer == _currentSize && _currentSize == 0;
-   }
-   
-   size_t IfcTokenStream::IfcFileStream::GetRef() 
-   {
-     return _startRef+_pointer;
-   }
-   
-   char IfcTokenStream::IfcFileStream::Get()
-   { 
-     return _buffer[_pointer]; 
-   }
-
    IfcTokenStream::IfcFileStream* IfcTokenStream::IfcFileStream::Clone() {
     IfcFileStream * newStream = new IfcFileStream(_dataSource,_size);
     return newStream;
