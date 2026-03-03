@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
  
-
+#include <spdlog/spdlog.h>
 #include "IfcTokenStream.h"
 
 namespace webifc::parsing
@@ -209,6 +209,20 @@ namespace webifc::parsing
         }
         else if (c == ')') Push<uint8_t>(IfcTokenType::SET_END);
         else if (c == ';') Push<uint8_t>(IfcTokenType::LINE_END);
+        else if (static_cast<unsigned char>(c) < 32 && c != '\n' && c != '\r' && c != '\t')
+        {
+            spdlog::error("[IfcTokenStream] Invalid character 0x{:02X} at file position {}", c, _fileStream->GetRef());
+
+            // Skip until safe delimiter
+            while (!_fileStream->IsAtEnd())
+            {
+                char c = _fileStream->Get();
+                if (c == ';' || c == '\n')
+                    break;
+
+                _fileStream->Forward();
+            }
+        }
         _fileStream->Forward();  
       }
     }

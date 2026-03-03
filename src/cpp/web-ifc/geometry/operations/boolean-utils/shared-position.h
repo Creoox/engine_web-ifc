@@ -770,7 +770,7 @@ namespace fuzzybools
         size_t AddPoint(const Vec3& newPoint)
         {
             // 1. Compute the grid cell for the query point
-            const double cellSize = toleranceVectorEquality;   // same tolerance you already use for ==
+            const double cellSize = toleranceVectorEquality;
 
             auto getKey = [&](const Vec3& p) -> std::tuple<int64_t, int64_t, int64_t> {
                 return {
@@ -796,7 +796,7 @@ namespace fuzzybools
                         auto it = pointGrid.find(neighbourKey);
                         if (it != pointGrid.end()) {
                             for (size_t existingId : it->second) {
-                                if (points[existingId] == newPoint) {   // re-uses your existing tolerance check
+                                if (points[existingId] == newPoint) {
                                     return existingId;
                                 }
                             }

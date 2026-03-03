@@ -538,7 +538,7 @@ namespace webifc::parsing {
          }
          default:
              spdlog::error("[GetSetArgument[]) unexpected token", GetCurrentLineExpressID());
-             break;
+             return tapeOffsets;
          }
      }
 
