@@ -64,27 +64,21 @@ namespace webifc::geometry
 
       IfcCurve curve = GetCurve(curveId, 3);
 
-      std::vector<IfcProfile> profiles;
       std::vector<IfcCurve> curves;
       std::vector<uint32_t> expressIds;
 
-      uint32_t id = 0;
       for (auto &face : faces)
       {
         auto expressID = _loader.GetRefArgument(face);
         IfcProfile profile = GetProfile(expressID);
-        profiles.push_back(profile);
         curves.push_back(profile.curve);
         expressIds.push_back(expressID);
-        id++;
       }
 
       sections.curves = curves;
       sections.expressID = expressIds;
 
       return sections;
-
-      break;
     }
     case schema::IFCSECTIONEDSOLID:
     {
@@ -101,27 +95,21 @@ namespace webifc::geometry
 
       IfcCurve curve = GetCurve(curveId, 3);
 
-      std::vector<IfcProfile> profiles;
       std::vector<IfcCurve> curves;
       std::vector<uint32_t> expressIds;
 
-      uint32_t id = 0;
       for (auto &face : faces)
       {
         auto expressID = _loader.GetRefArgument(face);
         IfcProfile profile = GetProfile(expressID);
-        profiles.push_back(profile);
         curves.push_back(profile.curve);
         expressIds.push_back(expressID);
-        id++;
       }
 
       sections.curves = curves;
       sections.expressID = expressIds;
 
       return sections;
-
-      break;
     }
     case schema::IFCSECTIONEDSURFACE:
     {
@@ -133,19 +121,15 @@ namespace webifc::geometry
       _loader.MoveToArgumentOffset(expressID, 2);
       auto faces = _loader.GetSetArgument();
 
-      std::vector<IfcProfile> profiles;
       std::vector<IfcCurve> curves;
       std::vector<uint32_t> expressIds;
 
-      uint32_t id = 0;
       for (auto &face : faces)
       {
         auto expressID = _loader.GetRefArgument(face);
         IfcProfile profile = GetProfile(expressID);
-        profiles.push_back(profile);
         curves.push_back(profile.curve);
         expressIds.push_back(expressID);
-        id++;
       }
 
       sections.curves = curves;
@@ -276,7 +260,7 @@ namespace webifc::geometry
         uint32_t linearPlacementType = _loader.GetLineType(CrossSectionPositionID);
         if (linearPlacementType != schema::IFCAXIS2PLACEMENTLINEAR)
         {
-            spdlog::error("[IFCSECTIONEDSOLIDHORIZONTAL] unexpected Location type {}", CrossSectionPositionID, linearPlacementType);
+            spdlog::error("[IFCSECTIONEDSOLIDHORIZONTAL] unexpected Location type {}: {}", CrossSectionPositionID, linearPlacementType);
             continue;
         }
     
@@ -439,7 +423,6 @@ namespace webifc::geometry
 
       IfcCurve curve = GetCurve(curveId, 3);
 
-      std::vector<IfcProfile> profiles;
       std::vector<IfcCurve> curves;
       std::vector<uint32_t> expressIds;
 
@@ -454,6 +437,7 @@ namespace webifc::geometry
       uint32_t id = 0;
       for (auto &face : faces)
       {
+        if (id >= transform.size()) break;
         auto expressID = _loader.GetRefArgument(face);
         IfcProfile profile = GetProfile(expressID);
         for (uint32_t i = 0; i < profile.curve.points.size(); i++)
@@ -461,7 +445,6 @@ namespace webifc::geometry
           glm::dvec3 pTemp = transform[id] * glm::dvec4(profile.curve.points[i], 1);
           profile.curve.points[i] = coordination * glm::dvec4(pTemp.x, pTemp.y, pTemp.z, 1);
         }
-        profiles.push_back(profile);
         curves.push_back(profile.curve);
         expressIds.push_back(expressID);
         id++;
@@ -470,8 +453,6 @@ namespace webifc::geometry
       sections.curves = curves;
       sections.expressID = expressIds;
       return sections;
-
-      break;
     }
     case schema::IFCSECTIONEDSURFACE:
     {
@@ -498,6 +479,7 @@ namespace webifc::geometry
 
       for (auto &face : faces)
       {
+        if (id >= transform.size()) break;
         auto expressID = _loader.GetRefArgument(face);
         IfcProfile profile = GetProfile(expressID);
         for (uint32_t i = 0; i < profile.curve.points.size(); i++)
@@ -548,18 +530,18 @@ namespace webifc::geometry
       if (_relAggregates.count(expressID) == 1)
       {
         auto &relAgg = _relAggregates.at(expressID);
-        for (auto expressID : relAgg)
+        for (auto childID : relAgg)
         {
-          alignment = GetAlignment(expressID, alignment, transform * transform_t, expressID);
+          alignment = GetAlignment(childID, alignment, transform * transform_t, childID);
         }
       }
 
       if (_relNests.count(expressID) == 1)
       {
         auto &relNest = _relNests.at(expressID);
-        for (auto expressID : relNest)
+        for (auto childID : relNest)
         {
-          alignment = GetAlignment(expressID, alignment, transform * transform_t, expressID);
+          alignment = GetAlignment(childID, alignment, transform * transform_t, childID);
         }
       }
 
@@ -584,9 +566,9 @@ namespace webifc::geometry
       if (_relAggregates.count(expressID) == 1)
       {
         auto &relAgg = _relAggregates.at(expressID);
-        for (auto expressID : relAgg)
+        for (auto childID : relAgg)
         {
-          alignment.Horizontal.curves.push_back(GetAlignmentCurve(expressID, sourceExpressID));
+          alignment.Horizontal.curves.push_back(GetAlignmentCurve(childID, sourceExpressID));
         }
 
         for (size_t i = 0; i < alignment.Horizontal.curves.size(); i++)
@@ -602,9 +584,9 @@ namespace webifc::geometry
       if (_relNests.count(expressID) == 1)
       {
         auto &relNest = _relNests.at(expressID);
-        for (auto expressID : relNest)
+        for (auto childID : relNest)
         {
-          alignment.Horizontal.curves.push_back(GetAlignmentCurve(expressID, sourceExpressID));
+          alignment.Horizontal.curves.push_back(GetAlignmentCurve(childID, sourceExpressID));
         }
 
         for (size_t i = 0; i < alignment.Horizontal.curves.size(); i++)
@@ -638,9 +620,9 @@ namespace webifc::geometry
       if (_relAggregates.count(expressID) == 1)
       {
         auto &relAgg = _relAggregates.at(expressID);
-        for (auto expressID : relAgg)
+        for (auto childID : relAgg)
         {
-          alignment.Vertical.curves.push_back(GetAlignmentCurve(expressID, sourceExpressID));
+          alignment.Vertical.curves.push_back(GetAlignmentCurve(childID, sourceExpressID));
         }
 
         for (size_t i = 0; i < alignment.Vertical.curves.size(); i++)
@@ -656,9 +638,9 @@ namespace webifc::geometry
       if (_relNests.count(expressID) == 1)
       {
         auto &relNest = _relNests.at(expressID);
-        for (auto expressID : relNest)
+        for (auto childID : relNest)
         {
-          alignment.Vertical.curves.push_back(GetAlignmentCurve(expressID, sourceExpressID));
+          alignment.Vertical.curves.push_back(GetAlignmentCurve(childID, sourceExpressID));
         }
 
         for (size_t i = 0; i < alignment.Vertical.curves.size(); i++)
@@ -1252,7 +1234,7 @@ namespace webifc::geometry
       return {};
     }
     default:
-      spdlog::error("[GetColor()] unexpected style type {}", expressID, lineType);
+      spdlog::error("[GetColor()] unexpected style type {}: {}", expressID, lineType);
       break;
     }
 
@@ -1307,7 +1289,7 @@ namespace webifc::geometry
       return bound;
     }
     default:
-      spdlog::error("[(GetBounds)] unexpected bound type {}", expressID, lineType);
+      spdlog::error("[(GetBounds)] unexpected bound type {}: {}", expressID, lineType);
       break;
     }
 
@@ -1430,7 +1412,7 @@ namespace webifc::geometry
       return curve;
     }
     default:
-      spdlog::error("[GetLoop()] unexpected loop type {}", expressID, lineType);
+      spdlog::error("[GetLoop()] unexpected loop type {}: {}", expressID, lineType);
       break;
     }
 
@@ -1448,9 +1430,10 @@ namespace webifc::geometry
     uint32_t edgeCurveRef = _loader.GetRefArgument();
     IfcCurve curveEdge = GetEdge(edgeCurveRef);
 
-    // Read edgeCurve
-
-    if (orient)
+    // Orientation = .T. means traverse the edge in the same sense as the underlying
+    // edge element (EdgeStart -> EdgeEnd), which is the order GetEdge already returns.
+    // Orientation = .F. means traverse in the opposite sense, so reverse the points.
+    if (!orient)
     {
       std::reverse(curveEdge.points.begin(), curveEdge.points.end());
     }
@@ -1470,7 +1453,7 @@ namespace webifc::geometry
     }
     else
     {
-      spdlog::error("[GetVertexPoint()] unexpected vertxpoint type {}", pointRef, point);
+      spdlog::error("[GetVertexPoint()] unexpected vertxpoint type {}: {}", pointRef, point);
       return {};
     }
   }
@@ -1523,7 +1506,7 @@ namespace webifc::geometry
       return curve;
     }
     default:
-      spdlog::error("[GetEdge())] unexpected edgecurve type {}", expressID, lineType);
+      spdlog::error("[GetEdge())] unexpected edgecurve type {}: {}", expressID, lineType);
       break;
     }
     return IfcCurve();
@@ -1885,7 +1868,7 @@ namespace webifc::geometry
         }
         else
         {
-          spdlog::error("[ComputeCurve()] Unsupported trimmingselect 2D IFCLINE {}", expressID, lineType);
+          spdlog::error("[ComputeCurve()] Unsupported trimmingselect 2D IFCLINE {}: {}", expressID, lineType);
         }
       }
       else if (params.dimensions == 3 && params.hasTrim)
@@ -1945,7 +1928,7 @@ namespace webifc::geometry
         }
         else
         {
-          spdlog::error("[ComputeCurve()] Unsupported trimmingselect 3D IFCLINE {}", expressID, lineType);
+          spdlog::error("[ComputeCurve()] Unsupported trimmingselect 3D IFCLINE {}: {}", expressID, lineType);
         }
       }
       break;
@@ -2974,7 +2957,7 @@ namespace webifc::geometry
         double A_sq = A * A;
         double sign_A = (A >= 0) ? 1.0 : -1.0;  // negative A are allowed in IFC!
         if (A_sq < 1e-9) {
-            spdlog::error("[ComputeCurve()] IFCCLOTHOID: invalid A parameter {}", A, lineType);
+            spdlog::error("[ComputeCurve()] IFCCLOTHOID: invalid A parameter {}: {}", A, lineType);
             break;
         }
 
@@ -3085,7 +3068,7 @@ namespace webifc::geometry
 
     default:
 
-      spdlog::error("[ComputeCurve()] Unsupported curve type {}", expressID, lineType);
+      spdlog::error("[ComputeCurve()] Unsupported curve type {}: {}", expressID, lineType);
       break;
     }
     // DEBUG
@@ -3702,7 +3685,7 @@ namespace webifc::geometry
       return profile;
     }
     default:
-      spdlog::error("[GetProfileByLine()] unexpected profile type {}", expressID, lineType);
+      spdlog::error("[GetProfileByLine()] unexpected profile type {}: {}", expressID, lineType);
       break;
     }
 
@@ -3727,7 +3710,7 @@ namespace webifc::geometry
       return profile;
     }
     default:
-      spdlog::error("[GetProfilebyLine()] unexpected 3D profile type {}", expressID, lineType);
+      spdlog::error("[GetProfilebyLine()] unexpected 3D profile type {}: {}", expressID, lineType);
       break;
     }
 
@@ -3852,7 +3835,7 @@ namespace webifc::geometry
           glm::dvec3(pos, 1));
     }
     default:
-      spdlog::error("[GetAxis2DPlacement()] unexpected 2D placement type {}", expressID, lineType);
+      spdlog::error("[GetAxis2DPlacement()] unexpected 2D placement type {}: {}", expressID, lineType);
       break;
     }
     return glm::dmat3();
@@ -4213,7 +4196,7 @@ namespace webifc::geometry
         return result;
       }
       default:
-        spdlog::error("[GetLocalPlacement()] unexpected placement type {}", expressID, lineType);
+        spdlog::error("[GetLocalPlacement()] unexpected placement type {}: {}", expressID, lineType);
         break;
       }
 

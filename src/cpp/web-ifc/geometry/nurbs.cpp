@@ -29,9 +29,13 @@ namespace webifc::geometry{
 
 			for (size_t i = 0; i < num_indices; i += 3)
 			{
-				auto const& p0 = newUVPoints.emplace_back(std::move(uv_points[indices[i + 0]]));
-				auto const& p1 = newUVPoints.emplace_back(std::move(uv_points[indices[i + 1]]));
-				auto const& p2 = newUVPoints.emplace_back(std::move(uv_points[indices[i + 2]]));
+				// Copy values before emplace_back calls to avoid dangling references on reallocation
+				auto const p0 = uv_points[indices[i + 0]];
+				auto const p1 = uv_points[indices[i + 1]];
+				auto const p2 = uv_points[indices[i + 2]];
+				newUVPoints.emplace_back(p0);
+				newUVPoints.emplace_back(p1);
+				newUVPoints.emplace_back(p2);
 				newUVPoints.emplace_back((p0.x + p1.x) / 2, (p0.y + p1.y) / 2);
 				newUVPoints.emplace_back((p0.x + p2.x) / 2, (p0.y + p2.y) / 2);
 				newUVPoints.emplace_back((p1.x + p2.x) / 2, (p1.y + p2.y) / 2);
@@ -64,23 +68,23 @@ namespace webifc::geometry{
 			auto const& p0 {uv_points[indices[i + 0]]};
 			auto const& p1 {uv_points[indices[i + 1]]};
 			auto const& p2 {uv_points[indices[i + 2]]};
-			auto pt00 {tinynurbs::surfacePoint(*this->nurbs, p0.x, p0.y)};
-			auto pt01 {tinynurbs::surfacePoint(*this->nurbs, p1.x, p1.y)};
-			auto pt10 {tinynurbs::surfacePoint(*this->nurbs, p2.x, p2.y)};
-			geometry.AddFace(pt00, pt01, pt10);
+			auto pt0 {tinynurbs::surfacePoint(*this->nurbs, p0.x, p0.y)};
+			auto pt1 {tinynurbs::surfacePoint(*this->nurbs, p1.x, p1.y)};
+			auto pt2 {tinynurbs::surfacePoint(*this->nurbs, p2.x, p2.y)};
+			geometry.AddFace(pt0, pt1, pt2);
 		}
-	}	
+	}
 
 	Nurbs::Nurbs(IfcGeometry& geometry, std::vector<IfcBound3D>const & bounds, IfcSurface const& surface, double const scaling)
-		: geometry{geometry}, 
-			bounds{bounds}, 
+		: geometry{geometry},
+			bounds{bounds},
 			bspline_surface{surface.BSplineSurface},
 			num_u{this->bspline_surface.ControlPoints.size()},
 			num_v{this->bspline_surface.ControlPoints.front().size()},
 			scaling{scaling} {
 			this->init();
 	}
-	
+
 	void Nurbs::init() {
 		// Check that the control point grid has sufficient dimensions.
 		// We need at least (degree + 1) control points in each direction.
@@ -201,19 +205,20 @@ namespace webifc::geometry{
 		this->maxError /= this->scaling;
 		_initialized = true;
 	}
+
 	std::vector<double> Nurbs::get_weights() const{
 		std::vector<double> result(this->num_u * this->num_v);
 		std::fill(result.begin(), result.end(), 1.0);
+		size_t flat = 0;
 		for (auto const& row : this->bspline_surface.Weights)
-			for (size_t i{0}; i < row.size(); ++i)
-			{
-				result[i] = row[i];
-		}
+			for (size_t i = 0; i < row.size(); ++i)
+				result[flat++] = row[i];
 		return result;
 	}
+
 	std::vector<double> Nurbs::get_knots(std::vector<double>const & bs_knots, std::vector<uint32_t> const & bs_mults) const{
 		std::vector<double> result;
-		auto knots_no_expanded {this->check_knots(bs_knots)}; 
+		auto knots_no_expanded {this->check_knots(bs_knots)};
 		auto const num_srf_knots {std::accumulate(bs_mults.begin(), bs_mults.end(), 0.0)};
 		result.reserve(num_srf_knots);
 		for(size_t knot_i{0}; knot_i < bs_knots.size(); ++knot_i){
@@ -223,6 +228,7 @@ namespace webifc::geometry{
 		}
 		return result;
 	}
+
 	std::vector<glm::dvec3> Nurbs::get_control_points() const{
 		std::vector<glm::dvec3> result;
 		size_t num_points{0};
@@ -231,17 +237,15 @@ namespace webifc::geometry{
 		for(auto const& row : this->bspline_surface.ControlPoints)  std::copy(row.begin(), row.end(), std::back_inserter(result));
 		return result;
 	}
+
 	Nurbs::uv_points_t Nurbs::get_uv_points() const{
 		Nurbs::uv_points_t points;
-		auto const& bound_points {this->bounds.front().curve.points};
-		size_t num_points{bound_points.size()};
-		points.resize(num_points);
-		auto count{0};
-		std::transform(bound_points.begin(), bound_points.end(), points.begin(), [&](auto const& point){
-			++count;
-			auto uv {this->inverse_evaluation(point)};
-			return Nurbs::uv_point_t{uv.x, uv.y};				
-		});
+		for (auto const& bound : this->bounds) {
+			for (auto const& point : bound.curve.points) {
+				auto uv {this->inverse_evaluation(point)};
+				points.emplace_back(uv.x, uv.y);
+			}
+		}
 		std::sort(points.begin(), points.end(),[](auto const& left, auto const& right){
 			  if (left[0] != right[0]) return left[0] < right[0];
         return left[1] < right[1];
@@ -256,6 +260,7 @@ namespace webifc::geometry{
 		});
 		return points;
 	}
+
 	auto Nurbs::get_approximation(glm::dvec3 const& pt, uv_point_t const& range_u, uv_point_t const& range_v) const{
 		double fU{0.0};
 		double fV{0.0};
@@ -267,34 +272,36 @@ namespace webifc::geometry{
 		auto new_range_v {range_v};
 		for (int i = 0; i < grid_size; ++i) {
 				auto const step_u {portion_u * i};
-				auto const u {range_u.x + step_u != 0.0 ? step_u : step_u + std::numeric_limits<double>::epsilon()};
+				auto const u {range_u.x + (step_u != 0.0 ? step_u : std::numeric_limits<double>::epsilon())};
         for (int j = 0; j < grid_size; ++j) {
-					auto const step_v {portion_v * i};
-					auto const v {range_v.x + step_v != 0.0 ? step_v : step_v + std::numeric_limits<double>::epsilon() };
+					auto const step_v {portion_v * j};
+					auto const v {range_v.x + (step_v != 0.0 ? step_v : std::numeric_limits<double>::epsilon())};
 					auto const pt_grid {tinynurbs::surfacePoint(*this->nurbs, u, v)};
 					auto const dist {glm::distance(pt_grid, pt)};
 					if (dist < min_distance) {
 							min_distance = dist;
 							fU = u;
 							fV = v;
-							new_range_u = {range_u.x + portion_u * i, range_u.x + portion_u * (i + 1) };
-							new_range_v = {range_v.x + portion_v * i, range_v.x + portion_v * (i + 1) };
+							new_range_u = {range_u.x + portion_u * i, range_u.x + portion_u * (i + 1)};
+							new_range_v = {range_v.x + portion_v * j, range_v.x + portion_v * (j + 1)};
 					}
         }
     }
 		return std::tuple {min_distance, fU, fV, new_range_u, new_range_v};
-	}	
+	}
+
 	Nurbs::uv_point_t Nurbs::inverse_evaluation(glm::dvec3 const& pt) const
 	{
-		spdlog::debug("[BSplineInverseEvaluation({})]");
+		spdlog::debug("[BSplineInverseEvaluation()]");
 		return inverse_method(pt);
 	}
+
 	Nurbs::uv_point_t Nurbs::inverse_method(glm::dvec3 const& pt) const
 	{
-		spdlog::debug("[InverseMethod({})]");
+		spdlog::debug("[InverseMethod()]");
 		glm::highp_dvec3 pt00{};
-		double fU {0.5};
-		double fV {0.5};
+		double fU {(range_knots_u.x + range_knots_u.y) * 0.5};
+		double fV {(range_knots_v.x + range_knots_v.y) * 0.5};
 		// auto [max_distance, fU, fV, new_range_u, new_range_v] {this->get_approximation(pt, this->range_knots_u, this->range_knots_v)};
 		// if(max_distance <= maxError) return {fU, fV};
 		// auto previous_distance{max_distance};
@@ -309,8 +316,7 @@ namespace webifc::geometry{
 		// 	new_range_v = range_v;
 		// 	max_distance = next_max_distance;
 		// }
-		
-		size_t count{0};
+
 		double divisor {100.0};
 		auto max_distance = std::numeric_limits<double>::max();
 		while (max_distance > maxError && divisor < 10000)
@@ -330,15 +336,13 @@ namespace webifc::geometry{
 						else incU /= pr;
 						while (true)
 						{
-							++count;
-							// spdlog::debug("result: {} \t || {} \t || count: {} \t",fU, fV, count);
 							double ffU = fU + incU;
 							double ffV = fV + incV;
 							if (ffU < range_knots_u.x)ffU = range_knots_u.y - (range_knots_u.x - ffU);
 							else if (ffU > range_knots_u.y) ffU = range_knots_u.x + (ffU - range_knots_u.y);
 							if (ffV < range_knots_v.x) ffV = range_knots_v.y - (range_knots_v.x - ffV);
 							else if (ffV > range_knots_v.y) ffV = range_knots_v.x + (ffV - range_knots_v.y);
-							pt00 = tinynurbs::surfacePoint(*this->nurbs, ffU, ffV);							
+							pt00 = tinynurbs::surfacePoint(*this->nurbs, ffU, ffV);
 							auto const di {glm::distance(pt00, pt)};
 							if (di < max_distance)
 							{
@@ -359,11 +363,11 @@ namespace webifc::geometry{
 		}
 		return {fU, fV};
 	}
+
 	std::vector<uint32_t> Nurbs::get_triangulation_uv_points(Nurbs::uv_points_t const& uv_points) const{
 		std::vector<uint32_t> result;
 		if(uv_points.empty()) return result;
 		auto const num_points {uv_points.size()};
-		auto const num_edges {num_points};
 		CDT::Triangulation<double> triangulator{};
 		std::vector<CDT::V2d<double>> points;
 		points.resize(num_points);
@@ -375,7 +379,6 @@ namespace webifc::geometry{
 		{
 			triangulator.insertVertices(points);
 			triangulator.eraseSuperTriangle();
-			auto const num_indices{triangulator.triangles.size() * 3};
 			result.reserve(triangulator.triangles.size() * 3);
 			for(auto const& triangle : triangulator.triangles){
 				auto const & vertice0_id{triangle.vertices[0]};
@@ -397,16 +400,19 @@ namespace webifc::geometry{
 		catch(...){ return {};}
 		return result;
 	}
+
 	std::vector<double> Nurbs::get_zscores(std::vector<double> const& knots) const{
 		std::vector<double> result(knots.size());
 		double mean = std::accumulate(knots.begin(), knots.end(), 0.0) / knots.size();
 		double sq_sum = std::inner_product(knots.begin(), knots.end(), knots.begin(), 0.0);
-		double stdev = std::sqrt(sq_sum / knots.size() - mean * mean);
+		double variance = sq_sum / knots.size() - mean * mean;
+		double stdev = variance > 0.0 ? std::sqrt(variance) : 1.0;
 		for (size_t i = 0; i < knots.size(); ++i) {
 				result[i] = (knots[i] - mean) / stdev;
 		}
 		return result;
 	}
+
 	std::vector<double> Nurbs::check_knots(std::vector<double> const& knots) const{
 		std::vector<double> result(knots.size());
 		auto const num_knots {knots.size()};
@@ -423,7 +429,7 @@ namespace webifc::geometry{
 				else if (i == num_knots -1)	result[i] = knots[i-1];
 				else 												result[i] = (knots[i-1]+knots[i+1]) / 2.0;
 			}
-			else result[i] = knots[i]; 
+			else result[i] = knots[i];
 		}
 		return result;
 	}

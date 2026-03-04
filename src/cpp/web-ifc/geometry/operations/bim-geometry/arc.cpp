@@ -19,12 +19,13 @@ namespace bimGeometry
         if (_placement.size() != 9) {
             placement = glm::dmat3(1);
         }
-    
-        placement = glm::dmat3(
-            _placement[0], _placement[1], _placement[2],
-            _placement[3], _placement[4], _placement[5],
-            _placement[6], _placement[7], _placement[8]
-        );
+        else {
+            placement = glm::dmat3(
+                _placement[0], _placement[1], _placement[2],
+                _placement[3], _placement[4], _placement[5],
+                _placement[6], _placement[7], _placement[8]
+            );
+        }
     }
 
     Buffers Arc::GetBuffers()

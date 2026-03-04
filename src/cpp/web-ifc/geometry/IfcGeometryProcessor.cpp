@@ -63,7 +63,6 @@ namespace webifc::geometry
 
     void IfcGeometryProcessor::Clear()
     {
-        _expressIDToGeometry.clear();
         std::unordered_map<uint32_t, IfcGeometry>().swap(_expressIDToGeometry);
         _geometryLoader.Clear();
     }
@@ -268,8 +267,6 @@ namespace webifc::geometry
                 // #endif
 
                 return mesh;
-
-                break;
             }
             case schema::IFCMAPPEDITEM:
             {
@@ -320,7 +317,7 @@ namespace webifc::geometry
 
                 if (op != "DIFFERENCE" && op != "UNION")
                 {
-                    spdlog::error("[GetMesh()] Unsupported boolean op {}", std::string(op), expressID);
+                    spdlog::error("[GetMesh()] Unsupported boolean op {} for entity ID {}", std::string(op), expressID);
                     return mesh;
                 }
 
@@ -353,9 +350,6 @@ namespace webifc::geometry
 
                 if (numFacesGeoms > _settings._CSG_MAX_NUM_FACES) {
                     spdlog::warn("High number of faces in CSG operand ({}), skipping further CSG operations", numFacesGeoms);
-
-                    // Flatten the first operand (transformed and normalized, like in the normal path)
-                    auto flatFirstMeshes = flatten(firstMesh, _expressIDToGeometry, normalizeMat);
 
                     // Merge into a single geometry (equivalent to the first operand without boolean)
                     IfcGeometry resultMesh;
@@ -421,7 +415,6 @@ namespace webifc::geometry
                     for (uint32_t i = 0; i < geom.numFaces; i++)
                     {
                         uint32_t temp = geom.indexData[i * 3 + 0];
-                        temp = geom.indexData[i * 3 + 0];
                         geom.indexData[i * 3 + 0] = geom.indexData[i * 3 + 1];
                         geom.indexData[i * 3 + 1] = temp;
                     }
@@ -486,7 +479,6 @@ namespace webifc::geometry
                     for (uint32_t i = 0; i < geom.numFaces; i++)
                     {
                         uint32_t temp = geom.indexData[i * 3 + 0];
-                        temp = geom.indexData[i * 3 + 0];
                         geom.indexData[i * 3 + 0] = geom.indexData[i * 3 + 1];
                         geom.indexData[i * 3 + 1] = temp;
                     }
@@ -591,7 +583,6 @@ namespace webifc::geometry
                 _expressIDToGeometry[expressID] = GetBrep(ifcPresentation);
                 if (!mesh.hasColor)
                     mesh.color = GetStyleItemFromExpressId(ifcPresentation).value_or(glm::dvec4(1.0));
-                ;
                 mesh.hasGeometry = true;
 
                 return mesh;
@@ -1035,7 +1026,6 @@ namespace webifc::geometry
                         for (uint32_t i = 0; i < geom.numFaces; i++)
                         {
                             uint32_t temp = geom.indexData[i * 3 + 0];
-                            temp = geom.indexData[i * 3 + 0];
                             geom.indexData[i * 3 + 0] = geom.indexData[i * 3 + 1];
                             geom.indexData[i * 3 + 1] = temp;
                         }
@@ -1051,7 +1041,6 @@ namespace webifc::geometry
                             for (uint32_t k = 0; k < geom_t.numFaces; k++)
                             {
                                 uint32_t temp = geom_t.indexData[k * 3 + 0];
-                                temp = geom_t.indexData[k * 3 + 0];
                                 geom_t.indexData[k * 3 + 0] = geom_t.indexData[k * 3 + 1];
                                 geom_t.indexData[k * 3 + 1] = temp;
                             }
@@ -1312,7 +1301,7 @@ namespace webifc::geometry
                 return mesh;
             default:
                 std::string lineTypeString = _schemaManager.IfcTypeCodeToType(lineType);
-                spdlog::error("[GetMesh()] unexpected mesh type {}", expressID, lineTypeString);
+                spdlog::error("[GetMesh()] unexpected mesh type {} for entity ID {}", lineTypeString, expressID );
                 break;
             }
         }
@@ -1383,7 +1372,7 @@ namespace webifc::geometry
             surface.BSplineSurface.ClosedV = closedV;
             surface.BSplineSurface.CurveType = curveType;
 
-            break;
+            return surface;
         }
         case schema::IFCBSPLINESURFACEWITHKNOTS:
         {
@@ -1701,7 +1690,8 @@ namespace webifc::geometry
             break;
         }
         default:
-            spdlog::error("[GetSurface()] unexpected surface type", expressID, lineType);
+            std::string lineTypeString = _schemaManager.IfcTypeCodeToType(lineType);
+            spdlog::error("[GetSurface()] unexpected surface type {} for entity ID {}", lineTypeString, expressID);
             break;
         }
 
@@ -1938,7 +1928,7 @@ namespace webifc::geometry
             break;
         }
         default:
-            spdlog::error("[ReadIndexedPolygonalFace()] unexpected indexedface type {}", expressID, lineType);
+            spdlog::error("[ReadIndexedPolygonalFace()] unexpected indexedface type {}: {}", expressID, lineType);
             break;
         }
     }
@@ -1966,7 +1956,7 @@ namespace webifc::geometry
             return geometry;
         }
         default:
-            spdlog::error("[GetBrep()] unexpected shell type {}", expressID, lineType);
+            spdlog::error("[GetBrep()] unexpected shell type {}: {}", expressID, lineType);
             break;
         }
 
@@ -2014,6 +2004,14 @@ namespace webifc::geometry
 
             auto surface = GetSurface(surfRef);
 
+            // Read SameSense flag (arg 2): .T. means face normal agrees with surface parametric
+            // normal; .F. means the face normal is opposite – winding must be reversed.
+            _loader.MoveToArgumentOffset(expressID, 2);
+            std::string_view senseStr = _loader.GetStringArgument();
+            bool sameSense = (senseStr == "T");
+
+            uint32_t facesBefore = geometry.numFaces;
+
             // TODO: place the face in the surface and tringulate
 
             if (surface.BSplineSurface.Active)
@@ -2036,10 +2034,20 @@ namespace webifc::geometry
             {
                 TriangulateBounds(geometry, bounds3D, expressID);
             }
+
+            // If SameSense is .F., the face outward normal is opposite to the surface parametric
+            // normal, so reverse the winding of all faces added by the triangulation above.
+            if (!sameSense)
+            {
+                for (uint32_t fi = facesBefore; fi < geometry.numFaces; fi++)
+                {
+                    std::swap(geometry.indexData[fi * 3 + 0], geometry.indexData[fi * 3 + 2]);
+                }
+            }
             break;
         }
         default:
-            spdlog::error("[AddFaceToGeometry()] unexpected face type {}", expressID, lineType);
+            spdlog::error("[AddFaceToGeometry()] unexpected face type {}: {}", expressID, lineType);
             break;
         }
     }

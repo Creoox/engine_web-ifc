@@ -28,7 +28,7 @@ namespace {
 
   constexpr std::array<uint8_t, 256> makeCharClassTable()
   {
-	std::array<uint8_t, 256> t{};			// zero-init → CC_OTHER everywhere
+	std::array<uint8_t, 256> t{};			// zero-init -> CC_OTHER everywhere
 
 	for (int i = 0; i < 32; ++i) t[i] = CC_CTRL;   // all controls are errors …
 	t['\t'] = CC_WS; t['\n'] = CC_WS;			   // … except whitespace

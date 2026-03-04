@@ -74,29 +74,8 @@ namespace bimGeometry
 		{
 			return 0;
 		}
-		double xx = x / dd;
-		double yy = y / dd;
-
-		double angle = acos(xx);
-		double cosv = cos(angle);
-		double sinv = sin(angle);
-		if (glm::abs(xx - cosv) > 1e-5 || glm::abs(yy - sinv) > 1e-5)
-		{
-			angle = asin(yy);
-			sinv = sin(angle);
-			cosv = cos(angle);
-			if (glm::abs(xx - cosv) > 1e-5 || glm::abs(yy - sinv) > 1e-5)
-			{
-				angle = angle + (CONST_PI - angle) * 2;
-				sinv = sin(angle);
-				cosv = cos(angle);
-				if (glm::abs(xx - cosv) > 1e-5 || glm::abs(yy - sinv) > 1e-5)
-				{
-					angle = angle + CONST_PI;
-				}
-			}
-		}
-
+		double angle = std::atan2(y, x);
+		if (angle < 0) angle += 2 * CONST_PI;
 		return (angle / (2 * CONST_PI)) * 360;
 	}
 
@@ -112,6 +91,11 @@ namespace bimGeometry
 	inline Geometry Revolution(glm::dmat4 transform, double startDegrees, double endDegrees, std::vector<glm::dvec3> Profile, double numRots)
 	{
 		Geometry geometry;
+
+		if (numRots < 2)
+		{
+			return geometry;
+		}
 
 		glm::dvec3 cent = transform[3];
 		glm::dvec3 vecX = glm::normalize(transform[0]);
@@ -192,6 +176,11 @@ namespace bimGeometry
 	inline Geometry RevolveCylinder(glm::dmat4 transform, double startDegrees, double endDegrees, double minZ, double maxZ, int numRots, double radius)
 	{
 		Geometry geometry;
+
+		if (numRots < 2)
+		{
+			return geometry;
+		}
 
 		glm::dvec3 cent = transform[3];
 		glm::dvec3 vecX = glm::normalize(transform[0]);
@@ -278,6 +267,9 @@ namespace bimGeometry
 		double lastX = horizontal[0].x;
 		double lastY = horizontal[0].y;
 
+		double lastAlt = vertical[0].y;
+		double lastVx = vertical[0].x;
+		size_t verticalIdx = 1; // persistent index: advances monotonically with length
 		for (const auto &ptH : horizontal)
 		{
 			double dx = ptH.x - lastX;
@@ -287,22 +279,22 @@ namespace bimGeometry
 			lastY = ptH.y;
 
 			double altitude = 0.0;
-			double lastAlt = vertical[0].y;
-			double lastVx = vertical[0].x;
 			bool found = false;
 
-			for (size_t i = 1; i < vertical.size(); ++i)
+			// Advance persistent index past all vertical segments already behind us
+			while (verticalIdx < vertical.size() && vertical[verticalIdx].x < length)
 			{
-				const auto &ptV = vertical[i];
-				if (ptV.x >= length)
-				{
-					double ratio = (length - lastVx) / (ptV.x - lastVx);
-					altitude = lastAlt * (1.0 - ratio) + ptV.y * ratio;
-					found = true;
-					break;
-				}
-				lastAlt = ptV.y;
-				lastVx = ptV.x;
+				lastAlt = vertical[verticalIdx].y;
+				lastVx = vertical[verticalIdx].x;
+				++verticalIdx;
+			}
+			if (verticalIdx < vertical.size())
+			{
+				const auto &ptV = vertical[verticalIdx];
+				double denom = ptV.x - lastVx;
+				double ratio = (denom > 0.0) ? (length - lastVx) / denom : 0.0;
+				altitude = lastAlt * (1.0 - ratio) + ptV.y * ratio;
+				found = true;
 			}
 
 			if (!found)
@@ -319,6 +311,10 @@ namespace bimGeometry
 	inline Curve GetEllipseCurve(float radiusX, float radiusY, int numSegments, glm::dmat3 placement = glm::dmat3(1), double startRad = 0, double endRad = CONST_PI * 2, bool swap = true, bool normalToCenterEnding = false)
 	{
 		Curve c;
+		if (numSegments < 2)
+		{
+			numSegments = 2;
+		}
 		if (normalToCenterEnding)
 		{
 			double sweep_angle = (endRad - startRad);
@@ -415,6 +411,16 @@ namespace bimGeometry
 	{
 		std::vector<glm::dvec2> points;
 
+		if (std::fabs(EndGradient - StartGradient) < EPS_MINISCULE)
+		{
+			// Degenerate parabola (flat grade): emit a straight line
+			for (double i = 0; i <= segments; i++)
+			{
+				double pr = i / segments;
+				points.push_back(glm::dvec2(HorizontalLength * pr, StartGradient * HorizontalLength * pr + StartHeight));
+			}
+			return points;
+		}
 		double R = HorizontalLength / (EndGradient - StartGradient);
 
 		for (double i = 0; i <= segments; i++)
@@ -530,36 +536,22 @@ namespace bimGeometry
 		return points;
 	}
 
-	inline bimGeometry::Geometry Extrude(std::vector<glm::dvec3> &points, glm::dvec3 &dir, double len)
+	inline bimGeometry::Geometry Extrude(const std::vector<glm::dvec3> &points, glm::dvec3 &dir, double len)
 	{
 		bimGeometry::Geometry geom;
-
 		for (size_t j = 0; j < points.size() - 1; j++)
 		{
 			int j2 = j + 1;
-
 			double npx = points[j].x + dir.x * len;
 			double npy = points[j].y + dir.y * len;
 			double npz = points[j].z + dir.z * len;
-			glm::dvec3 nptj1 = glm::dvec3(
-				npx,
-				npy,
-				npz);
+			glm::dvec3 nptj1 = glm::dvec3( npx, npy, npz);
 			npx = points[j2].x + dir.x * len;
 			npy = points[j2].y + dir.y * len;
 			npz = points[j2].z + dir.z * len;
-			glm::dvec3 nptj2 = glm::dvec3(
-				npx,
-				npy,
-				npz);
-			geom.AddFace(
-				glm::dvec3(points[j].x, points[j].y, points[j].z),
-				glm::dvec3(points[j2].x, points[j2].y, points[j2].z),
-				nptj1);
-			geom.AddFace(
-				glm::dvec3(points[j2].x, points[j2].y, points[j2].z),
-				nptj2,
-				nptj1);
+			glm::dvec3 nptj2 = glm::dvec3( npx, npy, npz);
+			geom.AddFace( glm::dvec3(points[j].x, points[j].y, points[j].z), glm::dvec3(points[j2].x, points[j2].y, points[j2].z), nptj1);
+			geom.AddFace( glm::dvec3(points[j2].x, points[j2].y, points[j2].z), nptj2, nptj1);
 		}
 		return geom;
 	}
@@ -684,13 +676,15 @@ namespace bimGeometry
 			std::vector<uint32_t> indices = mapbox::earcut<uint32_t>(polygon2D);
 
 			uint32_t offset = 0;
-			bool winding = true;
 			bool flipWinding = false;
 
 			if (indices.size() >= 3)
 			{
-				bool winding = GetWindingOfTriangle(geom.GetPoint(offset + indices[0]), geom.GetPoint(offset + indices[1]), geom.GetPoint(offset + indices[2]));
-				bool flipWinding = !winding;
+				// Check winding against the actual extrusion direction, not the hardcoded Z axis
+				glm::dvec3 capNormal = glm::cross(
+					geom.GetPoint(offset + indices[1]) - geom.GetPoint(offset + indices[0]),
+					geom.GetPoint(offset + indices[2]) - geom.GetPoint(offset + indices[0]));
+				flipWinding = (glm::dot(capNormal, dir) < 0);
 
 				for (size_t i = 0; i < indices.size(); i += 3)
 				{
@@ -716,8 +710,7 @@ namespace bimGeometry
 
 				if (cuttingPlaneNormal != glm::dvec3(0))
 				{
-					et = glm::dvec4(glm::dvec3(pt), 1);
-					glm::dvec3 transDir = glm::dvec4(dir, 0);
+					glm::dvec3 transDir = dir;
 
 					// project {et} onto the plane, following the extrusion normal
 					double ldotn = glm::dot(transDir, cuttingPlaneNormal);
@@ -783,7 +776,8 @@ namespace bimGeometry
 		double ldotn = glm::dot(dir, normal);
 		if (ldotn == 0)
 		{
-			return glm::dvec3(0);
+			// dir is parallel to the plane; return point as-is (already on/near the plane)
+			return point;
 		}
 		else
 		{
@@ -871,12 +865,25 @@ namespace bimGeometry
 
 				// double prod = glm::dot(n1, n2);
 
-				if (std::isnan(p.x))
+				if (std::isnan(p.x) || glm::length(p) < EPS_MINISCULE)
 				{
-					// TODO: sometimes outliers cause the perp to become NaN!
-					// this is bad news, as it nans the points added to the final mesh
-					// also, it's hard to bail out now :/
-					// see curve.add() for more info on how this is currently "solved"
+					// Collinear segment: n1 and n2 are parallel, cross product is zero.
+					// Use n1 directly as the plane normal (straight continuation).
+					planeNormal = n1;
+					directrixSegmentNormal = n1;
+					planeOrigin = dpts[i];
+					if (!curves.empty())
+					{
+						const Curve &prevCurve = curves.back();
+						for (auto &pt : prevCurve.points)
+						{
+							glm::dvec3 proj = bimGeometry::projectOntoPlane(planeOrigin, planeNormal, pt, directrixSegmentNormal);
+							segmentForCurve.Add(proj);
+						}
+					}
+					if (!closed || (i != 0 && i != dpts.size() - 1))
+						curves.push_back(segmentForCurve);
+					continue;
 				}
 
 				glm::dvec3 u1 = glm::normalize(glm::cross(n1, p));
