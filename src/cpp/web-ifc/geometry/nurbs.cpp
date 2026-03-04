@@ -178,13 +178,23 @@ namespace webifc::geometry{
 		this->pth = tinynurbs::surfacePoint(*this->nurbs, 1.0, EPS_TINY);
 		this->ptv = tinynurbs::surfacePoint(*this->nurbs, EPS_TINY, 1.0);
 
+		if (!std::isfinite(this->ptc.x)) this->ptc.x = 0.0;
+		if (!std::isfinite(this->ptc.y)) this->ptc.y = 0.0;
+		if (!std::isfinite(this->ptc.z)) this->ptc.z = 0.0;
+
+		if (!std::isfinite(this->pth.x)) this->pth.x = 0.0;
+		if (!std::isfinite(this->pth.y)) this->pth.y = 0.0;
+		if (!std::isfinite(this->pth.z)) this->pth.z = 0.0;
+
+		if (!std::isfinite(this->ptv.x)) this->ptv.x = 0.0;
+		if (!std::isfinite(this->ptv.y)) this->ptv.y = 0.0;
+		if (!std::isfinite(this->ptv.z)) this->ptv.z = 0.0;
+
 		// Compute distances for further use.
 		this->dh = glm::distance(ptc, pth);
 		this->dv = glm::distance(ptc, ptv);
 		this->pr = (dh + 1) / (dv + 1);
-		if (std::isnan(this->pr) || std::isinf(this->pr)) {
-			this->pr = 1.0;
-		}
+		if (!std::isfinite(this->pr)) this->pr = 1.0;
 
 		// Scale error tolerances.
 		this->minError /= this->scaling;

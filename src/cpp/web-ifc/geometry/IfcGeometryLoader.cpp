@@ -2585,11 +2585,6 @@ namespace webifc::geometry
       segmentParams.sameSense = -1;
       segmentParams.trimSense = trimSense;
 
-      if (expressID == 192475)
-      {
-          int wait = 0;
-}
-
       ComputeCurve(ParentCurveID, curve, segmentParams);
       
       bool applyOwnPlacement = true;
@@ -2660,7 +2655,7 @@ namespace webifc::geometry
               }
           }
 
-		  if ((Transition.compare("CONTINUOUS") == 0 || connectTranslate) )  // will be done below anyway
+		  if ((Transition.compare("CONTINUOUS") == 0 || connectTranslate) && currentSegmentPoints.size() > 0)
           {
               applyOwnPlacement = false;
               // Connect previous segment's end point to current segments start point
@@ -4619,8 +4614,9 @@ namespace webifc::geometry
               trim.trimType = TRIM_BY_PARAMETER;
               trim.value = _loader.GetDoubleArgument();
           }
-          else if (CurveMeasureLabel == "IFCLENGTHMEASURE")
+		  else if (CurveMeasureLabel.find( "LENGTHMEASURE") != std::string_view::npos)
           {
+              // captures IFCLENGTHMEASURE as well as IFCNONNEGATIVELENGTHMEASURE
               _loader.GetTokenType();
               trim.trimType = TRIM_BY_LENGTH;
               trim.value = _loader.GetDoubleArgument();

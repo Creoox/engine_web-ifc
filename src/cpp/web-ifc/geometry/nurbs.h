@@ -62,7 +62,7 @@ namespace webifc::geometry{
 		glm::dvec3 ptv{0.0};
 		double dh{0.0};
 		double dv{0.0};
-		double pr{0.0};
+		double pr{1.0};
 		bool _initialized = false;
 	};
 }
