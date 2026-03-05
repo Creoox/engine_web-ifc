@@ -471,9 +471,7 @@ namespace webifc::geometry
                 profile.curve = curve;
 
                 auto geom = Extrude(profile, extrusionNormal, extrudeDistance, localPlaneNormal, localPlanePos);
-                // auto geom = Extrude(profile, surface.transformation, extrusionNormal, EXTRUSION_DISTANCE_HALFSPACE);
 
-                // @Refactor: duplicate of extrudedareasolid
                 if (flipWinding)
                 {
                     for (uint32_t i = 0; i < geom.numFaces; i++)
