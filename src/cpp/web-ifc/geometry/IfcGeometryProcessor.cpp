@@ -1821,8 +1821,10 @@ namespace webifc::geometry
      */
     void IfcGeometryProcessor::ApplyBooleanToMeshChildren(IfcComposedMesh &composedMesh, std::vector<IfcGeometry> &secondGroups, std::string op, IfcGeometrySettings _settings, glm::dmat4 mat = glm::dmat4(1))
     {
-        glm::dmat4 newMat = mat * composedMesh.transformation;
+        const glm::dmat4 newMat = mat * composedMesh.transformation;
+        const glm::dmat4 invMat = glm::inverse(newMat);
         bool transformationBreaksWinding = MatrixFlipsTriangles(newMat);
+        bool transformationBreaksWindingInverse = MatrixFlipsTriangles(invMat);
         auto geomIt = _expressIDToGeometry.find(composedMesh.expressID);
         if (composedMesh.hasGeometry && geomIt != _expressIDToGeometry.end())
         {
@@ -1830,13 +1832,9 @@ namespace webifc::geometry
             if (meshGeom.numFaces <= _settings._CSG_MAX_NUM_FACES)
             {
                 std::vector<IfcGeometry> transformedGeoms = transformIfcGeometry(meshGeom, newMat, transformationBreaksWinding);
-
                 IfcGeometry geometryResult = BoolProcess(transformedGeoms, secondGroups, op, _settings);
-
-                glm::dmat4 invMat = glm::inverse(newMat);
-                transformationBreaksWinding = MatrixFlipsTriangles(invMat);
-
-                std::vector<IfcGeometry> localGeom = transformIfcGeometry(geometryResult, invMat, transformationBreaksWinding);
+                
+                std::vector<IfcGeometry> localGeom = transformIfcGeometry(geometryResult, invMat, transformationBreaksWindingInverse);
                 IfcGeometry localGeomMerged;
                 for (const auto& geom : localGeom)
                 {
