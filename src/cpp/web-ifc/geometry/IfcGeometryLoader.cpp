@@ -2232,59 +2232,39 @@ namespace webifc::geometry
             }
         }
         curve.arcSegments.push_back(curve.points.size());
-        int numPointsCurrentArc = _circleSegments;
-        numPointsCurrentArc = std::max(numPointsCurrentArc, 4);
+        int numPointsCurrentArc = std::max(static_cast<int>(_circleSegments * openingAngleRad / (2 * CONST_PI)) + 1, 4);
+
         double deltaAngle = openingAngleRad / (numPointsCurrentArc - 1);
         double angle = startRad;
+
         std::vector<glm::dvec3> points;
+        points.reserve(numPointsCurrentArc);
+
         for (int i = 0; i < numPointsCurrentArc; i++)
         {
             if (dimensions == 2)
             {
-                glm::dvec2 vec(0);
-                vec[0] = radius1 * std::cos(angle);
-                vec[1] = radius2 * std::sin(angle);
+                glm::dvec2 vec(radius1 * std::cos(angle), radius2 * std::sin(angle));
+
                 glm::dmat3 dmat = position2D;
                 if (byPos)
                 {
                     dmat[0] = glm::dvec3(1.0, 0.0, 0.0);
                     dmat[1] = glm::dvec3(0.0, 1.0, 0.0);
                 }
+
                 glm::dvec3 pos = dmat * glm::dvec3(vec, 1);
-                points.push_back(glm::dvec3(pos.x, pos.y, 0));
+                points.emplace_back(pos.x, pos.y, 0);
             }
             else
             {
-                glm::dvec3 vec(0);
-                vec[0] = radius1 * std::cos(angle);
-                vec[1] = radius2 * std::sin(angle);
+                glm::dvec3 vec(radius1 * std::cos(angle), radius2 * std::sin(angle), 0);
                 glm::dvec4 pos = position3D * glm::dvec4(vec, 1);
-                points.push_back(pos);
+                points.emplace_back(pos);
             }
+
             angle += deltaAngle;
         }
-
-        // Compute exact endpoint at endRad
-        glm::dvec3 exactEndPos;
-        if (dimensions == 2)
-        {
-            glm::dvec2 vec(radius1 * std::cos(endRad), radius2 * std::sin(endRad));
-            glm::dmat3 dmat = position2D;
-            if (byPos)
-            {
-                dmat[0] = glm::dvec3(1.0, 0.0, 0.0);
-                dmat[1] = glm::dvec3(0.0, 1.0, 0.0);
-            }
-            glm::dvec3 pos = dmat * glm::dvec3(vec, 1);
-            exactEndPos = glm::dvec3(pos.x, pos.y, 0);
-        }
-        else
-        {
-            glm::dvec3 vec(radius1 * std::cos(endRad), radius2 * std::sin(endRad), 0);
-            glm::dvec4 pos = position3D * glm::dvec4(vec, 1);
-            exactEndPos = glm::dvec3(pos);
-        }
-        points.back() = exactEndPos; // Overwrite last point with exact endpoint
 
         // Compute exact tangent at startRad
         glm::dvec3 startTangent;
@@ -2846,7 +2826,8 @@ namespace webifc::geometry
           uint32_t pointId = _loader.GetRefArgument(token);
           ctrolPts.push_back(GetCartesianPoint3D(pointId));
         }
-        double numCurvePoints = ctrolPts.size();
+        // Use at least 4 points
+        double numCurvePoints = std::max((int)ctrolPts.size(), 4);
         std::vector<glm::dvec3> tempPoints = GetRationalBSplineCurveWithKnots(degree, ctrolPts, knots, weights, numCurvePoints);
         for (size_t i = 0; i < tempPoints.size(); i++)
           curve.Add(tempPoints[i]);
@@ -2934,7 +2915,8 @@ namespace webifc::geometry
           ctrolPts.push_back(GetCartesianPoint3D(pointId));
         }
 
-        double numCurvePoints = ctrolPts.size();
+		// Use at least 4 points
+        double numCurvePoints = std::max((int)ctrolPts.size(), 4);
         std::vector<glm::dvec3> tempPoints = GetRationalBSplineCurveWithKnots(degree, ctrolPts, knots, weights, numCurvePoints);
         for (size_t i = 0; i < tempPoints.size(); i++)
           curve.Add(tempPoints[i]);

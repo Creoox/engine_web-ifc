@@ -179,11 +179,9 @@ inline IfcCurve Build3DArc3Pt(const glm::dvec3 &p1, const glm::dvec3 &p2, const 
 		double high = knots[domainHigh];
 
 		double tPrime = t * (high - low) + low;
-		if (tPrime < low || tPrime > high)
-		{
-			printf("BSpline tPrime out of bounds\n");
-			return glm::dvec3(0, 0, 0);
-		}
+		// Clamp to domain to handle floating-point rounding at t=0 and t=1
+		tPrime = std::max(tPrime, low);
+		tPrime = std::min(tPrime, high);
 
 		// find s (the spline segment) for the [t] value provided
 		int s = 0;
@@ -249,11 +247,9 @@ inline IfcCurve Build3DArc3Pt(const glm::dvec3 &p1, const glm::dvec3 &p2, const 
 		double high = knots[domainHigh];
 
 		double tPrime = t * (high - low) + low;
-		if (tPrime < low || tPrime > high)
-		{
-			printf("BSpline tPrime out of bounds\n");
-			return glm::dvec2(0, 0);
-		}
+		// Clamp to domain to handle floating-point rounding at t=0 and t=1
+		tPrime = std::max(tPrime, low);
+		tPrime = std::min(tPrime, high);
 
 		// find s (the spline segment) for the [t] value provided
 		int s = 0;
@@ -308,8 +304,6 @@ inline IfcCurve Build3DArc3Pt(const glm::dvec3 &p1, const glm::dvec3 &p2, const 
 		return point;
 	}
 
-
-
 	inline	std::vector<glm::dvec3> GetRationalBSplineCurveWithKnots(int degree, std::vector<glm::dvec3> points, std::vector<double> knots, std::vector<double> weights, double numCurvePoints)
 	{
 		spdlog::debug("[GetRationalBSplineCurveWithKnots({})]");
@@ -320,6 +314,8 @@ inline IfcCurve Build3DArc3Pt(const glm::dvec3 &p1, const glm::dvec3 &p2, const 
 			glm::dvec3 point = InterpolateRationalBSplineCurveWithKnots(i, degree, points, knots, weights);
 			c.push_back(point);
 		}
+		// Always include the endpoint at t=1 (previously missing, causing broken edge loops)
+		c.push_back(InterpolateRationalBSplineCurveWithKnots(1.0, degree, points, knots, weights));
 
 		// TODO: flip triangles?
 		/*
@@ -342,6 +338,8 @@ inline IfcCurve Build3DArc3Pt(const glm::dvec3 &p1, const glm::dvec3 &p2, const 
 			glm::dvec2 point = InterpolateRationalBSplineCurveWithKnots(i, degree, points, knots, weights);
 			c.push_back(point);
 		}
+		// Always include the endpoint at t=1 (previously missing, causing broken edge loops)
+		c.push_back(InterpolateRationalBSplineCurveWithKnots(1.0, degree, points, knots, weights));
 		// TODO: flip triangles?
 		/*
 				if (MatrixFlipsTriangles(placement))

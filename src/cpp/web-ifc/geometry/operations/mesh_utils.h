@@ -139,44 +139,128 @@ namespace webifc::geometry
         AppendGeometry(geometry, geom);
     }
 
-    inline void TriangulateCylindricalSurface( IfcGeometry& geometry, const std::vector<IfcBound3D>& bounds, const IfcSurface& surface, double numRots)
+    inline void TriangulateCylindricalSurface( IfcGeometry& geometry, const std::vector<IfcBound3D>& bounds, const IfcSurface& surface, double numCircleSegments)
     {
         spdlog::debug("[TriangulateCylindricalSurface()]");
-
-        auto groups = GroupBoundsByIndex(bounds);
 
         glm::dvec3 origin = surface.transformation[3];
         glm::dvec3 axisX = glm::normalize(surface.transformation[0]);
         glm::dvec3 axisY = glm::normalize(surface.transformation[1]);
         glm::dvec3 axisZ = glm::normalize(surface.transformation[2]);
+        double radius = surface.CylinderSurface.Radius;
 
-        double minZ = std::numeric_limits<double>::max();
-        double maxZ = -std::numeric_limits<double>::max();
-
-        std::vector<glm::dvec3> allPoints;
-        for (const auto& [_, pts] : groups)
+        // ── Step 1: project boundary into cylinder UV space ──────────────────────
+        //   u = circumferential angle (degrees, same convention as RevolveCylinder)
+        //   v = axial distance along axisZ
+        std::vector<glm::dvec2> uvBoundary;
+        for (const auto& bound : bounds)
         {
-            for (const auto& p : pts)
+            if (bound.curve.points.empty()) continue;
+            std::vector<double> angles, heights;
+            for (const auto& p : bound.curve.points)
             {
-                glm::dvec3 v = p - origin;
-                double dz = glm::dot(axisZ, v);
-
-                minZ = std::min(minZ, dz);
-                maxZ = std::max(maxZ, dz);
-
-                allPoints.push_back(p);
+                glm::dvec3 rel = p - origin;
+                double dx = glm::dot(axisX, rel);
+                double dy = glm::dot(axisY, rel);
+                double dz = glm::dot(axisZ, rel);
+                double u = VectorToAngle3D(dx, dy);
+                NormalizeAngle(u);
+                angles.push_back(u);
+                heights.push_back(dz);
             }
+            UnwrapAngles(angles);
+            for (size_t i = 0; i < angles.size(); i++)
+                uvBoundary.push_back({angles[i], heights[i]});
+        }
+        if (uvBoundary.size() < 3) return;
+
+        // ── Step 2: UV bounding box ───────────────────────────────────────────────
+        double minU = uvBoundary[0].x, maxU = uvBoundary[0].x;
+        double minV = uvBoundary[0].y, maxV = uvBoundary[0].y;
+        for (const auto& uv : uvBoundary)
+        {
+            minU = std::min(minU, uv.x);  maxU = std::max(maxU, uv.x);
+            minV = std::min(minV, uv.y);  maxV = std::max(maxV, uv.y);
         }
 
-        if (allPoints.empty())
-            return;
+        // ── Step 3: UV → 3D (matches RevolveCylinder: sin(u)*axisX + cos(u)*axisY) ──
+        auto uvTo3D = [&](double u, double v) -> glm::dvec3
+        {
+            double uRad = glm::radians(u);
+            return origin + v * axisZ
+                 + std::sin(uRad) * radius * axisX
+                 + std::cos(uRad) * radius * axisY;
+        };
 
-        auto [startDeg, endDeg] = ComputeAngleInterval( allPoints, origin, axisX, axisY);
+        // ── Step 4: scanline tessellation ────────────────────────────────────────
+        // For each U column we intersect the UV boundary polygon with the vertical
+        // line u = const to find the exact V strip to fill.  This replaces the old
+        // grid + centroid-PIP approach which produced staircase artifacts along
+        // diagonal (sheared) polygon boundaries.
+        //
+        // Vertical UV edges (constant u, e.g. axial LINE edges) are skipped in the
+        // intersection scan; their V extent is captured by the adjacent B-spline or
+        // line segments that start/end at the same u value.
+        double arcDeg = maxU - minU;
+        int uSteps = std::max(static_cast<int>(numCircleSegments * arcDeg / 360.0),
+                              static_cast<int>(numCircleSegments));
+        double uStep     = arcDeg / uSteps;
+        double colArcLen = radius * glm::radians(std::abs(uStep)); // arc length per column
 
-        auto geom = bimGeometry::RevolveCylinder( surface.transformation, startDeg, endDeg,
-            minZ, maxZ, numRots, surface.CylinderSurface.Radius);
+        auto getVRangeAtU = [&](double u) -> std::pair<double,double>
+        {
+            std::vector<double> crossings;
+            crossings.reserve(4);
+            const size_t n = uvBoundary.size();
+            for (size_t i = 0, j = n - 1; i < n; j = i++)
+            {
+                double ui = uvBoundary[i].x, uj = uvBoundary[j].x;
+                double vi = uvBoundary[i].y, vj = uvBoundary[j].y;
+                if (std::abs(ui - uj) < 1e-9) continue;       // skip vertical edges
+                if ((ui > u) == (uj > u))      continue;       // edge does not straddle u
+                double t = (u - uj) / (ui - uj);
+                if (t < -1e-9 || t > 1.0 + 1e-9) continue;
+                crossings.push_back(vj + t * (vi - vj));
+            }
+            if (crossings.size() < 2) return {0.0, -1.0};     // outside polygon
+            auto mm = std::minmax_element(crossings.begin(), crossings.end());
+            return {*mm.first, *mm.second};
+        };
 
-        AppendGeometry(geometry, geom);
+        // Winding: (u0,v00)→(u0,v01)→(u1,v10) gives outward normals.
+        // Matches RevolveCylinder convention: cross(axisZ, sin*axisX+cos*axisY) = outward.
+        for (int iu = 0; iu < uSteps; iu++)
+        {
+            double u0 = minU + iu       * uStep;
+            double u1 = minU + (iu + 1) * uStep;
+
+            auto [vA0, vB0] = getVRangeAtU(u0);
+            auto [vA1, vB1] = getVRangeAtU(u1);
+            auto [vAm, vBm] = getVRangeAtU((u0 + u1) * 0.5);
+
+            if (vAm > vBm) continue;                           // column outside polygon
+            // Fallback for u0/u1 that sit exactly on a vertical boundary edge
+            if (vA0 > vB0) { vA0 = vAm; vB0 = vBm; }
+            if (vA1 > vB1) { vA1 = vAm; vB1 = vBm; }
+
+            // V subdivisions keep cells roughly square in arc-length space
+            double colHeight = std::max(vB0 - vA0, vB1 - vA1);
+            int vSteps = std::max(static_cast<int>(colHeight / std::max(colArcLen, 1e-6)), 1);
+
+            for (int iv = 0; iv < vSteps; iv++)
+            {
+                double t0 = double(iv)     / vSteps;
+                double t1 = double(iv + 1) / vSteps;
+
+                double v00 = vA0 + t0 * (vB0 - vA0);
+                double v01 = vA0 + t1 * (vB0 - vA0);
+                double v10 = vA1 + t0 * (vB1 - vA1);
+                double v11 = vA1 + t1 * (vB1 - vA1);
+
+                geometry.AddFace(uvTo3D(u0, v00), uvTo3D(u0, v01), uvTo3D(u1, v10));
+                geometry.AddFace(uvTo3D(u1, v10), uvTo3D(u0, v01), uvTo3D(u1, v11));
+            }
+        }
     }
 
     inline void TriangulateExtrusion( IfcGeometry& geometry, const std::vector<IfcBound3D>&, const IfcSurface& surface)
