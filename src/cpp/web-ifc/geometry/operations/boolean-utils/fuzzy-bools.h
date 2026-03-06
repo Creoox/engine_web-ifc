@@ -22,13 +22,19 @@ namespace fuzzybools
 	}
 
 	// ---------------------------------------------------------------
-	// Post-boolean cleanup: remove non-manifold open-shell connected
-	// components whose signed volume is near zero.
+	// Post-boolean cleanup, two phases:
 	//
-	// After nested boolean operations, floating-point drift can leave
-	// orphaned face fragments that are not part of any closed solid.
-	// A valid CSG result must be a closed manifold; isolated open
-	// shells with negligible volume are artifacts.
+	// Phase A — strip near-degenerate sliver triangles (area < 1e-9 m²)
+	//   that accumulate at intersection boundaries across multiple
+	//   boolean iterations.  These slivers create nearly-coincident
+	//   CDT constraint endpoints whose sub-tolerance gaps can cause
+	//   CDT to produce large unconstrained triangles ("fins") in
+	//   subsequent steps.
+	//
+	// Phase B — remove non-manifold open-shell connected components
+	//   whose signed volume is near zero.  After nested boolean
+	//   operations, floating-point drift can leave orphaned face
+	//   fragments that are not part of any closed solid.
 	//
 	// Uses the same spatial-hash vertex deduplication as
 	// SharedPosition::AddPoint (cell size = toleranceVectorEquality,
@@ -38,6 +44,42 @@ namespace fuzzybools
 	// ---------------------------------------------------------------
 	inline void CleanNonManifoldShells(Geometry &result)
 	{
+		// -- Phase A: strip sliver triangles -----------------------------
+		// Threshold 1e-9 m² sits well above the toleranceAddFace filter
+		// (~5e-11 m²) so it removes only absolute dregs, while staying
+		// far below the smallest real feature in any meter-scale model.
+		{
+			constexpr double SLIVER_AREA_THRESHOLD = 1e-9;
+			const uint32_t n = result.numFaces;
+			uint32_t sliverCount = 0;
+			for (uint32_t i = 0; i < n; i++)
+			{
+				Face f = result.GetFace(i);
+				if (areaOfTriangle(result.GetPoint(f.i0),
+				                   result.GetPoint(f.i1),
+				                   result.GetPoint(f.i2)) < SLIVER_AREA_THRESHOLD)
+					sliverCount++;
+			}
+			if (sliverCount > 0)
+			{
+				Geometry tmp;
+				tmp.planes = result.planes;
+				tmp.hasPlanes = result.hasPlanes;
+				tmp.data = result.data;
+				for (uint32_t i = 0; i < n; i++)
+				{
+					Face f = result.GetFace(i);
+					Vec a = result.GetPoint(f.i0);
+					Vec b = result.GetPoint(f.i1);
+					Vec c = result.GetPoint(f.i2);
+					if (areaOfTriangle(a, b, c) >= SLIVER_AREA_THRESHOLD)
+						tmp.AddFace(a, b, c, f.pId);
+				}
+				result = tmp;
+			}
+		}
+
+		// -- Phase B: remove non-manifold zero-volume shells ------------
 		const uint32_t nFaces = result.numFaces;
 		if (nFaces < 4) return; // need >= 4 faces for any closed solid
 

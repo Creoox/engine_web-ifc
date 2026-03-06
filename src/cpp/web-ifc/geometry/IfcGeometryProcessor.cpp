@@ -2187,37 +2187,6 @@ namespace webifc::geometry
                     firstOperator = Union(firstOperator, secondOperator);
                 }
 
-                // Post-processing: strip near-degenerate sliver triangles that accumulate
-                // at intersection boundaries across multiple boolean iterations.  These
-                // slivers create nearly-coincident CDT constraint endpoints whose sub-
-                // tolerance gaps can cause CDT to produce large unconstrained triangles
-                // ("fins") in subsequent steps.
-                //
-                // Threshold 1e-9 m² sits well above the existing toleranceAddFace filter
-                // (~5e-11 m²) so it removes only the absolute dregs, while staying far
-                // below the smallest real feature in any meter-scale IFC model.
-                {
-                    constexpr double SLIVER_AREA_THRESHOLD = 1e-9;
-                    size_t numRemovedFaces = 0;
-                    IfcGeometry cleaned;
-                    for (uint32_t i = 0; i < firstOperator.numFaces; i++)
-                    {
-                        bimGeometry::Face f = firstOperator.GetFace(i);
-                        glm::dvec3 a = firstOperator.GetPoint(f.i0);
-                        glm::dvec3 b = firstOperator.GetPoint(f.i1);
-                        glm::dvec3 c = firstOperator.GetPoint(f.i2);
-                        if (bimGeometry::areaOfTriangle(a, b, c) >= SLIVER_AREA_THRESHOLD)
-                        {
-                            cleaned.AddFace(a, b, c);
-                        }
-                        else
-                        {
-                            ++numRemovedFaces;
-                        }
-                    }
-                    firstOperator = cleaned;
-                }
-
 #ifdef CSG_DEBUG_OUTPUT
                 io::DumpIfcGeometry(firstOperator, "result.obj");
 #endif
