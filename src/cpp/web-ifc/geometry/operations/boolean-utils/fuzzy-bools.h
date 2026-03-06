@@ -8,6 +8,7 @@
 #include <array>
 #include <tuple>
 #include <functional>
+#include <algorithm>
 
 namespace fuzzybools
 {
@@ -22,25 +23,35 @@ namespace fuzzybools
 	}
 
 	// ---------------------------------------------------------------
-	// Post-boolean cleanup, two phases:
+	// Post-boolean cleanup, four phases:
 	//
 	// Phase A — strip near-degenerate sliver triangles (area < 1e-9 m²)
 	//   that accumulate at intersection boundaries across multiple
-	//   boolean iterations.  These slivers create nearly-coincident
-	//   CDT constraint endpoints whose sub-tolerance gaps can cause
-	//   CDT to produce large unconstrained triangles ("fins") in
-	//   subsequent steps.
+	//   boolean iterations.
 	//
-	// Phase B — remove non-manifold open-shell connected components
-	//   whose signed volume is near zero.  After nested boolean
-	//   operations, floating-point drift can leave orphaned face
-	//   fragments that are not part of any closed solid.
+	// Phase B — detect and remove thin membrane regions.
+	//   B.1   Double-layer detection: ray-cast from each face centre
+	//         along ±normal within THIN_THRESHOLD (1 mm). Opposing
+	//         faces with anti-parallel normals → both removed.
+	//   B.2   Manifold-edge component analysis: build connectivity
+	//         using only manifold edges (count == 2).  Junction edges
+	//         (count 3+) are excluded, naturally separating the solid
+	//         body from membrane artifacts.  Signed volume is computed
+	//         relative to each component's centroid (flat open
+	//         surfaces → V ≈ 0; closed solids → V = enclosed vol).
+	//         Near-zero-volume components are marked for removal.
+	//   B.3   Erosion: faces where ≥ half of edge-neighbours are
+	//         already thin-marked are also removed.
+	//   B.4   Safety: if > 75 % of faces are thin-marked, disable.
+	//   Uses a BVH for B.1 ray queries.
 	//
-	// Uses the same spatial-hash vertex deduplication as
-	// SharedPosition::AddPoint (cell size = toleranceVectorEquality,
-	// 27-cell neighbourhood, exact distance check) so that vertices
-	// that were considered identical during the boolean operation are
-	// still merged here.
+	// Phase C — remove non-manifold open-shell connected components
+	//   whose signed volume is near zero (fallback for fragments
+	//   fully disconnected from the solid body).
+	//
+	// Vertex deduplication mirrors SharedPosition::AddPoint
+	// (cell size = toleranceVectorEquality, 27-cell neighbourhood,
+	// exact distance check).
 	// ---------------------------------------------------------------
 	inline void CleanNonManifoldShells(Geometry &result)
 	{
@@ -79,20 +90,35 @@ namespace fuzzybools
 			}
 		}
 
-		// -- Phase B: remove non-manifold zero-volume shells ------------
+		// -- Shared setup for Phases B & C --------------------------------
 		const uint32_t nFaces = result.numFaces;
 		if (nFaces < 4) return; // need >= 4 faces for any closed solid
 
-		// -- Step 1: cache face vertices --------------------------------
-		struct FV { Vec a, b, c; uint32_t pId; };
+		// -- Step 1: cache face vertices + per-face geometric info --------
+		struct FV {
+			Vec a, b, c;
+			uint32_t pId;
+			Vec center, normal;
+			double area, maxEdge;
+		};
 		std::vector<FV> fv(nFaces);
 		for (uint32_t i = 0; i < nFaces; i++)
 		{
 			Face f = result.GetFace(i);
-			fv[i] = {result.GetPoint(f.i0),
-			         result.GetPoint(f.i1),
-			         result.GetPoint(f.i2),
-			         static_cast<uint32_t>(f.pId)};
+			Vec a = result.GetPoint(f.i0);
+			Vec b = result.GetPoint(f.i1);
+			Vec c = result.GetPoint(f.i2);
+			Vec crossP = glm::cross(b - a, c - a);
+			double crossLen = glm::length(crossP);
+			double e0 = glm::length(b - a);
+			double e1 = glm::length(c - b);
+			double e2 = glm::length(a - c);
+			fv[i] = {a, b, c,
+			         static_cast<uint32_t>(f.pId),
+			         (a + b + c) / 3.0,
+			         crossLen > 1e-15 ? crossP / crossLen : Vec(0),
+			         crossLen * 0.5,
+			         std::max(e0, std::max(e1, e2))};
 		}
 
 		// -- Step 2: spatial-hash vertex deduplication -------------------
@@ -178,7 +204,7 @@ namespace fuzzybools
 				edgeFaces[ek].push_back(i);
 			}
 
-		// -- Step 4: BFS connected components ---------------------------
+		// -- Step 4: face adjacency (shared by Phase B & C) -------------
 		std::vector<std::vector<uint32_t>> faceAdj(nFaces);
 		for (auto &[ek, fl] : edgeFaces)
 			for (size_t a = 0; a < fl.size(); a++)
@@ -187,6 +213,171 @@ namespace fuzzybools
 					faceAdj[fl[a]].push_back(fl[b]);
 					faceAdj[fl[b]].push_back(fl[a]);
 				}
+
+		// ================================================================
+		// Phase B: thin membrane detection
+		// ================================================================
+
+		constexpr double THIN_THRESHOLD = 1e-3; // 1 mm
+		constexpr double VOLUME_THRESHOLD = 1e-6; // 1 mm³
+		std::vector<bool> thinMarked(nFaces, false);
+
+		// Build BVH of the result mesh (used by B.1)
+		BVH resultBVH = MakeBVH(result);
+
+		// B.1: double-layer detection — probe along ±normal for nearby
+		//      opposing faces (within THIN_THRESHOLD, anti-parallel normals).
+		for (uint32_t i = 0; i < nFaces; i++)
+		{
+			if (thinMarked[i]) continue;
+			if (glm::length(fv[i].normal) < 0.5) continue;
+
+			for (int sign = -1; sign <= 1; sign += 2)
+			{
+				if (thinMarked[i]) break;
+
+				Vec rayDir = fv[i].normal * static_cast<double>(sign);
+				Vec rayEnd = fv[i].center + rayDir * THIN_THRESHOLD;
+
+				resultBVH.IntersectRay(fv[i].center, rayDir,
+					[&](uint32_t faceIdx) -> bool
+				{
+					if (faceIdx == i) return false;
+					if (glm::dot(fv[i].normal, fv[faceIdx].normal) > -0.7)
+						return false;
+
+					Vec hitPos;
+					double t, d_plane;
+					if (intersect_ray_triangle(
+						fv[i].center, rayEnd,
+						fv[faceIdx].a, fv[faceIdx].b, fv[faceIdx].c,
+						hitPos, t, d_plane, false))
+					{
+						double dist = glm::length(hitPos - fv[i].center);
+						if (dist > 1e-6 && dist < THIN_THRESHOLD)
+						{
+							thinMarked[i] = true;
+							thinMarked[faceIdx] = true;
+							return true;
+						}
+					}
+					return false;
+				});
+			}
+		}
+
+		// B.2: manifold-edge component analysis
+		// Build connectivity using ONLY manifold edges (count == 2).
+		// Junction edges (count 3+) are excluded, so the solid body
+		// and membrane artifacts fall into separate components.
+		// Signed volume relative to each component's centroid is used
+		// to detect membranes (flat → V ≈ 0) vs solids (V >> 0).
+		{
+			std::vector<std::vector<uint32_t>> manifoldAdj(nFaces);
+			for (auto &[ek, fl] : edgeFaces)
+			{
+				if (fl.size() != 2) continue;
+				manifoldAdj[fl[0]].push_back(fl[1]);
+				manifoldAdj[fl[1]].push_back(fl[0]);
+			}
+
+			std::vector<int> mCompId(nFaces, -1);
+			int mNumComp = 0;
+			for (uint32_t i = 0; i < nFaces; i++)
+			{
+				if (mCompId[i] >= 0) continue;
+				int cid = mNumComp++;
+				std::queue<uint32_t> q;
+				q.push(i);
+				mCompId[i] = cid;
+				while (!q.empty())
+				{
+					uint32_t cur = q.front(); q.pop();
+					for (uint32_t nb : manifoldAdj[cur])
+						if (mCompId[nb] < 0)
+						{
+							mCompId[nb] = cid;
+							q.push(nb);
+						}
+				}
+			}
+
+			if (mNumComp > 1)
+			{
+				// Centroid per component (average of face centres)
+				struct MCInfo { uint32_t count = 0; Vec centroid{0}; };
+				std::vector<MCInfo> mci(mNumComp);
+				for (uint32_t i = 0; i < nFaces; i++)
+				{
+					mci[mCompId[i]].count++;
+					mci[mCompId[i]].centroid += fv[i].center;
+				}
+				for (int c = 0; c < mNumComp; c++)
+					if (mci[c].count > 0)
+						mci[c].centroid /= static_cast<double>(mci[c].count);
+
+				// Signed volume relative to centroid:
+				//   closed surface → actual enclosed volume (origin-invariant)
+				//   flat open surface → V ≈ 0 (points coplanar with centroid)
+				std::vector<double> mVol(mNumComp, 0.0);
+				for (uint32_t i = 0; i < nFaces; i++)
+				{
+					int ci = mCompId[i];
+					Vec va = fv[i].a - mci[ci].centroid;
+					Vec vb = fv[i].b - mci[ci].centroid;
+					Vec vc = fv[i].c - mci[ci].centroid;
+					mVol[ci] += glm::dot(va, glm::cross(vb, vc)) / 6.0;
+				}
+
+				for (uint32_t i = 0; i < nFaces; i++)
+					if (std::abs(mVol[mCompId[i]]) < VOLUME_THRESHOLD)
+						thinMarked[i] = true;
+			}
+		}
+
+		// B.3: iterative erosion — mark narrow bridge faces that
+		//       connect the membrane to the solid body.
+		//       A face is eroded if:
+		//         - its minimum altitude < THIN_THRESHOLD (it is narrow)
+		//         - at least half its edge-neighbours are thin-marked
+		//       Max 20 iterations.
+		for (int iter = 0; iter < 20; iter++)
+		{
+			bool changed = false;
+			for (uint32_t i = 0; i < nFaces; i++)
+			{
+				if (thinMarked[i]) continue;
+				double minH = fv[i].maxEdge > 0
+				            ? 2.0 * fv[i].area / fv[i].maxEdge : 0;
+				if (minH >= THIN_THRESHOLD) continue;
+				int thinNb = 0, totalNb = 0;
+				for (uint32_t nb : faceAdj[i])
+				{
+					totalNb++;
+					if (thinMarked[nb]) thinNb++;
+				}
+				if (totalNb > 0 && thinNb * 2 >= totalNb)
+				{
+					thinMarked[i] = true;
+					changed = true;
+				}
+			}
+			if (!changed) break;
+		}
+
+		// B.4: safety — if > 75 % of faces are thin, something went
+		//       wrong (e.g. very thin but valid geometry); disable.
+		uint32_t thinCount = 0;
+		for (uint32_t i = 0; i < nFaces; i++)
+			if (thinMarked[i]) thinCount++;
+		bool thinEnabled = (thinCount > 0 && thinCount < nFaces * 3 / 4);
+
+		// ================================================================
+		// Phase C: non-manifold zero-volume component removal
+		// ================================================================
+		// BFS connected components on ALL faces (independent of Phase B).
+		// Components that are non-manifold AND have near-zero signed
+		// volume are discarded as orphaned shell fragments.
 
 		std::vector<int> compId(nFaces, -1);
 		int numComp = 0;
@@ -209,9 +400,7 @@ namespace fuzzybools
 			}
 		}
 
-		if (numComp <= 1) return; // single component — nothing to clean
-
-		// -- Step 5: per-component manifold check + signed volume -------
+		// Per-component manifold check + signed volume
 		struct CompInfo {
 			uint32_t faceCount = 0;
 			uint32_t boundaryEdges = 0; // edges shared by != 2 faces
@@ -230,32 +419,37 @@ namespace fuzzybools
 			if (fl.size() != 2)
 				comps[compId[fl[0]]].boundaryEdges++;
 
-		// -- Step 6: discard non-manifold, near-zero-volume shells ------
-		// 1e-6 m³ = 1 mm³ — well below any real architectural feature
-		// but safely above numerical noise from flat face fragments.
-		constexpr double VOLUME_THRESHOLD = 1e-6;
-		uint32_t removedFaces = 0;
-		for (int cid = 0; cid < numComp; cid++)
+		// Identify bad components (non-manifold AND near-zero volume)
+		std::vector<bool> badComp(numComp, false);
+		uint32_t removedByComp = 0;
+		if (numComp > 1)
 		{
-			bool isManifold = (comps[cid].boundaryEdges == 0);
-			bool hasVolume  = (std::abs(comps[cid].volume) >= VOLUME_THRESHOLD);
-			if (!isManifold && !hasVolume)
-				removedFaces += comps[cid].faceCount;
+			for (int cid = 0; cid < numComp; cid++)
+			{
+				bool isManifold = (comps[cid].boundaryEdges == 0);
+				bool hasVolume  = (std::abs(comps[cid].volume) >= VOLUME_THRESHOLD);
+				if (!isManifold && !hasVolume)
+				{
+					badComp[cid] = true;
+					removedByComp += comps[cid].faceCount;
+				}
+			}
 		}
 
-		if (removedFaces == 0 || removedFaces >= nFaces) return;
+		// ================================================================
+		// Rebuild: keep faces not marked thin AND not in bad components
+		// ================================================================
+		uint32_t totalRemoved = (thinEnabled ? thinCount : 0) + removedByComp;
+		if (totalRemoved == 0 || totalRemoved >= nFaces) return;
 
-		// Rebuild geometry keeping only valid components
 		Geometry cleaned;
 		cleaned.planes = result.planes;
 		cleaned.hasPlanes = result.hasPlanes;
 		for (uint32_t i = 0; i < nFaces; i++)
 		{
-			int cid = compId[i];
-			bool isManifold = (comps[cid].boundaryEdges == 0);
-			bool hasVolume  = (std::abs(comps[cid].volume) >= VOLUME_THRESHOLD);
-			if (isManifold || hasVolume)
-				cleaned.AddFace(fv[i].a, fv[i].b, fv[i].c, fv[i].pId);
+			if (thinEnabled && thinMarked[i]) continue;
+			if (badComp[compId[i]]) continue;
+			cleaned.AddFace(fv[i].a, fv[i].b, fv[i].c, fv[i].pId);
 		}
 		cleaned.data = result.data; // preserve face-count metadata
 		result = cleaned;
