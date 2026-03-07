@@ -194,18 +194,35 @@ namespace webifc::geometry
 
         // ── Step 4: scanline tessellation ────────────────────────────────────────
         // For each U column we intersect the UV boundary polygon with the vertical
-        // line u = const to find the exact V strip to fill.  This replaces the old
-        // grid + centroid-PIP approach which produced staircase artifacts along
-        // diagonal (sheared) polygon boundaries.
+        // line u = const to find the exact V extent.
         //
-        // Vertical UV edges (constant u, e.g. axial LINE edges) are skipped in the
-        // intersection scan; their V extent is captured by the adjacent B-spline or
-        // line segments that start/end at the same u value.
+        // Cylinder is straight in the V (axial) direction, so one row of quads
+        // (vSteps=1) is geometrically exact — V subdivision cannot improve accuracy.
+        // Only U needs subdivision because the surface is curved circumferentially.
         double arcDeg = maxU - minU;
-        int uSteps = std::max(static_cast<int>(numCircleSegments * arcDeg / 360.0),
-                              static_cast<int>(numCircleSegments));
-        double uStep     = arcDeg / uSteps;
-        double colArcLen = radius * glm::radians(std::abs(uStep)); // arc length per column
+        int uSteps = std::max(static_cast<int>(numCircleSegments * arcDeg / 360.0), 4);
+        double uStep = arcDeg / uSteps;
+
+        // Collect distinct V values from boundary vertices that lie on
+        // near-vertical (axial) edges.  These are "side" points that adjacent
+        // faces may share, so the strip must pass through them to avoid T-junctions.
+        std::vector<double> sideVals;
+        for (size_t i = 0, n = uvBoundary.size(); i < n; i++)
+        {
+            size_t j = (i + 1) % n;
+            double du = std::abs(uvBoundary[j].x - uvBoundary[i].x);
+            double dv = std::abs(uvBoundary[j].y - uvBoundary[i].y);
+            // Edge is "near-vertical" if its U span is tiny relative to V span
+            if (du < 1e-6 * (dv + 1e-12))
+            {
+                sideVals.push_back(uvBoundary[i].y);
+                sideVals.push_back(uvBoundary[j].y);
+            }
+        }
+        std::sort(sideVals.begin(), sideVals.end());
+        sideVals.erase(std::unique(sideVals.begin(), sideVals.end(),
+                        [](double a, double b){ return std::abs(a - b) < 1e-9; }),
+                       sideVals.end());
 
         auto getVRangeAtU = [&](double u) -> std::pair<double,double>
         {
@@ -227,8 +244,6 @@ namespace webifc::geometry
             return {*mm.first, *mm.second};
         };
 
-        // Winding: (u0,v00)→(u0,v01)→(u1,v10) gives outward normals.
-        // Matches RevolveCylinder convention: cross(axisZ, sin*axisX+cos*axisY) = outward.
         for (int iu = 0; iu < uSteps; iu++)
         {
             double u0 = minU + iu       * uStep;
@@ -243,14 +258,37 @@ namespace webifc::geometry
             if (vA0 > vB0) { vA0 = vAm; vB0 = vBm; }
             if (vA1 > vB1) { vA1 = vAm; vB1 = vBm; }
 
-            // V subdivisions keep cells roughly square in arc-length space
-            double colHeight = std::max(vB0 - vA0, vB1 - vA1);
-            int vSteps = std::max(static_cast<int>(colHeight / std::max(colArcLen, 1e-6)), 1);
-
-            for (int iv = 0; iv < vSteps; iv++)
+            // Build V subdivision for this column: [vA..vB] plus any side
+            // vertices that fall inside the range.
+            double vLo0 = std::min(vA0, vA1), vHi0 = std::max(vB0, vB1);
+            std::vector<double> vLevels;
+            vLevels.push_back(0.0);  // t=0 (bottom)
+            for (double sv : sideVals)
             {
-                double t0 = double(iv)     / vSteps;
-                double t1 = double(iv + 1) / vSteps;
+                if (sv > vLo0 + 1e-9 && sv < vHi0 - 1e-9)
+                {
+                    // Convert to parametric t in [0,1] relative to each side
+                    // Left side:  v = vA0 + t*(vB0-vA0)  →  t = (sv-vA0)/(vB0-vA0)
+                    // Right side: v = vA1 + t*(vB1-vA1)  →  t = (sv-vA1)/(vB1-vA1)
+                    // Use average t so the row aligns across the column
+                    double rangeL = vB0 - vA0, rangeR = vB1 - vA1;
+                    double tL = (rangeL > 1e-12) ? (sv - vA0) / rangeL : 0.5;
+                    double tR = (rangeR > 1e-12) ? (sv - vA1) / rangeR : 0.5;
+                    double tAvg = (tL + tR) * 0.5;
+                    if (tAvg > 1e-6 && tAvg < 1.0 - 1e-6)
+                        vLevels.push_back(tAvg);
+                }
+            }
+            vLevels.push_back(1.0);  // t=1 (top)
+            std::sort(vLevels.begin(), vLevels.end());
+            vLevels.erase(std::unique(vLevels.begin(), vLevels.end(),
+                            [](double a, double b){ return std::abs(a - b) < 1e-9; }),
+                          vLevels.end());
+
+            for (size_t iv = 0; iv + 1 < vLevels.size(); iv++)
+            {
+                double t0 = vLevels[iv];
+                double t1 = vLevels[iv + 1];
 
                 double v00 = vA0 + t0 * (vB0 - vA0);
                 double v01 = vA0 + t1 * (vB0 - vA0);
