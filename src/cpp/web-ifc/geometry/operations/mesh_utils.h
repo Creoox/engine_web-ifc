@@ -4,7 +4,7 @@
 
 #pragma once
 
-#ifdef _DEBUG
+#if defined(DEBUG_DUMP_SVG) || defined(DUMP_CSG_MESHES)
 #include "../../test/io_helpers.h"
 #include "../../test/dumpToThree.h"
 #endif
@@ -112,44 +112,275 @@ namespace webifc::geometry
         return { *minIt, *maxIt };
     }
 
-    inline void TriangulateRevolution( IfcGeometry& geometry, const std::vector<IfcBound3D>& bounds, const IfcSurface& surface, double numRots)
+    inline void TriangulateRevolution( IfcGeometry& geometry, const std::vector<IfcBound3D>& bounds, const IfcSurface& surface, double circleSegments)
     {
         spdlog::debug("[TriangulateRevolution()]");
-        auto groups = GroupBoundsByIndex(bounds);
 
-        std::vector<glm::dvec3> centroids;
-        for (const auto& [_, pts] : groups)
+#if defined(DEBUG_DUMP_SVG) || defined(DUMP_CSG_MESHES)
+        for (size_t ii = 0; ii < bounds.size(); ++ii)
         {
-            if (pts.empty())
-                continue;
+            const auto& bound = bounds[ii];
+            if (bound.curve.points.empty()) continue;
+            std::string fileName = "faceBounds" + std::to_string(ii) + ".html";
+            webifc::dump::DumpCurveToHtml(bound.curve.points, fileName);
+        }
+#endif
 
-            glm::dvec3 sum(0.0);
-            for (const auto& p : pts)
-                sum += p;
+        // Extract revolution axis coordinate system
+        glm::dvec3 center = glm::dvec3(surface.RevolutionSurface.Direction[3]);
+        glm::dvec3 vecX = glm::normalize(glm::dvec3(surface.RevolutionSurface.Direction[0]));
+        glm::dvec3 vecY = glm::normalize(glm::dvec3(surface.RevolutionSurface.Direction[1]));
+        glm::dvec3 vecZ = glm::normalize(glm::dvec3(surface.RevolutionSurface.Direction[2]));
 
-            centroids.push_back(sum / double(pts.size()));
+        // ── Build profile in meridional (radius, height) space ───────────
+        const auto& profilePts = surface.RevolutionSurface.Profile.curve.points;
+        if (profilePts.size() < 2) return;
+
+        struct MeridPt { double r; double h; };
+        std::vector<MeridPt> merid;
+        std::vector<double> arcLen;  // cumulative arc length along profile
+        merid.reserve(profilePts.size());
+        arcLen.reserve(profilePts.size());
+
+        for (const auto& p : profilePts)
+        {
+            glm::dvec3 rel = p - center;
+            double dx = glm::dot(vecX, rel);
+            double dy = glm::dot(vecY, rel);
+            double dz = glm::dot(vecZ, rel);
+            merid.push_back({std::sqrt(dx * dx + dy * dy), dz});
+        }
+        arcLen.push_back(0.0);
+        for (size_t i = 1; i < merid.size(); i++)
+        {
+            double dr = merid[i].r - merid[i-1].r;
+            double dh = merid[i].h - merid[i-1].h;
+            arcLen.push_back(arcLen.back() + std::sqrt(dr*dr + dh*dh));
+        }
+        double totalArc = arcLen.back();
+        if (totalArc < 1e-12) return;
+
+        // Interpolate profile at arc-length s → (radius, height)
+        auto profileAt = [&](double s) -> MeridPt
+        {
+            if (s <= arcLen.front()) return merid.front();
+            if (s >= arcLen.back())  return merid.back();
+            auto it = std::lower_bound(arcLen.begin(), arcLen.end(), s);
+            size_t idx = static_cast<size_t>(std::distance(arcLen.begin(), it));
+            if (idx == 0) idx = 1;
+            double t = (s - arcLen[idx-1]) / (arcLen[idx] - arcLen[idx-1]);
+            return {
+                merid[idx-1].r + t * (merid[idx].r - merid[idx-1].r),
+                merid[idx-1].h + t * (merid[idx].h - merid[idx-1].h)
+            };
+        };
+
+        // UV → 3D: u = angle (degrees), v = arc-length along profile
+        auto uvTo3D = [&](double u, double v) -> glm::dvec3
+        {
+            auto mp = profileAt(v);
+            double uRad = glm::radians(u);
+            return center + mp.h * vecZ
+                 + std::sin(uRad) * mp.r * vecX
+                 + std::cos(uRad) * mp.r * vecY;
+        };
+
+        // ── Step 1: Project bounds into UV space as separate closed loops ────
+        //   u = revolution angle (degrees)
+        //   v = arc-length along profile in meridional plane
+        struct UVLoop { std::vector<glm::dvec2> points; };
+        std::vector<UVLoop> uvLoops;
+
+        for (const auto& bound : bounds)
+        {
+            if (bound.curve.points.size() < 3) continue;
+            std::vector<double> angles, vParams;
+            for (const auto& p : bound.curve.points)
+            {
+                glm::dvec3 rel = p - center;
+                double dx = glm::dot(vecX, rel);
+                double dy = glm::dot(vecY, rel);
+                double dz = glm::dot(vecZ, rel);
+                double dd = std::sqrt(dx * dx + dy * dy);
+
+                double u = VectorToAngle3D(dx, dy);
+                NormalizeAngle(u);
+                angles.push_back(u);
+
+                // Find closest point on profile in meridional plane
+                double bestS = 0.0;
+                double bestDistSq = 1e30;
+                for (size_t i = 0; i + 1 < merid.size(); i++)
+                {
+                    double r0 = merid[i].r, h0 = merid[i].h;
+                    double sr = merid[i+1].r - r0, sh = merid[i+1].h - h0;
+                    double segLenSq = sr*sr + sh*sh;
+                    double t = 0.0;
+                    if (segLenSq > 1e-24)
+                    {
+                        t = ((dd - r0)*sr + (dz - h0)*sh) / segLenSq;
+                        t = std::max(0.0, std::min(1.0, t));
+                    }
+                    double pr = r0 + t * sr, ph = h0 + t * sh;
+                    double distSq = (dd - pr)*(dd - pr) + (dz - ph)*(dz - ph);
+                    if (distSq < bestDistSq)
+                    {
+                        bestDistSq = distSq;
+                        bestS = arcLen[i] + t * (arcLen[i+1] - arcLen[i]);
+                    }
+                }
+                vParams.push_back(bestS);
+            }
+            UnwrapAngles(angles);
+
+            UVLoop loop;
+            for (size_t i = 0; i < angles.size(); i++)
+                loop.points.push_back({angles[i], vParams[i]});
+
+            // Remove duplicate closing vertex(es)
+            while (loop.points.size() >= 2)
+            {
+                const auto& f = loop.points.front();
+                const auto& l = loop.points.back();
+                if (std::abs(f.x - l.x) < 1e-8 && std::abs(f.y - l.y) < 1e-8)
+                    loop.points.pop_back();
+                else
+                    break;
+            }
+
+            if (loop.points.size() >= 3)
+                uvLoops.push_back(std::move(loop));
+        }
+        if (uvLoops.empty()) return;
+
+        // ── Step 2: Compute U subdivision threshold ──────────────────────────
+        // Only the circumferential (U) direction is curved on the surface.
+        double minU = 1e30, maxU = -1e30;
+        for (const auto& loop : uvLoops)
+            for (const auto& uv : loop.points)
+            {
+                minU = std::min(minU, uv.x);
+                maxU = std::max(maxU, uv.x);
+            }
+        double arcDeg = maxU - minU;
+        int uSteps = std::max(static_cast<int>(circleSegments * arcDeg / 360.0), 4);
+        double maxEdgeAngle = arcDeg / uSteps;
+
+        // Scale V so that CDT sees comparable coordinate ranges in U and V,
+        // avoiding degenerate triangulations from extreme aspect ratios.
+        double vScale = (totalArc > 1e-12 && arcDeg > 1e-9)
+            ? (arcDeg / totalArc) : 1.0;
+
+        // ── Step 3: Build CDT vertices and constrained edges ─────────────────
+        std::vector<CDT::V2d<double>> cdtVerts;
+        std::vector<CDT::Edge> cdtEdges;
+
+        for (const auto& loop : uvLoops)
+        {
+            size_t n = loop.points.size();
+            std::vector<uint32_t> loopIndices;
+
+            for (size_t i = 0; i < n; i++)
+            {
+                const auto& pi = loop.points[i];
+                const auto& pj = loop.points[(i + 1) % n];
+
+                // Add this boundary vertex (v scaled for CDT)
+                loopIndices.push_back(static_cast<uint32_t>(cdtVerts.size()));
+                cdtVerts.push_back(CDT::V2d<double>::make(pi.x, pi.y * vScale));
+
+                // Subdivide edge if circumferential span is large
+                double dU = std::abs(pj.x - pi.x);
+                int nSub = (maxEdgeAngle > 1e-9)
+                    ? static_cast<int>(std::ceil(dU / maxEdgeAngle))
+                    : 1;
+                for (int k = 1; k < nSub; k++)
+                {
+                    double t = static_cast<double>(k) / nSub;
+                    double mu = pi.x + t * (pj.x - pi.x);
+                    double mv = pi.y + t * (pj.y - pi.y);
+                    loopIndices.push_back(static_cast<uint32_t>(cdtVerts.size()));
+                    cdtVerts.push_back(CDT::V2d<double>::make(mu, mv * vScale));
+                }
+            }
+
+            // Close the loop with constrained edges
+            for (size_t i = 0; i < loopIndices.size(); i++)
+                cdtEdges.push_back(CDT::Edge(
+                    loopIndices[i],
+                    loopIndices[(i + 1) % loopIndices.size()]));
         }
 
-        if (centroids.empty())
-            return;
+        if (cdtVerts.size() < 3) return;
 
-        glm::dmat4 transform;
-        transform[3] = surface.RevolutionSurface.Direction[3];
-        transform[0] = glm::normalize(surface.RevolutionSurface.Direction[0]);
-        transform[1] = glm::normalize(surface.RevolutionSurface.Direction[1]);
-        transform[2] = glm::normalize(surface.RevolutionSurface.Direction[2]);
+        // ── Step 4: Constrained Delaunay Triangulation ───────────────────────
+        CDT::RemoveDuplicatesAndRemapEdges(cdtVerts, cdtEdges);
 
-        auto [startDeg, endDeg] = ComputeAngleInterval( centroids, glm::dvec3(transform[3]), glm::dvec3(transform[0]), glm::dvec3(transform[1]));
-        auto geom = bimGeometry::Revolution( transform, startDeg, endDeg, surface.RevolutionSurface.Profile.curve.points, numRots);
+        // Remove degenerate edges (both endpoints identical after dedup)
+        cdtEdges.erase(
+            std::remove_if(cdtEdges.begin(), cdtEdges.end(),
+                [](const CDT::Edge& e){ return e.v1() == e.v2(); }),
+            cdtEdges.end());
 
-        AppendGeometry(geometry, geom);
+        CDT::Triangulation<double> cdt(CDT::VertexInsertionOrder::AsProvided);
+        cdt.insertVertices(cdtVerts);
+        cdt.insertEdges(cdtEdges);
+        cdt.eraseSuperTriangle();
+
+        // ── Step 5: Map UV triangles to 3D (undo vScale for arc-length) ──────
+        // Use point-in-polygon on triangle centroids to keep only interior
+        // triangles (more robust than eraseOuterTrianglesAndHoles).
+        auto insideUVPoly = [&](double pu, double pv) -> bool
+        {
+            int crossings = 0;
+            for (const auto& loop : uvLoops)
+            {
+                size_t n = loop.points.size();
+                for (size_t i = 0, j = n - 1; i < n; j = i++)
+                {
+                    double yi = loop.points[i].y, yj = loop.points[j].y;
+                    if ((yi > pv) != (yj > pv))
+                    {
+                        double xCross = loop.points[j].x
+                            + (pv - yj) / (yi - yj)
+                            * (loop.points[i].x - loop.points[j].x);
+                        if (pu < xCross) crossings++;
+                    }
+                }
+            }
+            return (crossings & 1) != 0;
+        };
+
+        double vScaleInv = (std::abs(vScale) > 1e-30) ? (1.0 / vScale) : 1.0;
+        for (const auto& tri : cdt.triangles)
+        {
+            const auto& v0 = cdt.vertices[tri.vertices[0]];
+            const auto& v1 = cdt.vertices[tri.vertices[1]];
+            const auto& v2 = cdt.vertices[tri.vertices[2]];
+
+            // Centroid in original (unscaled) UV space
+            double cu = (v0.x + v1.x + v2.x) / 3.0;
+            double cv = (v0.y + v1.y + v2.y) / 3.0 * vScaleInv;
+            if (!insideUVPoly(cu, cv)) continue;
+
+            geometry.AddFace(
+                uvTo3D(v0.x, v0.y * vScaleInv),
+                uvTo3D(v1.x, v1.y * vScaleInv),
+                uvTo3D(v2.x, v2.y * vScaleInv));
+        }
+
+#ifdef _DEBUG
+        if (geometry.numFaces > 300) {
+            std::cout << "geometry.numFaces: " << geometry.numFaces;
+        }
+#endif
     }
 
     inline void TriangulateCylindricalSurface( IfcGeometry& geometry, const std::vector<IfcBound3D>& bounds, const IfcSurface& surface, double numCircleSegments)
     {
         spdlog::debug("[TriangulateCylindricalSurface()]");
 
-#ifdef _DEBUG
+#if defined(DEBUG_DUMP_SVG) || defined(DUMP_CSG_MESHES)
         for (size_t ii = 0; ii < bounds.size(); ++ii )
         {
             const auto& bound = bounds[ii];
@@ -276,17 +507,52 @@ namespace webifc::geometry
         // ── Step 4: Constrained Delaunay Triangulation ───────────────────────
         CDT::RemoveDuplicatesAndRemapEdges(cdtVerts, cdtEdges);
 
+        // Remove degenerate edges (both endpoints identical after dedup)
+        cdtEdges.erase(
+            std::remove_if(cdtEdges.begin(), cdtEdges.end(),
+                [](const CDT::Edge& e){ return e.v1() == e.v2(); }),
+            cdtEdges.end());
+
         CDT::Triangulation<double> cdt(CDT::VertexInsertionOrder::AsProvided);
         cdt.insertVertices(cdtVerts);
         cdt.insertEdges(cdtEdges);
-        cdt.eraseOuterTrianglesAndHoles();
+        cdt.eraseSuperTriangle();
 
         // ── Step 5: Map UV triangles to 3D ───────────────────────────────────
+        // Use point-in-polygon on triangle centroids to keep only interior
+        // triangles (more robust than eraseOuterTrianglesAndHoles).
+        auto insideUVPoly = [&](double pu, double pv) -> bool
+        {
+            int crossings = 0;
+            for (const auto& loop : uvLoops)
+            {
+                size_t n = loop.points.size();
+                for (size_t i = 0, j = n - 1; i < n; j = i++)
+                {
+                    double yi = loop.points[i].y, yj = loop.points[j].y;
+                    if ((yi > pv) != (yj > pv))
+                    {
+                        double xCross = loop.points[j].x
+                            + (pv - yj) / (yi - yj)
+                            * (loop.points[i].x - loop.points[j].x);
+                        if (pu < xCross) crossings++;
+                    }
+                }
+            }
+            return (crossings & 1) != 0;
+        };
+
         for (const auto& tri : cdt.triangles)
         {
             const auto& v0 = cdt.vertices[tri.vertices[0]];
             const auto& v1 = cdt.vertices[tri.vertices[1]];
             const auto& v2 = cdt.vertices[tri.vertices[2]];
+
+            // Centroid in original UV space
+            double cu = (v0.x + v1.x + v2.x) / 3.0;
+            double cv = (v0.y + v1.y + v2.y) / 3.0;
+            if (!insideUVPoly(cu, cv)) continue;
+
             geometry.AddFace(
                 uvTo3D(v0.x, v0.y),
                 uvTo3D(v1.x, v1.y),

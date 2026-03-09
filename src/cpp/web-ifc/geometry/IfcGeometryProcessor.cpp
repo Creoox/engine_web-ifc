@@ -1993,17 +1993,6 @@ namespace webifc::geometry
                 bounds3D[i] = _geometryLoader.GetBound(boundID);
             }
 
-#ifdef _DEBUG
-            for (size_t ii = 0; ii < bounds3D.size(); ++ii)
-            {
-                const auto& bound = bounds3D[ii];
-                if (bound.curve.points.empty()) continue;
-                std::vector<double> angles, heights;
-                std::string fileName = "faceBounds" + std::to_string(ii) + ".html";
-                webifc::dump::DumpCurveToHtml(bound.curve.points, fileName);
-            }
-#endif
-
             _loader.MoveToArgumentOffset(expressID, 1);
             auto surfRef = _loader.GetRefArgument();
 
