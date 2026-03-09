@@ -263,117 +263,201 @@ namespace webifc::geometry
                 maxU = std::max(maxU, uv.x);
             }
         double arcDeg = maxU - minU;
+        if (arcDeg < 1e-9) return;
         int uSteps = std::max(static_cast<int>(circleSegments * arcDeg / 360.0), 4);
-        double maxEdgeAngle = arcDeg / uSteps;
+        double uStep = arcDeg / uSteps;
 
-        // Scale V so that CDT sees comparable coordinate ranges in U and V,
-        // avoiding degenerate triangulations from extreme aspect ratios.
-        double vScale = (totalArc > 1e-12 && arcDeg > 1e-9)
-            ? (arcDeg / totalArc) : 1.0;
-
-        // ── Step 3: Build CDT vertices and constrained edges ─────────────────
-        std::vector<CDT::V2d<double>> cdtVerts;
-        std::vector<CDT::Edge> cdtEdges;
-
-        for (const auto& loop : uvLoops)
+        // === Scanline: sorted V crossings of boundary at u=const ===
+        // Intersects the vertical line u=const with all UV boundary edges.
+        // Returns sorted V values where the scanline enters/exits the face.
+        auto getVCrossings = [&](double u) -> std::vector<double>
         {
-            size_t n = loop.points.size();
-            std::vector<uint32_t> loopIndices;
-
-            for (size_t i = 0; i < n; i++)
-            {
-                const auto& pi = loop.points[i];
-                const auto& pj = loop.points[(i + 1) % n];
-
-                // Add this boundary vertex (v scaled for CDT)
-                loopIndices.push_back(static_cast<uint32_t>(cdtVerts.size()));
-                cdtVerts.push_back(CDT::V2d<double>::make(pi.x, pi.y * vScale));
-
-                // Subdivide edge if circumferential span is large
-                double dU = std::abs(pj.x - pi.x);
-                int nSub = (maxEdgeAngle > 1e-9)
-                    ? static_cast<int>(std::ceil(dU / maxEdgeAngle))
-                    : 1;
-                for (int k = 1; k < nSub; k++)
-                {
-                    double t = static_cast<double>(k) / nSub;
-                    double mu = pi.x + t * (pj.x - pi.x);
-                    double mv = pi.y + t * (pj.y - pi.y);
-                    loopIndices.push_back(static_cast<uint32_t>(cdtVerts.size()));
-                    cdtVerts.push_back(CDT::V2d<double>::make(mu, mv * vScale));
-                }
-            }
-
-            // Close the loop with constrained edges
-            for (size_t i = 0; i < loopIndices.size(); i++)
-                cdtEdges.push_back(CDT::Edge(
-                    loopIndices[i],
-                    loopIndices[(i + 1) % loopIndices.size()]));
-        }
-
-        if (cdtVerts.size() < 3) return;
-
-        // ── Step 4: Constrained Delaunay Triangulation ───────────────────────
-        CDT::RemoveDuplicatesAndRemapEdges(cdtVerts, cdtEdges);
-
-        // Remove degenerate edges (both endpoints identical after dedup)
-        cdtEdges.erase(
-            std::remove_if(cdtEdges.begin(), cdtEdges.end(),
-                [](const CDT::Edge& e){ return e.v1() == e.v2(); }),
-            cdtEdges.end());
-
-        CDT::Triangulation<double> cdt(CDT::VertexInsertionOrder::AsProvided);
-        cdt.insertVertices(cdtVerts);
-        cdt.insertEdges(cdtEdges);
-        cdt.eraseSuperTriangle();
-
-        // ── Step 5: Map UV triangles to 3D (undo vScale for arc-length) ──────
-        // Use point-in-polygon on triangle centroids to keep only interior
-        // triangles (more robust than eraseOuterTrianglesAndHoles).
-        auto insideUVPoly = [&](double pu, double pv) -> bool
-        {
-            int crossings = 0;
+            std::vector<double> crossings;
             for (const auto& loop : uvLoops)
             {
                 size_t n = loop.points.size();
                 for (size_t i = 0, j = n - 1; i < n; j = i++)
                 {
-                    double yi = loop.points[i].y, yj = loop.points[j].y;
-                    if ((yi > pv) != (yj > pv))
-                    {
-                        double xCross = loop.points[j].x
-                            + (pv - yj) / (yi - yj)
-                            * (loop.points[i].x - loop.points[j].x);
-                        if (pu < xCross) crossings++;
-                    }
+                    double ui = loop.points[i].x, uj = loop.points[j].x;
+                    if (std::abs(ui - uj) < 1e-12) continue;
+                    if ((ui > u) == (uj > u)) continue;
+                    double t = (u - uj) / (ui - uj);
+                    if (t < -1e-9 || t > 1.0 + 1e-9) continue;
+                    double vi = loop.points[i].y, vj = loop.points[j].y;
+                    crossings.push_back(vj + t * (vi - vj));
                 }
             }
-            return (crossings & 1) != 0;
+            std::sort(crossings.begin(), crossings.end());
+            return crossings;
         };
 
-        double vScaleInv = (std::abs(vScale) > 1e-30) ? (1.0 / vScale) : 1.0;
-        for (const auto& tri : cdt.triangles)
+        // === Build per-column V levels ===
+        // At each angular column, scanline-intersect the UV boundary to find
+        // which V intervals are inside the face, then add profile arc-length
+        // positions within each interval for curvature subdivision.
+        struct Strip { std::vector<double> vLevels; };
+        struct Column { double u; std::vector<Strip> strips; };
+
+        double epsU = 1e-8 * std::max(uStep, 1e-6);
+        std::vector<Column> columns(uSteps + 1);
+
+        for (int k = 0; k <= uSteps; k++)
         {
-            const auto& v0 = cdt.vertices[tri.vertices[0]];
-            const auto& v1 = cdt.vertices[tri.vertices[1]];
-            const auto& v2 = cdt.vertices[tri.vertices[2]];
+            double u = minU + k * uStep;
+            columns[k].u = u;
 
-            // Centroid in original (unscaled) UV space
-            double cu = (v0.x + v1.x + v2.x) / 3.0;
-            double cv = (v0.y + v1.y + v2.y) / 3.0 * vScaleInv;
-            if (!insideUVPoly(cu, cv)) continue;
+            // At boundary columns (first/last), the scanline can produce
+            // degenerate zero-height intervals when profile edges are diagonal
+            // in UV space (both U and V change).  At u = minU the diagonal
+            // edge's crossing sits at the shared vertex V, same as the arc
+            // crossing → collapsed interval.  Fix: collect V values from
+            // boundary polygon vertices near the column angle to recover the
+            // full cross-section range.
+            if (k == 0 || k == uSteps)
+            {
+                double uTol = uStep * 0.3;
+                std::vector<double> allVs;
 
-            geometry.AddFace(
-                uvTo3D(v0.x, v0.y * vScaleInv),
-                uvTo3D(v1.x, v1.y * vScaleInv),
-                uvTo3D(v2.x, v2.y * vScaleInv));
+                // Boundary vertex V values near this angle
+                for (const auto& loop : uvLoops)
+                    for (const auto& pt : loop.points)
+                        if (std::abs(pt.x - u) < uTol)
+                            allVs.push_back(pt.y);
+
+                // Also include scanline crossings (with slight inset)
+                double uScan = (k == 0) ? u + epsU : u - epsU;
+                auto cross = getVCrossings(uScan);
+                for (const auto& c : cross)
+                    allVs.push_back(c);
+
+                if (!allVs.empty())
+                {
+                    std::sort(allVs.begin(), allVs.end());
+                    allVs.erase(std::unique(allVs.begin(), allVs.end(),
+                        [](double a, double b){ return std::abs(a - b) < 1e-10; }),
+                        allVs.end());
+
+                    double vMin = allVs.front(), vMax = allVs.back();
+                    if (vMax - vMin > 1e-10)
+                    {
+                        Strip strip;
+                        // Include all boundary vertex V values + profile arc-lengths
+                        for (const auto& v : allVs)
+                            strip.vLevels.push_back(v);
+                        for (const auto& s : arcLen)
+                            if (s > vMin + 1e-10 && s < vMax - 1e-10)
+                                strip.vLevels.push_back(s);
+                        std::sort(strip.vLevels.begin(), strip.vLevels.end());
+                        strip.vLevels.erase(std::unique(
+                            strip.vLevels.begin(), strip.vLevels.end(),
+                            [](double a, double b){ return std::abs(a - b) < 1e-10; }),
+                            strip.vLevels.end());
+                        columns[k].strips.push_back(std::move(strip));
+                        continue;
+                    }
+                }
+                // Fall through to standard scanline if extraction failed
+            }
+
+            // Interior columns (and fallback): standard scanline crossings
+            double uScan = u;
+            if (k == 0)      uScan += epsU;
+            if (k == uSteps) uScan -= epsU;
+
+            auto cross = getVCrossings(uScan);
+
+            // Each consecutive crossing pair is an inside interval
+            for (size_t ci = 0; ci + 1 < cross.size(); ci += 2)
+            {
+                double vLo = cross[ci], vHi = cross[ci + 1];
+                if (vHi - vLo < 1e-12) continue;
+
+                Strip strip;
+                strip.vLevels.push_back(vLo);
+                for (const auto& s : arcLen)
+                {
+                    if (s > vLo + 1e-10 && s < vHi - 1e-10)
+                        strip.vLevels.push_back(s);
+                }
+                strip.vLevels.push_back(vHi);
+                // Already sorted: arcLen is monotonic, vLo < inserted values < vHi
+                columns[k].strips.push_back(std::move(strip));
+            }
         }
 
-#ifdef _DEBUG
-        if (geometry.numFaces > 300) {
-            std::cout << "geometry.numFaces: " << geometry.numFaces;
+        // === Stitch adjacent columns with monotone-chain triangulation ===
+        // For each pair of adjacent angular columns, match overlapping V-strips
+        // and create a triangle strip that follows the surface curvature.
+        // This produces quads (split into 2 triangles) aligned with the natural
+        // (angle, profile) parameterization — no chord-through-interior issues.
+        for (int k = 0; k < uSteps; k++)
+        {
+            const auto& colL = columns[k];
+            const auto& colR = columns[k + 1];
+            double uL = colL.u, uR = colR.u;
+
+            // Match strips by V-range overlap (handles holes, non-convex shapes)
+            size_t li = 0, ri = 0;
+            while (li < colL.strips.size() && ri < colR.strips.size())
+            {
+                const auto& sL = colL.strips[li];
+                const auto& sR = colR.strips[ri];
+                double lLo = sL.vLevels.front(), lHi = sL.vLevels.back();
+                double rLo = sR.vLevels.front(), rHi = sR.vLevels.back();
+
+                // No overlap: advance the strip with lower V range
+                if (lHi < rLo - 1e-9) { li++; continue; }
+                if (rHi < lLo - 1e-9) { ri++; continue; }
+
+                // Stitch two sorted V-level polylines into a triangle strip.
+                // Two-pointer walk: always advance the side whose next V level
+                // is lower, creating one triangle per step.
+                const auto& vL = sL.vLevels;
+                const auto& vR = sR.vLevels;
+                size_t i = 0, j = 0;
+                size_t iEnd = vL.size() - 1;
+                size_t jEnd = vR.size() - 1;
+
+                while (i < iEnd || j < jEnd)
+                {
+                    if (i >= iEnd)
+                    {
+                        geometry.AddFace(
+                            uvTo3D(uL, vL[i]),
+                            uvTo3D(uR, vR[j + 1]),
+                            uvTo3D(uR, vR[j]));
+                        j++;
+                    }
+                    else if (j >= jEnd)
+                    {
+                        geometry.AddFace(
+                            uvTo3D(uL, vL[i]),
+                            uvTo3D(uL, vL[i + 1]),
+                            uvTo3D(uR, vR[j]));
+                        i++;
+                    }
+                    else if (vL[i + 1] <= vR[j + 1])
+                    {
+                        geometry.AddFace(
+                            uvTo3D(uL, vL[i]),
+                            uvTo3D(uL, vL[i + 1]),
+                            uvTo3D(uR, vR[j]));
+                        i++;
+                    }
+                    else
+                    {
+                        geometry.AddFace(
+                            uvTo3D(uL, vL[i]),
+                            uvTo3D(uR, vR[j + 1]),
+                            uvTo3D(uR, vR[j]));
+                        j++;
+                    }
+                }
+
+                if (lHi <= rHi) li++;
+                else ri++;
+            }
         }
-#endif
     }
 
     inline void TriangulateCylindricalSurface( IfcGeometry& geometry, const std::vector<IfcBound3D>& bounds, const IfcSurface& surface, double numCircleSegments)
@@ -500,6 +584,41 @@ namespace webifc::geometry
                 cdtEdges.push_back(CDT::Edge(
                     loopIndices[i],
                     loopIndices[(i + 1) % loopIndices.size()]));
+        }
+
+        // ── Step 3b: Add internal angular grid lines as constrained edges ────
+        // Prevents triangles spanning multiple angular steps (long 3D chords).
+        double uStep = arcDeg / uSteps;
+        for (int iu = 1; iu < uSteps; iu++)
+        {
+            double u = minU + iu * uStep;
+
+            std::vector<double> crossings;
+            for (const auto& loop : uvLoops)
+            {
+                size_t n = loop.points.size();
+                for (size_t i = 0, j = n - 1; i < n; j = i++)
+                {
+                    double ui = loop.points[i].x, uj = loop.points[j].x;
+                    if (std::abs(ui - uj) < 1e-9) continue;
+                    if ((ui > u) == (uj > u))      continue;
+                    double t = (u - uj) / (ui - uj);
+                    if (t < -1e-9 || t > 1.0 + 1e-9) continue;
+                    double vi = loop.points[i].y, vj = loop.points[j].y;
+                    crossings.push_back(vj + t * (vi - vj));
+                }
+            }
+            if (crossings.size() < 2) continue;
+            std::sort(crossings.begin(), crossings.end());
+
+            for (size_t c = 0; c + 1 < crossings.size(); c += 2)
+            {
+                uint32_t idx0 = static_cast<uint32_t>(cdtVerts.size());
+                cdtVerts.push_back(CDT::V2d<double>::make(u, crossings[c]));
+                uint32_t idx1 = static_cast<uint32_t>(cdtVerts.size());
+                cdtVerts.push_back(CDT::V2d<double>::make(u, crossings[c + 1]));
+                cdtEdges.push_back(CDT::Edge(idx0, idx1));
+            }
         }
 
         if (cdtVerts.size() < 3) return;
