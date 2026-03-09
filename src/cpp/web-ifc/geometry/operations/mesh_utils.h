@@ -4,12 +4,18 @@
 
 #pragma once
 
+#ifdef _DEBUG
+#include "../../test/io_helpers.h"
+#include "../../test/dumpToThree.h"
+#endif
+
 #include "../nurbs.h"
 #include <vector>
 #include <unordered_map>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <CDT.h>
 #include <tinynurbs/tinynurbs.h>
 #include <spdlog/spdlog.h>
 #include "geometryutils.h"
@@ -143,47 +149,24 @@ namespace webifc::geometry
     {
         spdlog::debug("[TriangulateCylindricalSurface()]");
 
+#ifdef _DEBUG
+        for (size_t ii = 0; ii < bounds.size(); ++ii )
+        {
+            const auto& bound = bounds[ii];
+            if (bound.curve.points.empty()) continue;
+            std::vector<double> angles, heights;
+            std::string fileName = "faceBounds" + std::to_string(ii) + ".html";
+            webifc::dump::DumpCurveToHtml(bound.curve.points, fileName);
+        }
+#endif
+
         glm::dvec3 origin = surface.transformation[3];
         glm::dvec3 axisX = glm::normalize(surface.transformation[0]);
         glm::dvec3 axisY = glm::normalize(surface.transformation[1]);
         glm::dvec3 axisZ = glm::normalize(surface.transformation[2]);
         double radius = surface.CylinderSurface.Radius;
 
-        // ── Step 1: project boundary into cylinder UV space ──────────────────────
-        //   u = circumferential angle (degrees, same convention as RevolveCylinder)
-        //   v = axial distance along axisZ
-        std::vector<glm::dvec2> uvBoundary;
-        for (const auto& bound : bounds)
-        {
-            if (bound.curve.points.empty()) continue;
-            std::vector<double> angles, heights;
-            for (const auto& p : bound.curve.points)
-            {
-                glm::dvec3 rel = p - origin;
-                double dx = glm::dot(axisX, rel);
-                double dy = glm::dot(axisY, rel);
-                double dz = glm::dot(axisZ, rel);
-                double u = VectorToAngle3D(dx, dy);
-                NormalizeAngle(u);
-                angles.push_back(u);
-                heights.push_back(dz);
-            }
-            UnwrapAngles(angles);
-            for (size_t i = 0; i < angles.size(); i++)
-                uvBoundary.push_back({angles[i], heights[i]});
-        }
-        if (uvBoundary.size() < 3) return;
-
-        // ── Step 2: UV bounding box ───────────────────────────────────────────────
-        double minU = uvBoundary[0].x, maxU = uvBoundary[0].x;
-        double minV = uvBoundary[0].y, maxV = uvBoundary[0].y;
-        for (const auto& uv : uvBoundary)
-        {
-            minU = std::min(minU, uv.x);  maxU = std::max(maxU, uv.x);
-            minV = std::min(minV, uv.y);  maxV = std::max(maxV, uv.y);
-        }
-
-        // ── Step 3: UV → 3D (matches RevolveCylinder: sin(u)*axisX + cos(u)*axisY) ──
+        // UV → 3D (matches RevolveCylinder: sin(u)*axisX + cos(u)*axisY)
         auto uvTo3D = [&](double u, double v) -> glm::dvec3
         {
             double uRad = glm::radians(u);
@@ -192,112 +175,122 @@ namespace webifc::geometry
                  + std::cos(uRad) * radius * axisY;
         };
 
-        // ── Step 4: scanline tessellation ────────────────────────────────────────
-        // For each U column we intersect the UV boundary polygon with the vertical
-        // line u = const to find the exact V extent.
-        //
-        // Cylinder is straight in the V (axial) direction, so one row of quads
-        // (vSteps=1) is geometrically exact — V subdivision cannot improve accuracy.
-        // Only U needs subdivision because the surface is curved circumferentially.
+        // ── Step 1: Project bounds into UV space as separate closed loops ────
+        //   u = circumferential angle (degrees)
+        //   v = axial distance along axisZ
+        struct UVLoop { std::vector<glm::dvec2> points; };
+        std::vector<UVLoop> uvLoops;
+
+        for (const auto& bound : bounds)
+        {
+            if (bound.curve.points.size() < 3) continue;
+            std::vector<double> angles, heights;
+            for (const auto& p : bound.curve.points)
+            {
+                glm::dvec3 rel = p - origin;
+                double u = VectorToAngle3D(glm::dot(axisX, rel), glm::dot(axisY, rel));
+                NormalizeAngle(u);
+                angles.push_back(u);
+                heights.push_back(glm::dot(axisZ, rel));
+            }
+            UnwrapAngles(angles);
+
+            UVLoop loop;
+            for (size_t i = 0; i < angles.size(); i++)
+                loop.points.push_back({angles[i], heights[i]});
+
+            // Remove duplicate closing vertex(es)
+            while (loop.points.size() >= 2)
+            {
+                const auto& f = loop.points.front();
+                const auto& l = loop.points.back();
+                if (std::abs(f.x - l.x) < 1e-8 && std::abs(f.y - l.y) < 1e-8)
+                    loop.points.pop_back();
+                else
+                    break;
+            }
+
+            if (loop.points.size() >= 3)
+                uvLoops.push_back(std::move(loop));
+        }
+        if (uvLoops.empty()) return;
+
+        // ── Step 2: Compute U subdivision threshold ──────────────────────────
+        // Only the circumferential (U) direction is curved; axial (V) is straight.
+        // Edges with large U span need subdivision to approximate the curvature.
+        double minU = 1e30, maxU = -1e30;
+        for (const auto& loop : uvLoops)
+            for (const auto& uv : loop.points)
+            {
+                minU = std::min(minU, uv.x);
+                maxU = std::max(maxU, uv.x);
+            }
         double arcDeg = maxU - minU;
         int uSteps = std::max(static_cast<int>(numCircleSegments * arcDeg / 360.0), 4);
-        double uStep = arcDeg / uSteps;
+        double maxEdgeAngle = arcDeg / uSteps;
 
-        // Collect distinct V values from boundary vertices that lie on
-        // near-vertical (axial) edges.  These are "side" points that adjacent
-        // faces may share, so the strip must pass through them to avoid T-junctions.
-        std::vector<double> sideVals;
-        for (size_t i = 0, n = uvBoundary.size(); i < n; i++)
+        // ── Step 3: Build CDT vertices and constrained edges ─────────────────
+        // Each bound becomes a closed loop of constrained edges.  Edges with
+        // large U span are subdivided to keep the chord error small.
+        std::vector<CDT::V2d<double>> cdtVerts;
+        std::vector<CDT::Edge> cdtEdges;
+
+        for (const auto& loop : uvLoops)
         {
-            size_t j = (i + 1) % n;
-            double du = std::abs(uvBoundary[j].x - uvBoundary[i].x);
-            double dv = std::abs(uvBoundary[j].y - uvBoundary[i].y);
-            // Edge is "near-vertical" if its U span is tiny relative to V span
-            if (du < 1e-6 * (dv + 1e-12))
+            size_t n = loop.points.size();
+            std::vector<uint32_t> loopIndices;
+
+            for (size_t i = 0; i < n; i++)
             {
-                sideVals.push_back(uvBoundary[i].y);
-                sideVals.push_back(uvBoundary[j].y);
-            }
-        }
-        std::sort(sideVals.begin(), sideVals.end());
-        sideVals.erase(std::unique(sideVals.begin(), sideVals.end(),
-                        [](double a, double b){ return std::abs(a - b) < 1e-9; }),
-                       sideVals.end());
+                const auto& pi = loop.points[i];
+                const auto& pj = loop.points[(i + 1) % n];
 
-        auto getVRangeAtU = [&](double u) -> std::pair<double,double>
-        {
-            std::vector<double> crossings;
-            crossings.reserve(4);
-            const size_t n = uvBoundary.size();
-            for (size_t i = 0, j = n - 1; i < n; j = i++)
-            {
-                double ui = uvBoundary[i].x, uj = uvBoundary[j].x;
-                double vi = uvBoundary[i].y, vj = uvBoundary[j].y;
-                if (std::abs(ui - uj) < 1e-9) continue;       // skip vertical edges
-                if ((ui > u) == (uj > u))      continue;       // edge does not straddle u
-                double t = (u - uj) / (ui - uj);
-                if (t < -1e-9 || t > 1.0 + 1e-9) continue;
-                crossings.push_back(vj + t * (vi - vj));
-            }
-            if (crossings.size() < 2) return {0.0, -1.0};     // outside polygon
-            auto mm = std::minmax_element(crossings.begin(), crossings.end());
-            return {*mm.first, *mm.second};
-        };
+                // Add this boundary vertex
+                loopIndices.push_back(static_cast<uint32_t>(cdtVerts.size()));
+                cdtVerts.push_back(CDT::V2d<double>::make(pi.x, pi.y));
 
-        for (int iu = 0; iu < uSteps; iu++)
-        {
-            double u0 = minU + iu       * uStep;
-            double u1 = minU + (iu + 1) * uStep;
-
-            auto [vA0, vB0] = getVRangeAtU(u0);
-            auto [vA1, vB1] = getVRangeAtU(u1);
-            auto [vAm, vBm] = getVRangeAtU((u0 + u1) * 0.5);
-
-            if (vAm > vBm) continue;                           // column outside polygon
-            // Fallback for u0/u1 that sit exactly on a vertical boundary edge
-            if (vA0 > vB0) { vA0 = vAm; vB0 = vBm; }
-            if (vA1 > vB1) { vA1 = vAm; vB1 = vBm; }
-
-            // Build V subdivision for this column: [vA..vB] plus any side
-            // vertices that fall inside the range.
-            double vLo0 = std::min(vA0, vA1), vHi0 = std::max(vB0, vB1);
-            std::vector<double> vLevels;
-            vLevels.push_back(0.0);  // t=0 (bottom)
-            for (double sv : sideVals)
-            {
-                if (sv > vLo0 + 1e-9 && sv < vHi0 - 1e-9)
+                // Subdivide edge if circumferential span is large
+                double dU = std::abs(pj.x - pi.x);
+                int nSub = (maxEdgeAngle > 1e-9)
+                    ? static_cast<int>(std::ceil(dU / maxEdgeAngle))
+                    : 1;
+                for (int k = 1; k < nSub; k++)
                 {
-                    // Convert to parametric t in [0,1] relative to each side
-                    // Left side:  v = vA0 + t*(vB0-vA0)  →  t = (sv-vA0)/(vB0-vA0)
-                    // Right side: v = vA1 + t*(vB1-vA1)  →  t = (sv-vA1)/(vB1-vA1)
-                    // Use average t so the row aligns across the column
-                    double rangeL = vB0 - vA0, rangeR = vB1 - vA1;
-                    double tL = (rangeL > 1e-12) ? (sv - vA0) / rangeL : 0.5;
-                    double tR = (rangeR > 1e-12) ? (sv - vA1) / rangeR : 0.5;
-                    double tAvg = (tL + tR) * 0.5;
-                    if (tAvg > 1e-6 && tAvg < 1.0 - 1e-6)
-                        vLevels.push_back(tAvg);
+                    double t = static_cast<double>(k) / nSub;
+                    loopIndices.push_back(static_cast<uint32_t>(cdtVerts.size()));
+                    cdtVerts.push_back(CDT::V2d<double>::make(
+                        pi.x + t * (pj.x - pi.x),
+                        pi.y + t * (pj.y - pi.y)));
                 }
             }
-            vLevels.push_back(1.0);  // t=1 (top)
-            std::sort(vLevels.begin(), vLevels.end());
-            vLevels.erase(std::unique(vLevels.begin(), vLevels.end(),
-                            [](double a, double b){ return std::abs(a - b) < 1e-9; }),
-                          vLevels.end());
 
-            for (size_t iv = 0; iv + 1 < vLevels.size(); iv++)
-            {
-                double t0 = vLevels[iv];
-                double t1 = vLevels[iv + 1];
+            // Close the loop with constrained edges
+            for (size_t i = 0; i < loopIndices.size(); i++)
+                cdtEdges.push_back(CDT::Edge(
+                    loopIndices[i],
+                    loopIndices[(i + 1) % loopIndices.size()]));
+        }
 
-                double v00 = vA0 + t0 * (vB0 - vA0);
-                double v01 = vA0 + t1 * (vB0 - vA0);
-                double v10 = vA1 + t0 * (vB1 - vA1);
-                double v11 = vA1 + t1 * (vB1 - vA1);
+        if (cdtVerts.size() < 3) return;
 
-                geometry.AddFace(uvTo3D(u0, v00), uvTo3D(u0, v01), uvTo3D(u1, v10));
-                geometry.AddFace(uvTo3D(u1, v10), uvTo3D(u0, v01), uvTo3D(u1, v11));
-            }
+        // ── Step 4: Constrained Delaunay Triangulation ───────────────────────
+        CDT::RemoveDuplicatesAndRemapEdges(cdtVerts, cdtEdges);
+
+        CDT::Triangulation<double> cdt(CDT::VertexInsertionOrder::AsProvided);
+        cdt.insertVertices(cdtVerts);
+        cdt.insertEdges(cdtEdges);
+        cdt.eraseOuterTrianglesAndHoles();
+
+        // ── Step 5: Map UV triangles to 3D ───────────────────────────────────
+        for (const auto& tri : cdt.triangles)
+        {
+            const auto& v0 = cdt.vertices[tri.vertices[0]];
+            const auto& v1 = cdt.vertices[tri.vertices[1]];
+            const auto& v2 = cdt.vertices[tri.vertices[2]];
+            geometry.AddFace(
+                uvTo3D(v0.x, v0.y),
+                uvTo3D(v1.x, v1.y),
+                uvTo3D(v2.x, v2.y));
         }
     }
 
