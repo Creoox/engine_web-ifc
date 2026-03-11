@@ -814,6 +814,9 @@ namespace fuzzybools
             // Insert into spatial grid (same cell as the point itself)
             pointGrid[getKey(newPoint)].push_back(p.id);
 
+            // Insert into spatial grid (same cell as the point itself)
+            pointGrid[getKey(newPoint)].push_back(p.id);
+
             return p.id;
         }
 
