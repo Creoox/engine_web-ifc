@@ -507,7 +507,7 @@ namespace webifc::geometry
       if (_cache.GetRelAggregates().count(expressID) == 1)
       {
         auto &relAgg = _cache.GetRelAggregates().at(expressID);
-        for (auto expressID : relAgg)
+        for (auto childID : relAgg)
         {
           alignment = GetAlignment(childID, alignment, transform * transform_t, childID);
         }
@@ -516,7 +516,7 @@ namespace webifc::geometry
       if (_cache.GetRelNests().count(expressID) == 1)
       {
         auto &relNest = _cache.GetRelNests().at(expressID);
-        for (auto expressID : relNest)
+        for (auto childID : relNest)
         {
           alignment = GetAlignment(childID, alignment, transform * transform_t, childID);
         }
@@ -543,7 +543,7 @@ namespace webifc::geometry
       if (_cache.GetRelAggregates().count(expressID) == 1)
       {
         auto &relAgg = _cache.GetRelAggregates().at(expressID);
-        for (auto expressID : relAgg)
+        for (auto childID : relAgg)
         {
           alignment.Horizontal.curves.push_back(GetAlignmentCurve(childID, sourceExpressID));
         }
@@ -561,7 +561,7 @@ namespace webifc::geometry
       if (_cache.GetRelNests().count(expressID) == 1)
       {
         auto &relNest = _cache.GetRelNests().at(expressID);
-        for (auto expressID : relNest)
+        for (auto childID : relNest)
         {
           alignment.Horizontal.curves.push_back(GetAlignmentCurve(childID, sourceExpressID));
         }
@@ -597,7 +597,7 @@ namespace webifc::geometry
       if (_cache.GetRelAggregates().count(expressID) == 1)
       {
         auto &relAgg = _cache.GetRelAggregates().at(expressID);
-        for (auto expressID : relAgg)
+        for (auto childID : relAgg)
         {
           alignment.Vertical.curves.push_back(GetAlignmentCurve(childID, sourceExpressID));
         }
@@ -615,7 +615,7 @@ namespace webifc::geometry
       if (_cache.GetRelNests().count(expressID) == 1)
       {
         auto &relNest = _cache.GetRelNests().at(expressID);
-        for (auto expressID : relNest)
+        for (auto childID : relNest)
         {
           alignment.Vertical.curves.push_back(GetAlignmentCurve(childID, sourceExpressID));
         }
