@@ -60,6 +60,7 @@ namespace webifc::geometry
     void getPlacementsOnCurvePoints(uint32_t curveID, std::map<double, glm::dmat4>& mapPlacements) const;
     IfcAlignment GetAlignment(uint32_t expressID, IfcAlignment alignment = IfcAlignment(), glm::dmat4 transform = glm::dmat4(1), uint32_t sourceExpressID = -1) const;
     bool GetColor(const uint32_t expressID, const glm::dvec4 &outputColor) const;
+    webifc::cache::IfcCache& GetCache() { return _cache; }
 
   private:
     IfcCurve GetAlignmentCurve(uint32_t expressID, uint32_t parentExpressID = -1) const;

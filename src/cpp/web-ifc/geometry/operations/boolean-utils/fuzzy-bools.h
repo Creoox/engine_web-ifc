@@ -124,7 +124,7 @@ namespace fuzzybools
 		// -- Step 2: spatial-hash vertex deduplication -------------------
 		// Mirror SharedPosition::AddPoint: grid cell = floor(coord/cellSize),
 		// 27-cell neighbourhood search, exact Euclidean distance check.
-		const double cellSize = toleranceVectorEquality;          // 1e-4
+		const double cellSize = toleranceVectorEquality*1.5;          // 1e-4
 		const double cellSizeSq = cellSize * cellSize;
 
 		using GridKey = std::tuple<int64_t, int64_t, int64_t>;
