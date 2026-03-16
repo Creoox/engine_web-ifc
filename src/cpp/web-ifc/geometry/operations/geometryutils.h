@@ -781,12 +781,9 @@ namespace webifc::geometry
 			auto meshGeom = geomIt->second;
 			if (meshGeom.numFaces > 0)
 			{
-				for (uint32_t i = 0; i < meshGeom.numFaces; i++)
-				{
-					bimGeometry::Face f = meshGeom.GetFace(i);
-					glm::dvec3 a = newMat * glm::dvec4(meshGeom.GetPoint(f.i0), 1);
-					return a;
-				}
+				bimGeometry::Face f = meshGeom.GetFace(0);
+				glm::dvec3 a = newMat * glm::dvec4(meshGeom.GetPoint(f.i0), 1);
+				return a;
 			}
 		}
 

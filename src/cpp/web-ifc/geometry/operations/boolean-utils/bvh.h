@@ -91,7 +91,7 @@ namespace fuzzybools
         template <typename T>
         bool IntersectRay(const glm::dvec3& origin, const glm::dvec3& dir, T callback)
         {
-            static std::vector<uint32_t> stack;
+            static std::vector<uint32_t> stack;  // when used in threads: change static -> thread_local
             stack.clear();
 
             if (nodes.empty())
