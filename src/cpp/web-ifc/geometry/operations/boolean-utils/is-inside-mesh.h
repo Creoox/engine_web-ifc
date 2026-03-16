@@ -51,8 +51,6 @@ namespace fuzzybools
         result.loc = MeshLocation::BOUNDARY;
         result.normal = glm::dvec3(0);
 
-        double dirLength = dir.length();
-
         bool hasResult = bvh.IntersectRay(pt, dir, [&](uint32_t i) -> bool
                                           {
                 Face f = g.GetFace(i);
