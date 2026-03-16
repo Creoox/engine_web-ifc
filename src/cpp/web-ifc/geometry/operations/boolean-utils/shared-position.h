@@ -24,7 +24,6 @@
 #include "is-inside-mesh.h"
 #include "is-inside-boundary.h"
 
-#define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/norm.hpp>
 
 using Vec2 = glm::dvec2;

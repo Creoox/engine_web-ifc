@@ -38,7 +38,7 @@ namespace webifc::dump
     <script>
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0xcccccc);
-        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.01, 100000);
         camera.position.set(50, 50, 50);
         camera.lookAt(0, 0, 0);
         camera.up.set(0, 0, 1); // Set Z as up direction
@@ -49,8 +49,8 @@ namespace webifc::dump
         controls.enableDamping = true;
         controls.dampingFactor = 0.05;
         controls.screenSpacePanning = true;
-        controls.minDistance = 1;
-        controls.maxDistance = 500;
+        controls.minDistance = 0.01;
+        controls.maxDistance = 100000;
         controls.mouseButtons = {
             LEFT: THREE.MOUSE.ROTATE,
             MIDDLE: THREE.MOUSE.PAN,
@@ -58,7 +58,6 @@ namespace webifc::dump
         };
         controls.enablePan = true;
         controls.panSpeed = 0.5;
-        controls.up = new THREE.Vector3(0, 0, 1);
 
         // Lighting setup
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.4); // Soft ambient light
@@ -69,6 +68,9 @@ namespace webifc::dump
         const directionalLight2 = new THREE.DirectionalLight(0xffffff, 0.4); // Secondary light to reduce shadows
         directionalLight2.position.set(-1, -1, 1).normalize();
         scene.add(directionalLight2);
+        const directionalLight3 = new THREE.DirectionalLight(0xffffff, 0.4); // Light from below
+        directionalLight3.position.set(0, 0, -1);
+        scene.add(directionalLight3);
 
         const objData = "{}";
         const meshMaterial = new THREE.MeshStandardMaterial({ 
@@ -189,16 +191,18 @@ opacity: 0.7
         const aspect = window.innerWidth / window.innerHeight;
         const fov = camera.fov * (Math.PI / 180);
         const fovHorizontal = 2 * Math.atan(Math.tan(fov / 2) * aspect);
-        const maxDimHorizontal = Math.max(size.x, size.y);
         let cameraDistance = Math.max(
-            maxDim / Math.tan(fov / 2),
-            maxDimHorizontal / Math.tan(fovHorizontal / 2)
+            (maxDim / 2) / Math.tan(fov / 2),
+            (maxDim / 2) / Math.tan(fovHorizontal / 2)
         );
-        cameraDistance *= 1.1; // Padding
+        cameraDistance *= 1.2; // Padding
         cameraDistance = Math.max(cameraDistance, camera.near * 1.1);
         const offset = cameraDistance / Math.sqrt(3);
-        camera.position.set(center.x + offset, center.y + offset, center.z + offset);
+        camera.position.set(center.x + offset, center.y - offset, center.z + offset);
         camera.lookAt(center);
+        camera.near = cameraDistance * 0.001;
+        camera.far = cameraDistance * 100;
+        camera.updateProjectionMatrix();
         controls.target.copy(center);
 
         function animate() {
@@ -644,6 +648,39 @@ opacity: 0.7
         }
 
         return html;
+    }
+
+    inline webifc::geometry::IfcGeometry convertToWebIfc(fuzzybools::Geometry geom)
+    {
+        webifc::geometry::IfcGeometry newGeom;
+        newGeom.fvertexData = geom.fvertexData;
+        newGeom.vertexData = geom.vertexData;
+        newGeom.indexData = geom.indexData;
+        newGeom.planeData = geom.planeData;
+        newGeom.numPoints = geom.numPoints;
+        newGeom.numFaces = geom.numFaces;
+        uint32_t id = 0;
+        for (auto plane : geom.planes)
+        {
+            webifc::geometry::Plane newPlane;
+            newPlane.id = id;
+            newPlane.distance = plane.distance;
+            newPlane.normal = plane.normal;
+            newGeom.planes.push_back(newPlane);
+            id++;
+        }
+        newGeom.hasPlanes = geom.hasPlanes;
+        return newGeom;
+    }
+
+    inline void DumpIfcGeometryThree(std::vector<fuzzybools::Geometry> vecGeomFuzzy, std::string filename, double epsNormal = 1e-8, double epsDist = 1e-6, double inputScale = 1.0)
+    {
+        std::vector<webifc::geometry::IfcGeometry> vecGeom;
+        for (auto geom : vecGeomFuzzy) {
+            vecGeom.push_back(convertToWebIfc(geom));
+        }
+        std::string viewer = makeThreeJSViewer(vecGeom, inputScale);
+        writeFile(filename, viewer);
     }
 
     inline void DumpIfcGeometryThree(std::vector<webifc::geometry::IfcGeometry> vecGeom, std::string filename, double epsNormal = 1e-8, double epsDist = 1e-6, double inputScale = 1.0)

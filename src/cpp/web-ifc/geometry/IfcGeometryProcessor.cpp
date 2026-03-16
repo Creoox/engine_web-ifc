@@ -10,7 +10,6 @@
 #endif
 
 #include "IfcGeometryProcessor.h"
-#define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/transform.hpp>
 #include "representation/geometry.h"
 #include "operations/geometryutils.h"
@@ -235,7 +234,7 @@ namespace webifc::geometry
                 {
                     testGeo.MergeGeometry(geom);
                 }
-                io::DumpIfcGeometry(testGeo, "test.obj");
+                webifc::io::DumpIfcGeometry(testGeo, "test.obj");
                 std::cout << "Dumped test.obj" << std::endl;
 #endif
                 return mesh;
