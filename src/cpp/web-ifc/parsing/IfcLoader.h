@@ -70,6 +70,7 @@ namespace webifc::parsing
       {
         _tokenStream->Push(input);
       }
+      const schema::IfcSchemaManager& GetSchemaManager() const { return _schemaManager; }
 
     private:
       struct IfcLine 

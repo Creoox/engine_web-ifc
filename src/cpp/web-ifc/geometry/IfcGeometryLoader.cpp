@@ -3024,10 +3024,114 @@ namespace webifc::geometry
         curve.segmentStartTangents.push_back(tangentSign * glm::normalize(startTangent) );
         break;
     }
+    case schema::IFCPOLYNOMIALCURVE:
+    {
+        // IfcPolynomialCurve
+        //   Position      : IfcPlacement
+        //   CoefficientsX : OPTIONAL LIST [2:?] OF IfcReal
+        //   CoefficientsY : OPTIONAL LIST [2:?] OF IfcReal
+        //   CoefficientsZ : OPTIONAL LIST [2:?] OF IfcReal
+        //
+        // Parametric curve: p(t) = Position * (polyX(t), polyY(t) [, polyZ(t)])
+        // where polyX(t) = c[0] + c[1]*t + c[2]*t^2 + ...
+
+        _loader.MoveToArgumentOffset(expressID, 0);
+        uint32_t positionID = _loader.GetRefArgument();
+        auto typePlacement = _loader.GetLineType(positionID);
+        bool is3D = (typePlacement == schema::IFCAXIS2PLACEMENT3D);
+
+        // Read coefficient lists (arguments 1, 2, 3)
+        auto readCoeffs = [&](int argOffset) -> std::vector<double> {
+            std::vector<double> coeffs;
+            _loader.MoveToArgumentOffset(expressID, argOffset);
+            if (_loader.GetTokenType() != parsing::IfcTokenType::EMPTY)
+            {
+                _loader.MoveToArgumentOffset(expressID, argOffset);
+                auto tokens = _loader.GetSetArgument();
+                for (auto &token : tokens)
+                {
+                    coeffs.push_back(_loader.GetDoubleArgument(token));
+                }
+            }
+            return coeffs;
+        };
+
+        std::vector<double> coeffsX = readCoeffs(1);
+        std::vector<double> coeffsY = readCoeffs(2);
+        std::vector<double> coeffsZ = readCoeffs(3);
+
+        // Evaluate polynomial using Horner's method
+        auto evalPoly = [](const std::vector<double> &c, double t) -> double {
+            if (c.empty()) return 0.0;
+            double result = c.back();
+            for (int i = (int)c.size() - 2; i >= 0; --i)
+            {
+                result = result * t + c[i];
+            }
+            return result;
+        };
+
+        // Determine parameter range from trim
+        double t1 = 0.0, t2 = 1.0;
+        bool sense = true;
+        if (params.hasTrim && params.trimStart.trimType == TRIM_BY_PARAMETER && params.trimEnd.trimType == TRIM_BY_PARAMETER)
+        {
+            t1 = params.trimStart.value;
+            t2 = params.trimEnd.value;
+            if (params.trimSense == TRIM_SENSE_REVERSE)
+            {
+                std::swap(t1, t2);
+                sense = false;
+            }
+        }
+        else if (params.hasTrim && params.trimStart.trimType == TRIM_BY_LENGTH && params.trimEnd.trimType == TRIM_BY_LENGTH)
+        {
+            t1 = params.trimStart.value;
+            t2 = params.trimEnd.value;
+            if (params.trimSense == TRIM_SENSE_REVERSE)
+            {
+                std::swap(t1, t2);
+                sense = false;
+            }
+        }
+        if (t1 > t2) std::swap(t1, t2);
+
+        int numSegments = _circleSegments;
+        double dt = (t2 - t1) / (numSegments - 1);
+
+        if (is3D)
+        {
+            glm::dmat4 placement = GetLocalPlacement(positionID);
+            for (int i = 0; i < numSegments; ++i)
+            {
+                double t = t1 + i * dt;
+                glm::dvec4 localPt(evalPoly(coeffsX, t), evalPoly(coeffsY, t), evalPoly(coeffsZ, t), 1.0);
+                glm::dvec3 worldPt = glm::dvec3(placement * localPt);
+                curve.Add(worldPt);
+            }
+        }
+        else
+        {
+            glm::dmat3 placement = GetAxis2Placement2D(positionID);
+            for (int i = 0; i < numSegments; ++i)
+            {
+                double t = t1 + i * dt;
+                glm::dvec3 localPt(evalPoly(coeffsX, t), evalPoly(coeffsY, t), 1.0);
+                curve.Add(placement * localPt);
+            }
+        }
+
+        if (!sense)
+        {
+            std::reverse(curve.points.begin(), curve.points.end());
+        }
+
+        break;
+    }
 
     default:
-
-      spdlog::error("[ComputeCurve()] Unsupported curve type {}: {}", expressID, lineType);
+      std::string lineTypeString = _loader.GetSchemaManager().IfcTypeCodeToType(lineType);
+      spdlog::error("[ComputeCurve()] Unsupported curve type {}: {}", expressID, lineTypeString);
       break;
     }
     // DEBUG

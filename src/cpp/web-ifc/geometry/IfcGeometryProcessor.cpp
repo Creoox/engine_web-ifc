@@ -1263,6 +1263,7 @@ namespace webifc::geometry
             case schema::IFCINDEXEDPOLYCURVE:
             case schema::IFCTRIMMEDCURVE:
             case schema::IFCGRADIENTCURVE:
+            case schema::IFCCURVESEGMENT:
             {
                 auto lineProfileType = _loader.GetLineType(expressID);
                 IfcCurve curve = _geometryLoader.GetCurve(expressID, 3, false);
