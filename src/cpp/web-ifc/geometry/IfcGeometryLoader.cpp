@@ -543,12 +543,13 @@ namespace webifc::geometry
       if (_cache.GetRelAggregates().count(expressID) == 1)
       {
         auto &relAgg = _cache.GetRelAggregates().at(expressID);
+        size_t startIdx = alignment.Horizontal.curves.size();
         for (auto childID : relAgg)
         {
           alignment.Horizontal.curves.push_back(GetAlignmentCurve(childID, sourceExpressID));
         }
 
-        for (size_t i = 0; i < alignment.Horizontal.curves.size(); i++)
+        for (size_t i = startIdx; i < alignment.Horizontal.curves.size(); i++)
         {
           for (size_t j = 0; j < alignment.Horizontal.curves[i].points.size(); j++)
           {
@@ -561,12 +562,13 @@ namespace webifc::geometry
       if (_cache.GetRelNests().count(expressID) == 1)
       {
         auto &relNest = _cache.GetRelNests().at(expressID);
+        size_t startIdx = alignment.Horizontal.curves.size();
         for (auto childID : relNest)
         {
           alignment.Horizontal.curves.push_back(GetAlignmentCurve(childID, sourceExpressID));
         }
 
-        for (size_t i = 0; i < alignment.Horizontal.curves.size(); i++)
+        for (size_t i = startIdx; i < alignment.Horizontal.curves.size(); i++)
         {
           for (size_t j = 0; j < alignment.Horizontal.curves[i].points.size(); j++)
           {
@@ -597,12 +599,13 @@ namespace webifc::geometry
       if (_cache.GetRelAggregates().count(expressID) == 1)
       {
         auto &relAgg = _cache.GetRelAggregates().at(expressID);
+        size_t startIdx = alignment.Vertical.curves.size();
         for (auto childID : relAgg)
         {
           alignment.Vertical.curves.push_back(GetAlignmentCurve(childID, sourceExpressID));
         }
 
-        for (size_t i = 0; i < alignment.Vertical.curves.size(); i++)
+        for (size_t i = startIdx; i < alignment.Vertical.curves.size(); i++)
         {
           for (size_t j = 0; j < alignment.Vertical.curves[i].points.size(); j++)
           {
@@ -615,12 +618,13 @@ namespace webifc::geometry
       if (_cache.GetRelNests().count(expressID) == 1)
       {
         auto &relNest = _cache.GetRelNests().at(expressID);
+        size_t startIdx = alignment.Vertical.curves.size();
         for (auto childID : relNest)
         {
           alignment.Vertical.curves.push_back(GetAlignmentCurve(childID, sourceExpressID));
         }
 
-        for (size_t i = 0; i < alignment.Vertical.curves.size(); i++)
+        for (size_t i = startIdx; i < alignment.Vertical.curves.size(); i++)
         {
           for (size_t j = 0; j < alignment.Vertical.curves[i].points.size(); j++)
           {
@@ -1019,7 +1023,7 @@ namespace webifc::geometry
       auto outputColor = GetColor(_loader.GetRefArgument());
       _loader.MoveToArgumentOffset(expressID, 1);
 
-      if (_loader.GetTokenType() == parsing::IfcTokenType::REAL)
+      if (outputColor && _loader.GetTokenType() == parsing::IfcTokenType::REAL)
       {
         _loader.StepBack();
         outputColor.value().a = 1 - _loader.GetDoubleArgument();
@@ -1136,24 +1140,14 @@ namespace webifc::geometry
       _loader.MoveToArgumentOffset(expressID, 0);
       auto materials = _loader.GetSetArgument();
 
-      std::optional<glm::dvec4> lastColor;
-      bool result = false;
       for (auto &material : materials)
       {
         uint32_t materialID = _loader.GetRefArgument(material);
         auto foundColor = GetColor(materialID);
         if (foundColor)
-          lastColor = foundColor;
-        result = true;
+          return foundColor;
       }
-      if (result)
-      {
-        return lastColor;
-      }
-      else
-      {
-        return {};
-      }
+      return {};
     }
     case schema::IFCMATERIALCONSTITUENTSET:
     {
@@ -1522,7 +1516,7 @@ namespace webifc::geometry
         // parametervalue
         std::string_view type = _loader.GetStringArgument();
 
-        if (type == "IFCPARAMETERVALUE")
+        if (type == "IFCPARAMETERVALUE" && i + 1 < tapeOffsets.size())
         {
           ts.trimType = TRIM_BY_PARAMETER;
           i++;
@@ -1614,12 +1608,12 @@ namespace webifc::geometry
       */
       if (ROUNDING_ENABLE == 1)
       {
-        int q = 0;
-        q = (int)(x * ROUNDING_RECIPROCAL + 0.5);
+        long q = 0;
+        q = std::lround(x * ROUNDING_RECIPROCAL);
         x = q * ROUNDING;
-        q = (int)(y * ROUNDING_RECIPROCAL + 0.5);
+        q = std::lround(y * ROUNDING_RECIPROCAL);
         y = q * ROUNDING;
-        q = (int)(z * ROUNDING_RECIPROCAL + 0.5);
+        q = std::lround(z * ROUNDING_RECIPROCAL);
         z = q * ROUNDING;
       }
 
@@ -2004,8 +1998,8 @@ namespace webifc::geometry
           }
         }
       }
-      else if (!ReadIfcCartesianPointList(ptsRef))
-      {
+      else
+      { // 3D point list
         _loader.MoveToArgumentOffset(expressID, 1);
         if (_loader.GetTokenType() != parsing::IfcTokenType::EMPTY)
         {
@@ -2043,10 +2037,6 @@ namespace webifc::geometry
             curve.Add(pt);
           }
         }
-      }
-      else
-      {
-        spdlog::error("[ComputeCurve()] Parsing ifcindexedpolycurve in 3D is not possible {}", expressID);
       }
 
       break;
@@ -2434,6 +2424,12 @@ namespace webifc::geometry
                         const auto& segPoint = segCurve->points[jj];
                         double d = glm::length(segPoint - prevSegPoint);
 
+                        if (d < EPS_SMALL)
+                        {
+                            prevSegPoint = segPoint;
+                            continue; // skip degenerate zero-length segments
+                        }
+
                         if (localLength <= segCumulative + d)
                         {
                             // Interpolate
@@ -2712,7 +2708,7 @@ namespace webifc::geometry
           ctrolPts.push_back(GetCartesianPoint3D(pointId));
         }
 
-        double numCurvePoints = ctrolPts.size();
+        double numCurvePoints = std::max((int)ctrolPts.size(), 4);
         std::vector<glm::dvec3> tempPoints = GetRationalBSplineCurveWithKnots(degree, ctrolPts, knots, weights, numCurvePoints);
         for (size_t i = 0; i < tempPoints.size(); i++)
           curve.Add(tempPoints[i]);
@@ -2789,6 +2785,8 @@ namespace webifc::geometry
         for (auto &token : points)
         {
           uint32_t pointId = _loader.GetRefArgument(token);
+          // Intentionally using GetCartesianPoint3D even for 2D: more robust since some IFC
+          // files have 3D points despite dimensions==2; z is safely truncated by dvec3->dvec2.
           ctrolPts.push_back(GetCartesianPoint3D(pointId));
         }
         std::vector<glm::dvec2> tempPoints = GetRationalBSplineCurveWithKnots(degree, ctrolPts, knots, weights);
@@ -2876,6 +2874,8 @@ namespace webifc::geometry
         for (auto &token : points)
         {
           uint32_t pointId = _loader.GetRefArgument(token);
+          // Intentionally using GetCartesianPoint3D even for 2D: more robust since some IFC
+          // files have 3D points despite dimensions==2; z is safely truncated by dvec3->dvec2.
           ctrolPts.push_back(GetCartesianPoint3D(pointId));
         }
 
@@ -2892,7 +2892,7 @@ namespace webifc::geometry
           ctrolPts.push_back(GetCartesianPoint3D(pointId));
         }
 
-		// Use at least 4 points
+        // Use at least 4 points
         double numCurvePoints = std::max((int)ctrolPts.size(), 4);
         std::vector<glm::dvec3> tempPoints = GetRationalBSplineCurveWithKnots(degree, ctrolPts, knots, weights, numCurvePoints);
         for (size_t i = 0; i < tempPoints.size(); i++)
@@ -3008,7 +3008,7 @@ namespace webifc::geometry
         if (!sense)
         {
             std::reverse(curve.points.begin(), curve.points.end());
-            current_theta = sign_A * (s1 * s1) / (2 * A_sq); // recompute for tangent
+            current_theta = sign_A * (s1 * s1) / (2 * A_sq); // end tangent at s1 (new end after reversal)
             tangentSign = -1.0;
         }
 
@@ -3017,7 +3017,9 @@ namespace webifc::geometry
         curve.endTangent = tangentSign * glm::normalize(glm::dvec3(worldTangent.x, worldTangent.y, 0 ));
 
 		// start tangent
-        double start_theta = sign_A * (s1 * s1) / (2 * A_sq);
+        double start_theta = sense
+            ? sign_A * (s1 * s1) / (2 * A_sq)    // normal: start at s1
+            : sign_A * (s2 * s2) / (2 * A_sq);   // reversed: start at s2 (original end)
         glm::dvec2 localStartTangent2D(std::cos(start_theta), std::sin(start_theta));
         glm::dvec2 worldStartTangent2D = rotation_part * localStartTangent2D;
         glm::dvec3 startTangent(worldStartTangent2D.x, worldStartTangent2D.y, 0.0);
@@ -3096,7 +3098,7 @@ namespace webifc::geometry
         }
         if (t1 > t2) std::swap(t1, t2);
 
-        int numSegments = _circleSegments;
+        int numSegments = std::max((int)_circleSegments, 2);
         double dt = (t2 - t1) / (numSegments - 1);
 
         if (is3D)
@@ -3571,7 +3573,7 @@ namespace webifc::geometry
         _loader.StepBack();
 
         uint32_t placementID = _loader.GetRefArgument();
-        glm::dmat3 placement = GetAxis2Placement2D(placementID);
+        placement = GetAxis2Placement2D(placementID);
       }
 
       _loader.MoveToArgumentOffset(expressID, 3);
@@ -3692,7 +3694,8 @@ namespace webifc::geometry
       double y = 0.0;
 
       // Iterate over each width and slope in the lists
-      for (size_t i = 0; i < listWidths.size(); ++i)
+      size_t numSegments = std::min(listWidths.size(), listSlopes.size());
+      for (size_t i = 0; i < numSegments; ++i)
       {
         double width = listWidths[i];
         double slope_degrees = listSlopes[i];
@@ -4002,7 +4005,8 @@ namespace webifc::geometry
         }
         else
         {
-            result = curve.getPlacementAtDistance(DistanceAlong, IfcCurve::CurvePlacementMode::GlobalZAxis);
+            spdlog::error("[GetLocalPlacement({})] missing BasisCurve in IFCPOINTBYDISTANCEEXPRESSION, returning identity", expressID);
+            result = glm::dmat4(1);
         }
 
         if (std::abs(OffsetLateral) > EPS_SMALL || std::abs(OffsetVertical) > EPS_SMALL || std::abs(OffsetLongitudinal) > EPS_SMALL)
@@ -4024,7 +4028,9 @@ namespace webifc::geometry
         if (zID == parsing::IfcTokenType::REF)
         {
           _loader.StepBack();
-          zAxis = glm::normalize(GetCartesianPoint3D(_loader.GetRefArgument()));
+          auto tmpVec = GetCartesianPoint3D(_loader.GetRefArgument());
+          if (glm::length(tmpVec) > 0)
+            zAxis = glm::normalize(tmpVec);
         }
         glm::dvec3 pos = GetCartesianPoint3D(posID);
         if (std::abs(glm::dot(xAxis, zAxis)) > 0.9)
@@ -4054,9 +4060,9 @@ namespace webifc::geometry
         if (zID == parsing::IfcTokenType::REF)
         {
           _loader.StepBack();
-          auto tmpVec = glm::normalize(GetCartesianPoint3D(_loader.GetRefArgument()));
+          auto tmpVec = GetCartesianPoint3D(_loader.GetRefArgument());
           if (glm::length(tmpVec) > 0)
-            zAxis = tmpVec;
+            zAxis = glm::normalize(tmpVec);
         }
 
         _loader.MoveToArgumentOffset(expressID, 2);
@@ -4064,9 +4070,9 @@ namespace webifc::geometry
         if (xID == parsing::IfcTokenType::REF)
         {
           _loader.StepBack();
-          auto tmpVec = glm::normalize(GetCartesianPoint3D(_loader.GetRefArgument()));
+          auto tmpVec = GetCartesianPoint3D(_loader.GetRefArgument());
           if (glm::length(tmpVec) > 0)
-            xAxis = tmpVec;
+            xAxis = glm::normalize(tmpVec);
         }
 
         glm::dvec3 pos = GetCartesianPoint3D(posID);
@@ -4097,9 +4103,9 @@ namespace webifc::geometry
         if (xID == parsing::IfcTokenType::REF)
         {
           _loader.StepBack();
-          auto tmpVec = glm::normalize(GetCartesianPoint3D(_loader.GetRefArgument()));
+          auto tmpVec = GetCartesianPoint3D(_loader.GetRefArgument());
           if (glm::length(tmpVec) > 0)
-            xAxis = tmpVec;
+            xAxis = glm::normalize(tmpVec);
         }
 
         glm::dvec3 pos = GetCartesianPoint3D(posID);
