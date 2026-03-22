@@ -5,7 +5,6 @@ namespace bimGeometry
 
     inline double _TOLERANCE_SCALAR_EQUALITY = 1.0E-04;
     inline double _PLANE_REFIT_ITERATIONS = 1;
-    inline double _BOOLEAN_UNION_THRESHOLD = 150;
 
     constexpr double EPS_TINY_CURVE = 1.0E-09;
     constexpr double EPS_NONZERO = 1.0E-20;

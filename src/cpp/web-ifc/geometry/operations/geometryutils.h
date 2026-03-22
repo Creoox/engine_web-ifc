@@ -36,9 +36,9 @@ namespace mapbox::util {
 namespace webifc::geometry
 {
 
-	inline void SetEpsilons(double TOLERANCE_SCALAR_EQUALITY, double PLANE_REFIT_ITERATIONS, double BOOLEAN_UNION_THRESHOLD)
+	inline void SetEpsilons(double TOLERANCE_SCALAR_EQUALITY, double PLANE_REFIT_ITERATIONS)
 	{
-		bimGeometry::SetEpsilons(TOLERANCE_SCALAR_EQUALITY, PLANE_REFIT_ITERATIONS, BOOLEAN_UNION_THRESHOLD);
+		bimGeometry::SetEpsilons(TOLERANCE_SCALAR_EQUALITY, PLANE_REFIT_ITERATIONS);
 	}
 
 	inline double angleConversion(double angle, std::string angleUnits)

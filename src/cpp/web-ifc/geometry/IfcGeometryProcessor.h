@@ -34,7 +34,6 @@ namespace webifc::geometry
     double TOLERANCE_BACK_DEVIATION_DISTANCE = 1.0E-04;
     double TOLERANCE_INSIDE_OUTSIDE_PERIMETER = 1.0E-10;
     double TOLERANCE_BOUNDING_BOX = 1.0E-02;
-    uint16_t _BOOLEAN_UNION_THRESHOLD = 150;
     uint16_t _CSG_MAX_NUM_FACES = 20000;
   };
 
@@ -53,7 +52,7 @@ namespace webifc::geometry
   class IfcGeometryProcessor
   {
   public:
-    IfcGeometryProcessor(webifc::parsing::IfcLoader &loader, const webifc::schema::IfcSchemaManager &schemaManager, uint16_t circleSegments, bool coordinateToOrigin, double TOLERANCE_PLANE_INTERSECTION, double TOLERANCE_PLANE_DEVIATION, double TOLERANCE_BACK_DEVIATION_DISTANCE, double TOLERANCE_INSIDE_OUTSIDE_PERIMETER, double TOLERANCE_SCALAR_EQUALITY, double PLANE_REFIT_ITERATIONS, double BOOLEAN_UNION_THRESHOLD);
+    IfcGeometryProcessor(webifc::parsing::IfcLoader &loader, const webifc::schema::IfcSchemaManager &schemaManager, uint16_t circleSegments, bool coordinateToOrigin, double TOLERANCE_PLANE_INTERSECTION, double TOLERANCE_PLANE_DEVIATION, double TOLERANCE_BACK_DEVIATION_DISTANCE, double TOLERANCE_INSIDE_OUTSIDE_PERIMETER, double TOLERANCE_SCALAR_EQUALITY, double PLANE_REFIT_ITERATIONS);
     IfcGeometry &GetGeometry(uint32_t expressID);
     IfcGeometryLoader& GetLoader();
     IfcFlatMesh GetFlatMesh(uint32_t expressID, bool applyLinearScalingFactor = true);

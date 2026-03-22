@@ -22,7 +22,7 @@ namespace webifc::geometry
     
     double BOOLSTATUS = 0;
 
-    IfcGeometryProcessor::IfcGeometryProcessor(webifc::parsing::IfcLoader &loader, const webifc::schema::IfcSchemaManager &schemaManager, uint16_t circleSegments, bool coordinateToOrigin, double TOLERANCE_PLANE_INTERSECTION, double TOLERANCE_PLANE_DEVIATION, double TOLERANCE_BACK_DEVIATION_DISTANCE, double TOLERANCE_INSIDE_OUTSIDE_PERIMETER, double TOLERANCE_SCALAR_EQUALITY, double PLANE_REFIT_ITERATIONS, double BOOLEAN_UNION_THRESHOLD)
+    IfcGeometryProcessor::IfcGeometryProcessor(webifc::parsing::IfcLoader &loader, const webifc::schema::IfcSchemaManager &schemaManager, uint16_t circleSegments, bool coordinateToOrigin, double TOLERANCE_PLANE_INTERSECTION, double TOLERANCE_PLANE_DEVIATION, double TOLERANCE_BACK_DEVIATION_DISTANCE, double TOLERANCE_INSIDE_OUTSIDE_PERIMETER, double TOLERANCE_SCALAR_EQUALITY, double PLANE_REFIT_ITERATIONS)
         : _loader(loader), _cache(loader), _schemaManager(schemaManager), _geometryLoader(loader, _cache, circleSegments)
     {
         _settings._coordinateToOrigin = coordinateToOrigin;
@@ -31,8 +31,7 @@ namespace webifc::geometry
         _settings.TOLERANCE_PLANE_DEVIATION = TOLERANCE_PLANE_DEVIATION;
         _settings.TOLERANCE_BACK_DEVIATION_DISTANCE = TOLERANCE_BACK_DEVIATION_DISTANCE;
         _settings.TOLERANCE_INSIDE_OUTSIDE_PERIMETER = TOLERANCE_INSIDE_OUTSIDE_PERIMETER;
-        _settings._BOOLEAN_UNION_THRESHOLD = BOOLEAN_UNION_THRESHOLD;
-        SetEpsilons(TOLERANCE_SCALAR_EQUALITY, PLANE_REFIT_ITERATIONS, BOOLEAN_UNION_THRESHOLD);
+        SetEpsilons(TOLERANCE_SCALAR_EQUALITY, PLANE_REFIT_ITERATIONS);
     }
 
     IfcGeometryLoader& IfcGeometryProcessor::GetLoader()
@@ -192,37 +191,9 @@ namespace webifc::geometry
 
                 for (auto relVoidExpressID : relVoidsIt->second)
                 {
-
                     IfcComposedMesh voidGeom = GetMesh(relVoidExpressID);
                     auto flatVoidMesh = flatten(voidGeom, _expressIDToGeometry, normalizeMat);
                     voidGeoms.insert(voidGeoms.end(), flatVoidMesh.begin(), flatVoidMesh.end());
-                }
-
-                if (relVoidsIt->second.size() > _settings._BOOLEAN_UNION_THRESHOLD) // When voids are greater than 10 they are all fused
-                {
-                    std::vector<IfcGeometry> joinedVoidGeoms;
-                    IfcGeometry fusedVoids;
-                    for (auto geom : voidGeoms)
-                    {
-                        if (geom.halfSpace)
-                        {
-                            joinedVoidGeoms.push_back(geom);
-                        }
-                        else
-                        {
-                            std::vector<IfcGeometry> geomVector = {geom}; // Wrap 'geom' in a vector
-                            fusedVoids = BoolProcess(std::vector<IfcGeometry>{fusedVoids}, geomVector, "UNION", _settings);
-                        }
-                        if (fusedVoids.numFaces > _settings._CSG_MAX_NUM_FACES) {
-                            spdlog::warn("High number of faces ({}) in voids for element {}, skipping further CSG operations", fusedVoids.numFaces, expressID);
-                            break;
-                        }
-                    }
-
-                    joinedVoidGeoms.push_back(fusedVoids);
-
-                    voidGeoms = joinedVoidGeoms;
-                    voidGeoms.shrink_to_fit();
                 }
 
                 ApplyBooleanToMeshChildren(mesh, voidGeoms, "DIFFERENCE", _settings, normalizeMat);
