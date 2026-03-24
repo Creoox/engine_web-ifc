@@ -41,6 +41,10 @@ namespace fuzzybools
 		uint32_t numPoints = 0;
 		uint32_t numFaces = 0;
 		uint32_t data = 0;
+		uint32_t numPlanesA = 0; // plane IDs < numPlanesA are from operand A
+		// Per-face operand origin: 0=unknown, 1=from A only,
+		// 2=from B only, 3=from both (shared plane).
+		std::vector<uint8_t> faceOrigin;
 
 		void BuildFromVectors(std::vector<double> &d, std::vector<uint32_t> &i)
 		{

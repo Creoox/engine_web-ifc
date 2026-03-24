@@ -133,45 +133,52 @@ namespace fuzzybools
 
             glm::dvec3 n = computeNormal(a, b, c);
 
-            glm::dvec3 triCenter = (a + b * 1.02 + c * 1.03) * 1.0 / 3.05; // Using true centroid could cause issues (#540)
-
-            auto isInsideTarget = MeshLocation::INSIDE;
+            glm::dvec3 triCenter = (a + b * 1.02 + c * 1.03) * 1.0 / 3.05;
 
             Vec raydir = computeNormal(a, b, c);
-
-            // This is an example about how to debug specific triangles in specific boolean operations
-            // if ((i == 49 || i == 53 || i == 84) && _BOOLSTATUS == 66)
-            // {
-            //     doit = false; // This assignation is useless just to add some content
-            // }
-
-            auto isInside1Loc = isInsideMesh(triCenter, n, *bvh1.ptr, bvh1, raydir);
-            auto isInside2Loc = isInsideMesh(triCenter, n, *bvh2.ptr, bvh2, raydir);
-
             Vec extraDir1 = glm::normalize(raydir + Vec(0.02,0.01,0.04));
             Vec extraDir2 = glm::normalize(raydir + Vec(0.20,-0.1,0.40));
 
-            auto isInside1Loc_B = isInsideMesh(triCenter, n, *bvh1.ptr, bvh1, extraDir1);
-            auto isInside2Loc_B = isInsideMesh(triCenter, n, *bvh2.ptr, bvh2, extraDir1);
+            // Determine face ownership from faceOrigin (set by Normalize).
+            //   1 = from A only, 2 = from B only, 3 = from both (shared plane)
+            // For the known-origin operand, force BOUNDARY (Normalize already
+            // verified it).  Only use isInsideMesh for the OTHER operand.
+            // This avoids winding-number errors when A has open edges from
+            // previous boolean operations.
+            uint8_t origin = (i < mesh.faceOrigin.size()) ? mesh.faceOrigin[i] : 0;
 
-            if(isInside1Loc.loc != isInside1Loc_B.loc)
+            InsideResult isInside1Loc, isInside2Loc;
+
+            auto classifyWithVoting = [&](const Vec &pt, const Vec &nm,
+                BVH &bvh) -> InsideResult
             {
-                auto isInside1Loc_C = isInsideMesh(triCenter, n, *bvh1.ptr, bvh1, extraDir2);
-                if(isInside1Loc_C.loc == isInside1Loc_B.loc){isInside1Loc = isInside1Loc_B;}
-                else if(isInside1Loc_B.loc != isInside1Loc_C.loc && isInside1Loc.loc != isInside1Loc_C.loc)
+                auto r0 = isInsideMesh(pt, nm, *bvh.ptr, bvh, raydir);
+                auto r1 = isInsideMesh(pt, nm, *bvh.ptr, bvh, extraDir1);
+                if (r0.loc != r1.loc)
                 {
-                    isInside1Loc = isInside1Loc_B;
+                    auto r2 = isInsideMesh(pt, nm, *bvh.ptr, bvh, extraDir2);
+                    if (r2.loc == r1.loc) return r1;
+                    if (r2.loc != r1.loc && r0.loc != r2.loc) return r1;
                 }
+                return r0;
+            };
+
+            if (origin == 1) // face from A only
+            {
+                isInside1Loc.loc = MeshLocation::BOUNDARY;
+                isInside1Loc.normal = n;
+                isInside2Loc = classifyWithVoting(triCenter, n, bvh2);
             }
-
-            if(isInside2Loc.loc != isInside2Loc_B.loc)
+            else if (origin == 2) // face from B only
             {
-                auto isInside2Loc_C = isInsideMesh(triCenter, n, *bvh2.ptr, bvh2, extraDir2);
-                if(isInside2Loc_C.loc == isInside2Loc_B.loc){isInside2Loc = isInside2Loc_B;}
-                else if(isInside2Loc_B.loc != isInside2Loc_C.loc && isInside2Loc.loc != isInside2Loc_C.loc)
-                {
-                    isInside2Loc = isInside2Loc_B;
-                }
+                isInside2Loc.loc = MeshLocation::BOUNDARY;
+                isInside2Loc.normal = n;
+                isInside1Loc = classifyWithVoting(triCenter, n, bvh1);
+            }
+            else // origin == 3 or 0 (shared plane or unknown): test both
+            {
+                isInside1Loc = classifyWithVoting(triCenter, n, bvh1);
+                isInside2Loc = classifyWithVoting(triCenter, n, bvh2);
             }
 
             auto isInside1 = isInside1Loc.loc;
@@ -229,6 +236,8 @@ namespace fuzzybools
             {
                 if (isInside2 == MeshLocation::INSIDE || isInside1 == MeshLocation::OUTSIDE)
                 {
+                    // inside 2, with subtract, means don't include
+                    // outside 1, with subtract, means don't include
                 }
                 else
                 {

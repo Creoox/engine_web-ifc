@@ -1392,6 +1392,14 @@ namespace fuzzybools
 
                 // TODO: why is this swapped? winding doesnt matter much, but still
                 geom.AddFace(ptB, ptA, ptC, p.refPlane);
+                // Tag face origin: 1=A only, 2=B only, 3=both
+                {
+                    uint8_t orig = 0;
+                    if (posA.loc == MeshLocation::BOUNDARY) orig |= 1;
+                    if (posB.loc == MeshLocation::BOUNDARY) orig |= 2;
+                    if (orig == 0) orig = 3; // shouldn't happen, but safe default
+                    geom.faceOrigin.push_back(orig);
+                }
 
 #ifdef CSG_DEBUG_OUTPUT
                 // edges3DTriangles.push_back({ glm::dvec2(ptA.z+ ptA.x/2, ptA.y+ ptA.x/2), glm::dvec2(ptB.z+ ptB.x/2, ptB.y+ ptB.x/2) });
@@ -1962,28 +1970,27 @@ namespace fuzzybools
         }
 
         uint32_t offsetA = A.planes.size();
+        geom.numPlanesA = offsetA;
 
         // re-add irrelevant faces that should be tested
         for (auto &faceIndex : sp.A.irrelevantFaces_toTest)
         {
             const Face &f = sp._linkedA->GetFace(faceIndex);
-
             auto a = sp._linkedA->GetPoint(f.i0);
             auto b = sp._linkedA->GetPoint(f.i1);
             auto c = sp._linkedA->GetPoint(f.i2);
-
             geom.AddFace(a, b, c, f.pId);
+            geom.faceOrigin.push_back(1); // from A
         }
 
         for (auto &faceIndex : sp.B.irrelevantFaces_toTest)
         {
             const Face &f = sp._linkedB->GetFace(faceIndex);
-
             auto a = sp._linkedB->GetPoint(f.i0);
             auto b = sp._linkedB->GetPoint(f.i1);
             auto c = sp._linkedB->GetPoint(f.i2);
-
             geom.AddFace(a, b, c, f.pId + offsetA);
+            geom.faceOrigin.push_back(2); // from B
         }
 
         geom.data = geom.numFaces;
@@ -1992,12 +1999,11 @@ namespace fuzzybools
         for (auto &faceIndex : sp.A.irrelevantFaces)
         {
             const Face &f = sp._linkedA->GetFace(faceIndex);
-
             auto a = sp._linkedA->GetPoint(f.i0);
             auto b = sp._linkedA->GetPoint(f.i1);
             auto c = sp._linkedA->GetPoint(f.i2);
-
             geom.AddFace(a, b, c, f.pId);
+            geom.faceOrigin.push_back(1); // from A
         }
 
         if (UNION)
@@ -2005,12 +2011,11 @@ namespace fuzzybools
             for (auto &faceIndex : sp.B.irrelevantFaces)
             {
                 const Face &f = sp._linkedB->GetFace(faceIndex);
-
                 auto a = sp._linkedB->GetPoint(f.i0);
                 auto b = sp._linkedB->GetPoint(f.i1);
                 auto c = sp._linkedB->GetPoint(f.i2);
-
                 geom.AddFace(a, b, c, f.pId + offsetA);
+                geom.faceOrigin.push_back(2); // from B
             }
         }
 
