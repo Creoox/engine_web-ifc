@@ -54,9 +54,11 @@ namespace fuzzybools
             h ^= h2 + 0x9e3779b9u + (h << 6) + (h >> 2);
             return h;
         };
-        // canonical-triangle-hash -> face indices already accepted into result
+        // canonical-triangle-hash -> face indices already seen
         std::unordered_map<std::size_t, std::vector<int>> triHashMap;
         triHashMap.reserve(mesh.data / 4 + 16);
+        // Track which faces were accepted (added to result)
+        std::unordered_set<int> acceptedFaces;
 
         for(auto &plane: mesh.planes)
         {
@@ -91,6 +93,10 @@ namespace fuzzybools
             bool doNext = true;
 
             // O(1) expected: hash-map lookup
+            // Skip duplicates ONLY if the earlier occurrence was accepted.
+            // If it was rejected (both-boundary-same-dir), allow the
+            // duplicate to be classified -- it may come from the other
+            // operand and get a different result.
             {
                 const std::size_t triKey = canonicalTriHash(a, b, c);
                 auto it = triHashMap.find(triKey);
@@ -107,7 +113,11 @@ namespace fuzzybools
                         || (equals(at,b, EPS_MINISCULE) &&  equals(bt,c, EPS_MINISCULE) && equals(ct,a, EPS_MINISCULE))
                         || (equals(at,c, EPS_MINISCULE) &&  equals(bt,a, EPS_MINISCULE) && equals(ct,b, EPS_MINISCULE)))
                         {
-                            doNext = false;
+                            // Only skip if the earlier copy was ACCEPTED
+                            if (acceptedFaces.count(prevIdx))
+                            {
+                                doNext = false;
+                            }
                             break;
                         }
                     }
@@ -169,40 +179,61 @@ namespace fuzzybools
 
             if (isInside1 == MeshLocation::OUTSIDE && isInside2 == MeshLocation::OUTSIDE)
             {
-                // both outside, no dice
             }
             if (isInside1 != MeshLocation::BOUNDARY && isInside2 != MeshLocation::BOUNDARY)
             {
-                // neither boundary, no dice
             }
             else if (isInside1 == MeshLocation::BOUNDARY && isInside2 == MeshLocation::BOUNDARY)
             {
-                // both boundary, no dice if normals are same direction
                 auto dot = glm::dot(isInside1Loc.normal, isInside2Loc.normal);
-
-                // since both are on the boundary, and we're sampling the center of the tri, these two faces are coplanar
-                // hence we can test dot > 0 to see if normals point the same way
                 if (dot < 0)
                 {
-                    // normals face away from eachother, we can keep this face
-                    // furthermore, since the first operand is the first added, we don't flip
+                    // Opposing normals: A-B boundary face, keep
                     result.AddFace(a, b, c, tri.pId);
                     doit = true;
+                }
+                else
+                {
+                    // Same-direction normals: coplanar faces of A and B.
+                    // This face should be KEPT if there is solid (A minus B)
+                    // material behind it (in the -normal direction).
+                    // Probe a point slightly behind the face and test:
+                    //   in A AND NOT in B  -->  solid behind  -->  keep
+                    //   in A AND in B      -->  void behind   -->  discard
+                    //   not in A           -->  exterior      -->  discard
+                    // Use multiple probe distances to handle thin flanges.
+                    bool keepFace = false;
+                    Vec probeN = glm::length(n) > 0.5 ? n : isInside1Loc.normal;
+                    double probeDists[] = {2e-3, 1e-2, 5e-2};
+                    for (double pd : probeDists)
+                    {
+                        Vec probeP = triCenter - probeN * pd;
+                        auto pA = isInsideMesh(probeP, probeN, *bvh1.ptr, bvh1, raydir);
+                        auto pB = isInsideMesh(probeP, probeN, *bvh2.ptr, bvh2, raydir);
+                        if (pA.loc == MeshLocation::INSIDE && pB.loc != MeshLocation::INSIDE)
+                        {
+                            keepFace = true;
+                            break;
+                        }
+                        if (pA.loc == MeshLocation::INSIDE && pB.loc == MeshLocation::INSIDE)
+                            break; // void behind, discard
+                    }
+                    if (keepFace)
+                    {
+                        result.AddFace(a, b, c, tri.pId);
+                        doit = true;
+                    }
                 }
             }
             else
             {
                 if (isInside2 == MeshLocation::INSIDE || isInside1 == MeshLocation::OUTSIDE)
                 {
-                    // inside 2, with subtract, means don't include
-                    // outside 1, with subtract, means don't include
                 }
                 else
                 {
-                    // boundary or outside 2, and boundary or inside 1, means keep 
                     if (isInside2 == MeshLocation::BOUNDARY && isInside1 == MeshLocation::INSIDE)
                     {
-                        // we're taking the face of the second operand, but we must match the winding
                         if (glm::dot(n, isInside2Loc.normal) < 0)
                         {
                             result.AddFace(a, b, c, tri.pId);
@@ -213,10 +244,10 @@ namespace fuzzybools
                             result.AddFace(b, a, c, tri.pId);
                             doit = true;
                         }
+
                     }
                     else if (isInside1 == MeshLocation::BOUNDARY)
                     {
-                        // we're taking the face of the second operand, but we must match the winding
                         if (glm::dot(n, isInside1Loc.normal) < 0)
                         {
                             result.AddFace(b, a, c, tri.pId);
@@ -227,24 +258,21 @@ namespace fuzzybools
                             result.AddFace(a, b, c, tri.pId);
                             doit = true;
                         }
+
                     }
                     else
                     {
                         result.AddFace(a, b, c, tri.pId);
                         doit = true;
+
                     }
                 }
             }
 
+            if (doit)
+                acceptedFaces.insert(static_cast<int>(i));
+
             #ifdef CSG_DEBUG_OUTPUT
-                // if (doit)
-                // {
-                //     edgesPrinted.push_back({ glm::dvec2(a.z + a.x/2, a.y + a.x/2), glm::dvec2(b.z + b.x/2, b.y+ b.x/2)});
-                //     edgesPrinted.push_back({ glm::dvec2(a.z + a.x/2, a.y + a.x/2), glm::dvec2(c.z + c.x/2, c.y+ c.x/2) });
-                //     edgesPrinted.push_back({ glm::dvec2(b.z + b.x/2, b.y + b.x/2), glm::dvec2(c.z + c.x/2, c.y+ c.x/2) });
-                //     DumpSVGLines(edgesPrinted, L"final_tri.html");
-                //     doit = true;
-                // }
             #endif
         }
 
