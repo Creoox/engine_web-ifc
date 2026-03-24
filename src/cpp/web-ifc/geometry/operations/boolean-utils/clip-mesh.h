@@ -58,7 +58,7 @@ namespace fuzzybools
         std::unordered_map<std::size_t, std::vector<int>> triHashMap;
         triHashMap.reserve(mesh.data / 4 + 16);
         // Track which faces were accepted (added to result)
-        std::unordered_set<int> acceptedFaces;
+        // (no per-face tracking needed)
 
         for(auto &plane: mesh.planes)
         {
@@ -93,10 +93,6 @@ namespace fuzzybools
             bool doNext = true;
 
             // O(1) expected: hash-map lookup
-            // Skip duplicates ONLY if the earlier occurrence was accepted.
-            // If it was rejected (both-boundary-same-dir), allow the
-            // duplicate to be classified -- it may come from the other
-            // operand and get a different result.
             {
                 const std::size_t triKey = canonicalTriHash(a, b, c);
                 auto it = triHashMap.find(triKey);
@@ -113,11 +109,7 @@ namespace fuzzybools
                         || (equals(at,b, EPS_MINISCULE) &&  equals(bt,c, EPS_MINISCULE) && equals(ct,a, EPS_MINISCULE))
                         || (equals(at,c, EPS_MINISCULE) &&  equals(bt,a, EPS_MINISCULE) && equals(ct,b, EPS_MINISCULE)))
                         {
-                            // Only skip if the earlier copy was ACCEPTED
-                            if (acceptedFaces.count(prevIdx))
-                            {
-                                doNext = false;
-                            }
+                            doNext = false;
                             break;
                         }
                     }
@@ -163,23 +155,11 @@ namespace fuzzybools
                 return r0;
             };
 
-            if (origin == 1) // face from A only
-            {
-                isInside1Loc.loc = MeshLocation::BOUNDARY;
-                isInside1Loc.normal = n;
-                isInside2Loc = classifyWithVoting(triCenter, n, bvh2);
-            }
-            else if (origin == 2) // face from B only
-            {
-                isInside2Loc.loc = MeshLocation::BOUNDARY;
-                isInside2Loc.normal = n;
-                isInside1Loc = classifyWithVoting(triCenter, n, bvh1);
-            }
-            else // origin == 3 or 0 (shared plane or unknown): test both
-            {
-                isInside1Loc = classifyWithVoting(triCenter, n, bvh1);
-                isInside2Loc = classifyWithVoting(triCenter, n, bvh2);
-            }
+            // Always test both operands for classification.
+            // faceOrigin is used only for the same-dir-boundary
+            // decision (see below), not for general classification.
+            isInside1Loc = classifyWithVoting(triCenter, n, bvh1);
+            isInside2Loc = classifyWithVoting(triCenter, n, bvh2);
 
             auto isInside1 = isInside1Loc.loc;
             auto isInside2 = isInside2Loc.loc;
@@ -199,38 +179,10 @@ namespace fuzzybools
                     result.AddFace(a, b, c, tri.pId);
                     doit = true;
                 }
-                else
-                {
-                    // Same-direction normals: coplanar faces of A and B.
-                    // This face should be KEPT if there is solid (A minus B)
-                    // material behind it (in the -normal direction).
-                    // Probe a point slightly behind the face and test:
-                    //   in A AND NOT in B  -->  solid behind  -->  keep
-                    //   in A AND in B      -->  void behind   -->  discard
-                    //   not in A           -->  exterior      -->  discard
-                    // Use multiple probe distances to handle thin flanges.
-                    bool keepFace = false;
-                    Vec probeN = glm::length(n) > 0.5 ? n : isInside1Loc.normal;
-                    double probeDists[] = {2e-3, 1e-2, 5e-2};
-                    for (double pd : probeDists)
-                    {
-                        Vec probeP = triCenter - probeN * pd;
-                        auto pA = isInsideMesh(probeP, probeN, *bvh1.ptr, bvh1, raydir);
-                        auto pB = isInsideMesh(probeP, probeN, *bvh2.ptr, bvh2, raydir);
-                        if (pA.loc == MeshLocation::INSIDE && pB.loc != MeshLocation::INSIDE)
-                        {
-                            keepFace = true;
-                            break;
-                        }
-                        if (pA.loc == MeshLocation::INSIDE && pB.loc == MeshLocation::INSIDE)
-                            break; // void behind, discard
-                    }
-                    if (keepFace)
-                    {
-                        result.AddFace(a, b, c, tri.pId);
-                        doit = true;
-                    }
-                }
+                // else: same-direction boundary normals -- discard.
+                // These are coplanar faces where both A and B have a
+                // surface with the same outward normal.  In A-B, this
+                // face is on the boundary of the void, not the solid.
             }
             else
             {
@@ -277,9 +229,6 @@ namespace fuzzybools
                     }
                 }
             }
-
-            if (doit)
-                acceptedFaces.insert(static_cast<int>(i));
 
             #ifdef CSG_DEBUG_OUTPUT
             #endif

@@ -70,6 +70,141 @@ namespace fuzzybools
 			}
 		}
 
+		// -- Phase A2: remove reversed-duplicate face pairs ----------------
+		// Two coincident faces with opposite winding form a zero-thickness
+		// double-layer membrane.  Remove BOTH faces.
+		// Only remove if face CENTERS are within 0.1mm (avoids false
+		// positives on thin walls where vertex dedup merges inner/outer).
+		// DISABLED: this can remove legitimate faces when the boolean
+		// engine produces coincident opposite-winding faces that are
+		// structurally needed. The detection is not reliable enough.
+		if (false)
+		{
+			const double cs = toleranceVectorEquality * 1.5;
+			const double cs2 = cs * cs;
+			using GK = std::tuple<int64_t, int64_t, int64_t>;
+			struct GKH2 { size_t operator()(const GK &k) const {
+				size_t h = std::hash<int64_t>()(std::get<0>(k));
+				h ^= std::hash<int64_t>()(std::get<1>(k)) + 0x9e3779b9 + (h<<6) + (h>>2);
+				h ^= std::hash<int64_t>()(std::get<2>(k)) + 0x9e3779b9 + (h<<6) + (h>>2);
+				return h; }};
+			std::unordered_map<GK, std::vector<std::pair<uint32_t,Vec>>, GKH2> grid;
+			uint32_t nv = 0;
+			auto cell = [&](const Vec &p) -> GK {
+				return {(int64_t)std::floor(p.x/cs),
+				        (int64_t)std::floor(p.y/cs),
+				        (int64_t)std::floor(p.z/cs)};};
+			auto foa = [&](const Vec &p) -> uint32_t {
+				auto c0 = cell(p);
+				for (int dx=-1;dx<=1;dx++) for (int dy=-1;dy<=1;dy++)
+				for (int dz=-1;dz<=1;dz++){
+					GK nk={std::get<0>(c0)+dx,std::get<1>(c0)+dy,
+					        std::get<2>(c0)+dz};
+					auto it=grid.find(nk); if (it!=grid.end())
+						for (auto &[id,pos]:it->second){
+							Vec d=p-pos;
+							if (glm::dot(d,d)<cs2) return id; }}
+				uint32_t id=nv++; grid[c0].emplace_back(id,p);
+				return id; };
+
+			const uint32_t n2 = result.numFaces;
+			// Build sorted vertex triple for each face
+			struct TriKey {
+				uint32_t v[3]; // sorted
+				bool operator==(const TriKey &o) const {
+					return v[0]==o.v[0] && v[1]==o.v[1] && v[2]==o.v[2]; }
+			};
+			struct TriKeyHash { size_t operator()(const TriKey &k) const {
+				size_t h = std::hash<uint32_t>()(k.v[0]);
+				h ^= std::hash<uint32_t>()(k.v[1]) + 0x9e3779b9 + (h<<6) + (h>>2);
+				h ^= std::hash<uint32_t>()(k.v[2]) + 0x9e3779b9 + (h<<6) + (h>>2);
+				return h; }};
+
+			struct FaceRec { uint32_t idx; uint32_t v0, v1, v2; Vec normal; Vec center; };
+			std::unordered_map<size_t, std::vector<FaceRec>> faceGroups;
+
+			std::vector<bool> removeFlag(n2, false);
+			uint32_t removedPairs = 0;
+
+			for (uint32_t i = 0; i < n2; i++)
+			{
+				Face f = result.GetFace(i);
+				Vec a = result.GetPoint(f.i0);
+				Vec b = result.GetPoint(f.i1);
+				Vec c = result.GetPoint(f.i2);
+				uint32_t va = foa(a), vb = foa(b), vc = foa(c);
+				TriKey tk;
+				tk.v[0] = va; tk.v[1] = vb; tk.v[2] = vc;
+				// Sort
+				if (tk.v[0]>tk.v[1]) std::swap(tk.v[0],tk.v[1]);
+				if (tk.v[1]>tk.v[2]) std::swap(tk.v[1],tk.v[2]);
+				if (tk.v[0]>tk.v[1]) std::swap(tk.v[0],tk.v[1]);
+				TriKeyHash tkh;
+				size_t h = tkh(tk);
+				Vec crossP = glm::cross(b-a, c-a);
+				double crossLen = glm::length(crossP);
+				Vec normal = crossLen > 1e-15 ? crossP/crossLen : Vec(0);
+				Vec ctr = (a + b + c) / 3.0;
+				faceGroups[h].push_back({i, va, vb, vc, normal, ctr});
+			}
+
+			for (auto &[h, faces] : faceGroups)
+			{
+				if (faces.size() < 2) continue;
+				for (size_t a = 0; a < faces.size(); a++)
+				{
+					if (removeFlag[faces[a].idx]) continue;
+					for (size_t b = a+1; b < faces.size(); b++)
+					{
+						if (removeFlag[faces[b].idx]) continue;
+						// Check same sorted verts
+						auto &fa = faces[a]; auto &fb = faces[b];
+						TriKey ka, kb;
+						ka.v[0]=fa.v0; ka.v[1]=fa.v1; ka.v[2]=fa.v2;
+						kb.v[0]=fb.v0; kb.v[1]=fb.v1; kb.v[2]=fb.v2;
+						if (ka.v[0]>ka.v[1]) std::swap(ka.v[0],ka.v[1]);
+						if (ka.v[1]>ka.v[2]) std::swap(ka.v[1],ka.v[2]);
+						if (ka.v[0]>ka.v[1]) std::swap(ka.v[0],ka.v[1]);
+						if (kb.v[0]>kb.v[1]) std::swap(kb.v[0],kb.v[1]);
+						if (kb.v[1]>kb.v[2]) std::swap(kb.v[1],kb.v[2]);
+						if (kb.v[0]>kb.v[1]) std::swap(kb.v[0],kb.v[1]);
+						if (!(ka == kb)) continue;
+						// Opposite normals AND centers coincident?
+						// The center check prevents false positives on
+						// thin walls where vertex dedup merges inner/outer
+						// face vertices.
+						if (glm::dot(fa.normal, fb.normal) < -0.5)
+						{
+							Vec dc = fa.center - fb.center;
+							if (glm::dot(dc, dc) < 1e-8) // < 0.1mm
+							{
+								removeFlag[fa.idx] = true;
+								removeFlag[fb.idx] = true;
+								removedPairs++;
+							}
+						}
+					}
+				}
+			}
+
+			if (removedPairs > 0)
+			{
+				Geometry tmp;
+				tmp.planes = result.planes;
+				tmp.hasPlanes = result.hasPlanes;
+				tmp.data = result.data;
+				for (uint32_t i = 0; i < n2; i++)
+				{
+					if (removeFlag[i]) continue;
+					Face f = result.GetFace(i);
+					tmp.AddFace(result.GetPoint(f.i0),
+					            result.GetPoint(f.i1),
+					            result.GetPoint(f.i2), f.pId);
+				}
+				result = tmp;
+			}
+		}
+
 		// -- Shared setup for Phases B & C --------------------------------
 		const uint32_t nFaces = result.numFaces;
 		if (nFaces < 4) return;
@@ -662,6 +797,256 @@ namespace fuzzybools
 		}
 	}
 
+	// ---------------------------------------------------------------
+	// CloseBoundaryHoles -- find boundary-edge loops (holes) in the
+	// mesh and fill each loop with a fan of triangles.
+	//
+	// Algorithm:
+	//   1. Build edge-face adjacency with vertex dedup.
+	//   2. Find all boundary edges (face count == 1).
+	//   3. For each boundary edge, determine the DIRECTED half-edge
+	//      (opposite to the winding of the owning face, so the new
+	//      fill polygon has consistent winding with the mesh).
+	//   4. Chain directed half-edges into closed loops.
+	//   5. For each loop, compute a best-fit plane, project to 2D,
+	//      ear-clip triangulate, add faces.
+	// ---------------------------------------------------------------
+	inline void CloseBoundaryHoles(Geometry &result)
+	{
+		const double cs  = toleranceVectorEquality * 1.5;
+		const double cs2 = cs * cs;
+
+		using GK = std::tuple<int64_t, int64_t, int64_t>;
+		struct GKH { size_t operator()(const GK &k) const {
+			size_t h = std::hash<int64_t>()(std::get<0>(k));
+			h ^= std::hash<int64_t>()(std::get<1>(k)) + 0x9e3779b9 + (h<<6) + (h>>2);
+			h ^= std::hash<int64_t>()(std::get<2>(k)) + 0x9e3779b9 + (h<<6) + (h>>2);
+			return h; }};
+
+		// Vertex positions indexed by dedup ID
+		std::unordered_map<GK, std::vector<std::pair<uint32_t,Vec>>, GKH> vGrid;
+		std::vector<Vec> vtxPos;  // id -> position
+		uint32_t vNext = 0;
+		auto vCell = [&](const Vec &p) -> GK {
+			return {(int64_t)std::floor(p.x/cs),
+			        (int64_t)std::floor(p.y/cs),
+			        (int64_t)std::floor(p.z/cs)};};
+		auto vFoa = [&](const Vec &p) -> uint32_t {
+			auto c0 = vCell(p);
+			for (int dx=-1;dx<=1;dx++) for (int dy=-1;dy<=1;dy++)
+			for (int dz=-1;dz<=1;dz++){
+				GK nk={std::get<0>(c0)+dx,std::get<1>(c0)+dy,
+				        std::get<2>(c0)+dz};
+				auto it=vGrid.find(nk); if (it!=vGrid.end())
+					for (auto &[id,pos]:it->second){
+						Vec d=p-pos;
+						if (glm::dot(d,d)<cs2) return id; }}
+			uint32_t id=vNext++;
+			vGrid[c0].emplace_back(id,p);
+			vtxPos.push_back(p);
+			return id; };
+
+		struct EK { uint32_t v0, v1;
+			bool operator==(const EK &o) const { return v0==o.v0 && v1==o.v1; }};
+		struct EKH { size_t operator()(const EK &k) const {
+			size_t h = std::hash<uint32_t>()(k.v0);
+			h ^= std::hash<uint32_t>()(k.v1) + 0x9e3779b9 + (h<<6) + (h>>2);
+			return h; }};
+
+		// Build edge -> face list, and per-face vertex IDs
+		uint32_t nFaces = result.numFaces;
+		std::unordered_map<EK, std::vector<uint32_t>, EKH> edgeFaces;
+		std::vector<std::array<uint32_t,3>> fvid(nFaces);
+
+		for (uint32_t i = 0; i < nFaces; i++)
+		{
+			Face f = result.GetFace(i);
+			fvid[i] = {vFoa(result.GetPoint(f.i0)),
+			           vFoa(result.GetPoint(f.i1)),
+			           vFoa(result.GetPoint(f.i2))};
+			for (int e = 0; e < 3; e++)
+			{
+				uint32_t a = fvid[i][e], b = fvid[i][(e+1)%3];
+				EK ek = {std::min(a,b), std::max(a,b)};
+				edgeFaces[ek].push_back(i);
+			}
+		}
+
+		// Find boundary edges (count == 1) and build directed half-edges.
+		// For a boundary edge shared by face F with vertices (A,B,C),
+		// if the boundary edge is (A,B) in the face winding, the hole's
+		// directed half-edge is (B,A) -- reversed, so the fill polygon
+		// has opposite winding to the existing face (correct outward normal).
+		// Map: from_vertex -> to_vertex
+		std::unordered_map<uint32_t, uint32_t> halfEdge;
+
+		for (auto &[ek, fl] : edgeFaces)
+		{
+			if (fl.size() != 1) continue;  // only boundary edges
+			uint32_t fi = fl[0];
+			// Find which directed edge of the face this is
+			for (int e = 0; e < 3; e++)
+			{
+				uint32_t a = fvid[fi][e], b = fvid[fi][(e+1)%3];
+				if ((a == ek.v0 && b == ek.v1) || (a == ek.v1 && b == ek.v0))
+				{
+					// The face has directed edge a->b.
+					// The hole fill needs the reverse: b->a.
+					halfEdge[b] = a;
+					break;
+				}
+			}
+		}
+
+		if (halfEdge.empty()) return;
+
+		// Chain half-edges into closed loops
+		std::unordered_set<uint32_t> visited;
+		std::vector<std::vector<uint32_t>> loops;
+
+		for (auto &[start, _] : halfEdge)
+		{
+			if (visited.count(start)) continue;
+			std::vector<uint32_t> loop;
+			uint32_t cur = start;
+			bool closed = false;
+			for (int safety = 0; safety < 10000; safety++)
+			{
+				if (visited.count(cur)) break;
+				visited.insert(cur);
+				loop.push_back(cur);
+				auto it = halfEdge.find(cur);
+				if (it == halfEdge.end()) break;  // dead end
+				cur = it->second;
+				if (cur == start) { closed = true; break; }
+			}
+			if (closed && loop.size() >= 3)
+				loops.push_back(std::move(loop));
+		}
+
+		// For each closed loop, triangulate and add faces
+		for (auto &loop : loops)
+		{
+			uint32_t n = (uint32_t)loop.size();
+			if (n < 3 || n > 500) continue;  // skip degenerate or huge loops
+
+			// Compute best-fit normal (Newell's method)
+			Vec normal(0);
+			for (uint32_t i = 0; i < n; i++)
+			{
+				const Vec &cur = vtxPos[loop[i]];
+				const Vec &nxt = vtxPos[loop[(i+1)%n]];
+				normal.x += (cur.y - nxt.y) * (cur.z + nxt.z);
+				normal.y += (cur.z - nxt.z) * (cur.x + nxt.x);
+				normal.z += (cur.x - nxt.x) * (cur.y + nxt.y);
+			}
+			double nLen = glm::length(normal);
+			if (nLen < 1e-15) continue;
+			normal /= nLen;
+
+			// Project to 2D for ear-clipping
+			// Choose the axis-aligned projection that preserves the most area
+			int dropAxis = 0;
+			if (std::abs(normal.y) > std::abs(normal.x) &&
+			    std::abs(normal.y) > std::abs(normal.z))
+				dropAxis = 1;
+			else if (std::abs(normal.z) > std::abs(normal.x))
+				dropAxis = 2;
+
+			auto project = [&](const Vec &p) -> glm::dvec2 {
+				if (dropAxis == 0) return {p.y, p.z};
+				if (dropAxis == 1) return {p.x, p.z};
+				return {p.x, p.y};
+			};
+
+			std::vector<glm::dvec2> poly2d(n);
+			for (uint32_t i = 0; i < n; i++)
+				poly2d[i] = project(vtxPos[loop[i]]);
+
+			// Check winding of the 2D polygon.  If CW, the fill normal
+			// will point opposite to `normal`.  We want the fill normal
+			// to match the surrounding mesh, so ensure CCW.
+			double signedArea2 = 0;
+			for (uint32_t i = 0; i < n; i++)
+			{
+				auto &a = poly2d[i];
+				auto &b = poly2d[(i+1)%n];
+				signedArea2 += a.x * b.y - b.x * a.y;
+			}
+			// If signedArea2 < 0, polygon is CW in 2D -> reverse
+			bool reversed = false;
+			if (signedArea2 < 0)
+			{
+				std::reverse(poly2d.begin(), poly2d.end());
+				std::reverse(loop.begin(), loop.end());
+				reversed = true;
+			}
+
+			// Ear-clipping triangulation
+			std::vector<uint32_t> idx(n);
+			for (uint32_t i = 0; i < n; i++) idx[i] = i;
+
+			auto cross2d = [](const glm::dvec2 &o,
+			                  const glm::dvec2 &a,
+			                  const glm::dvec2 &b) -> double {
+				return (a.x-o.x)*(b.y-o.y) - (a.y-o.y)*(b.x-o.x);
+			};
+
+			auto pointInTri = [&](const glm::dvec2 &p,
+			                      const glm::dvec2 &a,
+			                      const glm::dvec2 &b,
+			                      const glm::dvec2 &c) -> bool {
+				double d1 = cross2d(p, a, b);
+				double d2 = cross2d(p, b, c);
+				double d3 = cross2d(p, c, a);
+				bool hasNeg = (d1 < 0) || (d2 < 0) || (d3 < 0);
+				bool hasPos = (d1 > 0) || (d2 > 0) || (d3 > 0);
+				return !(hasNeg && hasPos);
+			};
+
+			uint32_t remaining = (uint32_t)idx.size();
+			int stuckCount = 0;
+			while (remaining > 2 && stuckCount < (int)remaining * 2)
+			{
+				bool earFound = false;
+				for (uint32_t ii = 0; ii < remaining; ii++)
+				{
+					uint32_t prev = idx[(ii + remaining - 1) % remaining];
+					uint32_t cur  = idx[ii];
+					uint32_t next = idx[(ii + 1) % remaining];
+
+					// Is this ear convex?
+					double c2 = cross2d(poly2d[prev], poly2d[cur], poly2d[next]);
+					if (c2 <= 1e-15) { stuckCount++; continue; }
+
+					// Is any other vertex inside this ear?
+					bool inside = false;
+					for (uint32_t jj = 0; jj < remaining; jj++)
+					{
+						uint32_t vi = idx[jj];
+						if (vi == prev || vi == cur || vi == next) continue;
+						if (pointInTri(poly2d[vi], poly2d[prev],
+						               poly2d[cur], poly2d[next]))
+						{ inside = true; break; }
+					}
+					if (inside) { stuckCount++; continue; }
+
+					// Valid ear: add triangle
+					result.AddFace(vtxPos[loop[prev]],
+					               vtxPos[loop[cur]],
+					               vtxPos[loop[next]], 0);
+					// Remove cur from the polygon
+					idx.erase(idx.begin() + ii);
+					remaining--;
+					earFound = true;
+					stuckCount = 0;
+					break;
+				}
+				if (!earFound) stuckCount++;
+			}
+		}
+	}
+
 	inline Geometry Subtract(const Geometry &A, const Geometry &B)
 	{
 		if (!HasVolumeOverlap(A, B))
@@ -682,6 +1067,8 @@ namespace fuzzybools
 		uint32_t bdryClip = CountBoundaryEdges(result);
 		if (bdryClip > bdryA)
 			RepairBoundaryEdges(result, geom, geom.data);
+
+		CloseBoundaryHoles(result);
 
 		CleanNonManifoldShells(result);
 		return result;
