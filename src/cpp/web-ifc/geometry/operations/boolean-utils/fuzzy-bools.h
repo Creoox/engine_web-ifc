@@ -233,30 +233,21 @@ namespace fuzzybools
 		result.planeData.clear();
 		result.buildPlanes();
 		Geometry backup = result;
-		EdgeMapData emd;
-		BuildEdgeMap(result, emd);
-		uint32_t openBefore = emd.openEdgeCount;
-#if defined( CSG_DEBUG_OUTPUT ) || defined(_DEBUG)
-		if (openBefore > 0) {
-			DumpGeometry(result, L"CleanNonManifoldShells-entry.obj");
-		}
-		bool meshValidOnEntry = meshSanityCheck(result);
-#endif
 
-		// -- Phase A: strip sliver triangles -----------------------------
+		// -- Phase A: strip degenerate triangles
 		// Threshold 1e-9 m² sits well above the toleranceAddFace filter
 		// (~5e-11 m²) so it removes only absolute dregs, while staying
 		// far below the smallest real feature in any meter-scale model.
 		{
-			constexpr double SLIVER_AREA_THRESHOLD = 1e-9;
+			constexpr double DEGENERATE_AREA_THRESHOLD = 1e-9;
 			const uint32_t n = result.numFaces;
 			uint32_t sliverCount = 0;
 			for (uint32_t i = 0; i < n; i++)
 			{
 				Face f = result.GetFace(i);
 				if (areaOfTriangle(result.GetPoint(f.i0),
-				                   result.GetPoint(f.i1),
-				                   result.GetPoint(f.i2)) < SLIVER_AREA_THRESHOLD)
+					result.GetPoint(f.i1),
+					result.GetPoint(f.i2)) < DEGENERATE_AREA_THRESHOLD)
 					sliverCount++;
 			}
 			if (sliverCount > 0)
@@ -271,7 +262,8 @@ namespace fuzzybools
 					Vec a = result.GetPoint(f.i0);
 					Vec b = result.GetPoint(f.i1);
 					Vec c = result.GetPoint(f.i2);
-					if (areaOfTriangle(a, b, c) >= SLIVER_AREA_THRESHOLD) {
+					double area = areaOfTriangle(a, b, c);
+					if (area >= DEGENERATE_AREA_THRESHOLD) {
 						tmp.AddFace(a, b, c, f.pId);
 #ifdef _DEBUG
 						if (f.pId == UINT32_MAX) {
@@ -280,10 +272,25 @@ namespace fuzzybools
 #endif
 					}
 				}
+				tmp.planeData.clear();
+				tmp.planes.clear();
+				tmp.hasPlanes = false;
+				tmp.buildPlanes();
 				result = tmp;
-				BuildEdgeMap(result, emd); // refresh after Phase A
 			}
 		}
+
+		EdgeMapData emd;
+		BuildEdgeMap(result, emd);
+		uint32_t openBefore = emd.openEdgeCount;
+#if defined( CSG_DEBUG_OUTPUT ) || defined(_DEBUG)
+		if (openBefore > 0) {
+			DumpGeometry(result, L"CleanNonManifoldShells-entry.obj");
+		}
+		bool meshValidOnEntry = meshSanityCheck(result);
+#endif
+
+
 
 		// -- Phase A.5: close obvious open-edge loops ----------------------
 		// Detect boundary edges (shared by exactly 1 face), build an
@@ -567,7 +574,7 @@ namespace fuzzybools
 		// Build BVH of the result mesh (used by B.1)
 		BVH resultBVH = MakeBVH(result);
 
-		// B.1: double-layer detection — probe along ±normal for nearby
+		// B.1: double-layer detection — probe along +/-normal for nearby
 		//      opposing faces (within THIN_THRESHOLD, anti-parallel normals).
 		for (uint32_t i = 0; i < nFaces; i++)
 		{
@@ -804,19 +811,32 @@ namespace fuzzybools
 			}
 #endif
 		}
+
+		cleaned.hasPlanes = false;  // rebuild planes
+		cleaned.planes.clear();
+		cleaned.planeData.clear();
+		cleaned.buildPlanes();
+
 		cleaned.data = result.data; // preserve face-count metadata
 		result = cleaned;
 
 		// -- Safety: revert if open-edge count increased ------------------
 		BuildEdgeMap(result, emd);
-		if (emd.openEdgeCount > openBefore)
+		if (emd.openEdgeCount >= openBefore)
 			result = backup;
 
 #if defined( CSG_DEBUG_OUTPUT ) || defined(_DEBUG)
+		EdgeMapData emdCheck;
+		BuildEdgeMap(backup, emdCheck);
+
 		// Sanity-check the result geometry for internal consistency.
 		bool meshValidOnExit = meshSanityCheck(result);
 		if (!meshValidOnExit) {
 			printf("CleanNonManifoldShells: mesh sanity check failed after cleanup!\n");
+		}
+		if (emd.openEdgeCount > 0) {
+			// remaining open edges
+			DumpGeometry(result, L"CleanNonManifoldShells-exit.obj");
 		}
 #endif
 	}
