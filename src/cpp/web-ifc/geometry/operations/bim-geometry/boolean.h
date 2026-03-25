@@ -15,8 +15,8 @@ namespace bimGeometry {
     { 
         int type;
         std::string op;
-        Geometry geometry;
-        std::vector<Geometry> seconds;
+        fb::Geometry geometry;
+        std::vector<fb::Geometry> seconds;
         std::vector<std::vector<glm::dvec3>> triangles;
 
         Buffers GetBuffers();

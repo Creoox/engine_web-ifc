@@ -9,11 +9,13 @@
 namespace fuzzybools
 {
 	constexpr int VERTEX_FORMAT_SIZE_FLOATS = 6;
+	constexpr double reconstructTolerance = 1.0E-01;
 
 	struct SimplePlane
 	{
 		double distance;
 		Vec normal;
+		size_t id;
 
 		bool IsEqualTo(const Vec &n, double d)
 		{
@@ -51,10 +53,157 @@ namespace fuzzybools
 			numFaces = indexData.size() / 3;
 		}
 
+		inline void buildPlanes()
+		{
+			if (!hasPlanes)
+			{
+				std::vector<double> storedVertexData = vertexData;
+				auto GetStoredPoint = [&](size_t index) -> glm::dvec3
+					{
+						return glm::dvec3(
+							storedVertexData[index * VERTEX_FORMAT_SIZE_FLOATS + 0],
+							storedVertexData[index * VERTEX_FORMAT_SIZE_FLOATS + 1],
+							storedVertexData[index * VERTEX_FORMAT_SIZE_FLOATS + 2]);
+					};
+
+				uint32_t PLANE_REFIT_ITERATIONS = 3;
+				for (uint32_t r = 0; r < PLANE_REFIT_ITERATIONS; r++)
+				{
+					planes.clear();
+					planeData.clear();
+
+					for (size_t i = 0; i < numFaces; i++)
+					{
+						planeData.push_back(UINT32_MAX);
+					}
+
+					Vec centroid = Vec(0, 0, 0);
+
+					for (size_t i = 0; i < numFaces; i++)
+					{
+						Face f = GetFace(i);
+
+						auto a = GetPoint(f.i0);
+						auto b = GetPoint(f.i1);
+						auto c = GetPoint(f.i2);
+
+						centroid = centroid + (a + b + c) / 3.0;
+					}
+
+					centroid /= numFaces;
+
+					for (size_t i = 0; i < numFaces; i++) {
+						Face f = GetFace(i);
+
+						auto a = GetPoint(f.i0);
+						auto b = GetPoint(f.i1);
+						auto c = GetPoint(f.i2);
+
+						glm::dvec3 norm;
+
+						if (computeSafeNormal(a, b, c, norm, EPS_SMALL)) {
+							double da = glm::dot(norm, a - centroid);
+							double db = glm::dot(norm, b - centroid);
+							double dc = glm::dot(norm, c - centroid);
+
+							size_t id = AddPlane(norm, (da + db + dc) / 3.0);
+							planeData[i] = id;
+							hasPlanes = true;
+						}
+						else {
+							// if other planes set hasPlanes to true, we can not leave faces with invalid plane IDs
+							glm::dvec3 defaultNorm(0,0,1);
+							size_t id = AddPlane(defaultNorm, 0);
+							planeData[i] = id;
+						}
+					}
+
+					for (size_t i = 0; i < numFaces; i++) {
+						Face f = GetFace(i);
+
+						auto a = GetPoint(f.i0);
+						auto b = GetPoint(f.i1);
+						auto c = GetPoint(f.i2);
+
+						if (f.pId != UINT32_MAX)
+						{
+							SimplePlane p = planes[f.pId];
+
+							double da = glm::dot(p.normal, a - centroid);
+							double db = glm::dot(p.normal, b - centroid);
+							double dc = glm::dot(p.normal, c - centroid);
+
+							da = p.distance - da;
+							db = p.distance - db;
+							dc = p.distance - dc;
+
+							glm::dvec3 va = a + p.normal * da;
+							glm::dvec3 vb = b + p.normal * db;
+							glm::dvec3 vc = c + p.normal * dc;
+
+							glm::dvec3 dsa = GetStoredPoint(f.i0) - va;
+							glm::dvec3 dsb = GetStoredPoint(f.i1) - vb;
+							glm::dvec3 dsc = GetStoredPoint(f.i2) - vc;
+
+							double fa = glm::length(dsa) / reconstructTolerance;
+							double fb = glm::length(dsb) / reconstructTolerance;
+							double fc = glm::length(dsc) / reconstructTolerance;
+
+							if (fa > 1)
+							{
+								fa = glm::length(dsa) / fa;
+								dsa = glm::normalize(dsa) * fa;
+								va = va + dsa;
+							}
+							if (fb > 1)
+							{
+								fb = glm::length(dsb) / fb;
+								dsb = glm::normalize(dsb) * fb;
+								vb = vb + dsb;
+							}
+							if (fc > 1)
+							{
+								fc = glm::length(dsc) / fc;
+								dsc = glm::normalize(dsc) * fc;
+								vc = vc + dsc;
+							}
+							SetPoint(va.x, va.y, va.z, f.i0);
+							SetPoint(vb.x, vb.y, vb.z, f.i1);
+							SetPoint(vc.x, vc.y, vc.z, f.i2);
+						}
+					}
+				}
+
+				for (size_t i = 0; i < numFaces; i++)
+				{
+					Face f = GetFace(i);
+
+					if (f.pId > -1)
+					{
+						auto a = GetPoint(f.i0);
+						auto b = GetPoint(f.i1);
+						auto c = GetPoint(f.i2);
+
+						double da = glm::dot(planes[f.pId].normal, a);
+
+						planes[f.pId].distance = da;
+					}
+				}
+			}
+			// TODO: Remove unused planes
+		}
+
 		inline void AddPoint(glm::dvec4 &pt, glm::dvec3 &n)
 		{
 			glm::dvec3 p = pt;
 			AddPoint(p, n);
+		}
+
+		inline void SetPoint(double x, double y, double z, size_t index)
+		{
+			vertexData[index * VERTEX_FORMAT_SIZE_FLOATS + 0] = x;
+			vertexData[index * VERTEX_FORMAT_SIZE_FLOATS + 1] = y;
+			vertexData[index * VERTEX_FORMAT_SIZE_FLOATS + 2] = z;
 		}
 
 		AABB GetAABB() const
@@ -70,7 +219,20 @@ namespace fuzzybools
 			return aabb;
 		}
 
-		inline void AddPoint(glm::dvec3 &pt, glm::dvec3 &n)
+		//void Geometry::AddPoint(const glm::dvec3& pt, const glm::dvec3& n)
+		//{
+		//	vertexData.push_back(pt.x);
+		//	vertexData.push_back(pt.y);
+		//	vertexData.push_back(pt.z);
+
+		//	vertexData.push_back(n.x);
+		//	vertexData.push_back(n.y);
+		//	vertexData.push_back(n.z);
+
+		//	numPoints += 1;
+		//}
+
+		inline void AddPoint(const glm::dvec3 &pt, const glm::dvec3 &n)
 		{
 			vertexData.push_back(pt.x);
 			vertexData.push_back(pt.y);
@@ -99,7 +261,7 @@ namespace fuzzybools
 			numPoints += 1;
 		}
 
-		inline void AddFace(glm::dvec3 a, glm::dvec3 b, glm::dvec3 c, uint32_t pId)
+		inline void AddFace(glm::dvec3 a, glm::dvec3 b, glm::dvec3 c, uint32_t pId = UINT32_MAX)
 		{
 			glm::dvec3 normal;
 
@@ -121,7 +283,7 @@ namespace fuzzybools
 			AddFace(numPoints - 3, numPoints - 2, numPoints - 1, pId);
 		}
 
-		inline void AddFace(uint32_t a, uint32_t b, uint32_t c, uint32_t pId)
+		inline void AddFace(uint32_t a, uint32_t b, uint32_t c, uint32_t pId = UINT32_MAX)
 		{
 			//			indexData.reserve((numFaces + 1) * 3);
 			//			indexData[numFaces * 3 + 0] = a;
@@ -186,6 +348,48 @@ namespace fuzzybools
 				vertexData[index * VERTEX_FORMAT_SIZE_FLOATS + 0],
 				vertexData[index * VERTEX_FORMAT_SIZE_FLOATS + 1],
 				vertexData[index * VERTEX_FORMAT_SIZE_FLOATS + 2]);
+		}
+
+		inline size_t AddPlane( const glm::dvec3& normal, double d)
+		{
+			for (SimplePlane& plane : planes)
+			{
+				if (plane.IsEqualTo(normal, d))
+				{
+					return plane.id;
+				}
+			}
+
+			SimplePlane p;
+			p.id = planes.size();
+			p.normal = glm::normalize(normal);
+			p.distance = d;
+
+			planes.push_back(p);
+
+			return p.id;
+		}
+
+		void AddGeometry(Geometry geom)
+		{
+			for (uint32_t i = 0; i < geom.numFaces; i++)
+			{
+				Face f = geom.GetFace(i);
+				glm::dvec3 a = geom.GetPoint(f.i0);
+				glm::dvec3 b = geom.GetPoint(f.i1);
+				glm::dvec3 c = geom.GetPoint(f.i2);
+				AddFace(a, b, c);
+			}
+			uint32_t planeDataOffset = geom.planes.size();
+			for (uint32_t i = 0; i < geom.planeData.size(); i++)
+			{
+				planeData.push_back(planeDataOffset + geom.planeData[i]);
+			}
+
+			for (uint32_t i = 0; i < geom.planes.size(); i++)
+			{
+				planes.push_back(geom.planes[i]);
+			}
 		}
 
 		void GetCenterExtents(glm::dvec3 &center, glm::dvec3 &extents) const
@@ -289,3 +493,4 @@ namespace fuzzybools
 		}
 	};
 }
+namespace fb = fuzzybools;

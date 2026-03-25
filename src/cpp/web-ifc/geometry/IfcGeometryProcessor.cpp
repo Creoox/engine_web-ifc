@@ -2049,7 +2049,7 @@ namespace webifc::geometry
         uint32_t id = 0;
         for (auto plane : geom.planes)
         {
-            webifc::geometry::Plane newPlane;
+            fuzzybools::SimplePlane newPlane;
             newPlane.id = id;
             newPlane.distance = plane.distance;
             newPlane.normal = plane.normal;

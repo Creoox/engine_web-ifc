@@ -116,7 +116,7 @@ namespace fuzzybools
                     // product in the inside-outside test gives valdot = −ε for BOTH faces,
                     // so hasIntersection stays false.  Without this fix the winding counter
                     // never sees the near face; instead it counts the far face of the other
-                    // solid, giving winding=1 → INSIDE → face wrongly dropped → open mesh.
+                    // solid, giving winding=1 -> INSIDE -> face wrongly dropped -> open mesh.
                     //
                     // Distinguish case C from A/B by re-computing NdotDir and t, then confirm
                     // with a barycentric test that pt actually sits on the triangle boundary.

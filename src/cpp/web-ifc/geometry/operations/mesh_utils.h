@@ -61,7 +61,7 @@ namespace webifc::geometry
         }
     }
 
-    inline void AppendGeometry(IfcGeometry& geometry, const bimGeometry::Geometry& geom)
+    inline void AppendGeometry(IfcGeometry& geometry, const fb::Geometry& geom)
     {
         for (int i = 0; i < geom.numFaces; ++i)
         {
@@ -160,7 +160,7 @@ namespace webifc::geometry
         double totalArc = arcLen.back();
         if (totalArc < 1e-12) return;
 
-        // Interpolate profile at arc-length s → (radius, height)
+        // Interpolate profile at arc-length s -> (radius, height)
         auto profileAt = [&](double s) -> MeridPt
         {
             if (s <= arcLen.front()) return merid.front();
@@ -175,7 +175,7 @@ namespace webifc::geometry
             };
         };
 
-        // UV → 3D: u = angle (degrees), v = arc-length along profile
+        // UV -> 3D: u = angle (degrees), v = arc-length along profile
         auto uvTo3D = [&](double u, double v) -> glm::dvec3
         {
             auto mp = profileAt(v);
@@ -310,7 +310,7 @@ namespace webifc::geometry
             // degenerate zero-height intervals when profile edges are diagonal
             // in UV space (both U and V change).  At u = minU the diagonal
             // edge's crossing sits at the shared vertex V, same as the arc
-            // crossing → collapsed interval.  Fix: collect V values from
+            // crossing -> collapsed interval.  Fix: collect V values from
             // boundary polygon vertices near the column angle to recover the
             // full cross-section range.
             if (k == 0 || k == uSteps)
@@ -481,7 +481,7 @@ namespace webifc::geometry
         glm::dvec3 axisZ = glm::normalize(surface.transformation[2]);
         double radius = surface.CylinderSurface.Radius;
 
-        // UV → 3D (matches RevolveCylinder: sin(u)*axisX + cos(u)*axisY)
+        // UV -> 3D (matches RevolveCylinder: sin(u)*axisX + cos(u)*axisY)
         auto uvTo3D = [&](double u, double v) -> glm::dvec3
         {
             double uRad = glm::radians(u);

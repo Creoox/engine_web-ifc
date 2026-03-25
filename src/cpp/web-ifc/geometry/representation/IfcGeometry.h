@@ -10,6 +10,7 @@
 #include <string>
 #include <cstdint>
 #include <glm/glm.hpp>
+#include "../operations/boolean-utils/fuzzy-bools.h"
 #include "../operations/boolean-utils/geometry.h"
 #include "../operations/bim-geometry/aabb.h"
 #include "../operations/bim-geometry/face.h"
@@ -18,21 +19,12 @@
 
 #include "geometry.h"
 
-namespace webifc::geometry {
+using namespace fuzzybools;
 
+namespace webifc::geometry {
 	constexpr int VERTEX_FORMAT_SIZE_FLOATS = bimGeometry::VERTEX_FORMAT_SIZE_FLOATS;
 
-    struct Plane : bimGeometry::Plane
-    {
-		
-	};
-
-    struct AABB : bimGeometry::AABB
-    {
-
-    };
-
-	struct Geometry : bimGeometry::Geometry
+	struct Geometry : fuzzybools::Geometry
 	{
 		bool isPolygon = false;
 

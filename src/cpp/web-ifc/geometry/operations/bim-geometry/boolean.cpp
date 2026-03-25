@@ -19,7 +19,7 @@ namespace bimGeometry {
 
         for (int r = 0; r < geom.numFaces; r++)
         {
-            bimGeometry::Face f = geom.GetFace(r);
+            fb::Face f = geom.GetFace(r);
             buffers.AddTri(geom.GetPoint(f.i0), geom.GetPoint(f.i1),  geom.GetPoint(f.i2));
         }
 
