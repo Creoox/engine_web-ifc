@@ -2,7 +2,7 @@
 #include <vector>
 #include <algorithm>
 #include <glm/glm.hpp>
-#include "geometry.h"
+#include "../boolean-utils/fuzzy-bools.h"
 #include "epsilons.h"
 #include "curve.h"
 #include <mapbox/earcut.hpp>

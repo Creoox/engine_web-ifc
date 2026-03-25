@@ -1,9 +1,9 @@
 #include <vector>
 #include <algorithm>
 #include <glm/glm.hpp>
+#include "../boolean-utils/fuzzy-bools.h"
 #include "revolution.h"
 #include "epsilons.h"
-#include "geometry.h"
 #include "utils.h"
 
 using Vec = glm::dvec3;

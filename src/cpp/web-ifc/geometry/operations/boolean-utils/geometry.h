@@ -219,19 +219,6 @@ namespace fuzzybools
 			return aabb;
 		}
 
-		//void Geometry::AddPoint(const glm::dvec3& pt, const glm::dvec3& n)
-		//{
-		//	vertexData.push_back(pt.x);
-		//	vertexData.push_back(pt.y);
-		//	vertexData.push_back(pt.z);
-
-		//	vertexData.push_back(n.x);
-		//	vertexData.push_back(n.y);
-		//	vertexData.push_back(n.z);
-
-		//	numPoints += 1;
-		//}
-
 		inline void AddPoint(const glm::dvec3 &pt, const glm::dvec3 &n)
 		{
 			vertexData.push_back(pt.x);

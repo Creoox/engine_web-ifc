@@ -3,7 +3,6 @@
 #include <glm/glm.hpp>
 #include "boolean.h"
 #include "epsilons.h"
-#include "geometry.h"
 #include "utils.h"
 #include "booleanUtils.h"
 

@@ -25,10 +25,9 @@ namespace fuzzybools
 
 	// ---------------------------------------------------------------
 	// Shared mesh-edge data produced by BuildEdgeMap.
-	// Holds spatial-hash vertex deduplication results, per-face
-	// canonical vertex IDs, the edge-to-face map, and the count of
-	// boundary (open) edges.  Passed by reference so the caller can
-	// reuse the data without rebuilding.
+	// Holds spatial-hash vertex deduplication results, per-face canonical vertex IDs,
+	// the edge-to-face map, and the count of boundary (open) edges.  Passed by reference so the 
+	// caller can reuse the data without rebuilding.
 	// ---------------------------------------------------------------
 	struct EdgeMapData {
 		struct EKey {
@@ -133,21 +132,21 @@ namespace fuzzybools
 
 		// indexData must hold exactly 3 indices per face
 		if (result.indexData.size() != result.numFaces * 3) {
-			printf("CleanNonManifoldShells: indexData.size()=%zu != numFaces*3=%u\n",
+			printf("PostBooleanCleanup: indexData.size()=%zu != numFaces*3=%u\n",
 				result.indexData.size(), result.numFaces * 3);
 			ok = false;
 		}
 
 		// planeData must hold exactly 1 entry per face
 		if (result.planeData.size() != result.numFaces) {
-			printf("CleanNonManifoldShells: planeData.size()=%zu != numFaces=%u\n",
+			printf("PostBooleanCleanup: planeData.size()=%zu != numFaces=%u\n",
 				result.planeData.size(), result.numFaces);
 			ok = false;
 		}
 
 		// vertexData must hold exactly 6 doubles per point
 		if (result.vertexData.size() != result.numPoints * VERTEX_FORMAT_SIZE_FLOATS) {
-			printf("CleanNonManifoldShells: vertexData.size()=%zu != numPoints*6=%u\n",
+			printf("PostBooleanCleanup: vertexData.size()=%zu != numPoints*6=%u\n",
 				result.vertexData.size(),
 				result.numPoints * VERTEX_FORMAT_SIZE_FLOATS);
 			ok = false;
@@ -156,7 +155,7 @@ namespace fuzzybools
 		// Every index must reference a valid vertex
 		for (size_t i = 0; i < result.indexData.size(); i++) {
 			if (result.indexData[i] >= result.numPoints) {
-				printf("CleanNonManifoldShells: indexData[%zu]=%u >= numPoints=%u\n",
+				printf("PostBooleanCleanup: indexData[%zu]=%u >= numPoints=%u\n",
 					i, result.indexData[i], result.numPoints);
 				ok = false;
 				break;
@@ -170,7 +169,7 @@ namespace fuzzybools
 				uint32_t planeIdx = f.pId;
 				
 				if (planeIdx >= result.planes.size()) {
-					printf("CleanNonManifoldShells: face %zu has invalid plane ID\n",i);
+					printf("PostBooleanCleanup: face %zu has invalid plane ID\n",i);
 					ok = false;
 					break;
 				}
@@ -183,27 +182,34 @@ namespace fuzzybools
 			if (std::isnan(result.vertexData[base + 0]) ||
 				std::isnan(result.vertexData[base + 1]) ||
 				std::isnan(result.vertexData[base + 2])) {
-				printf("CleanNonManifoldShells: NaN in vertex %u position\n", i);
+				printf("PostBooleanCleanup: NaN in vertex %u position\n", i);
 				ok = false;
 				break;
 			}
 		}
 
 		if (!ok) {
-			printf("CleanNonManifoldShells: consistency check failed\n");
+			printf("PostBooleanCleanup: consistency check failed\n");
 			// no roll-back in debug only! That could lead to a crash happening only in release!
 		}
 		return ok;
 	}
 
 	// ---------------------------------------------------------------
-	// Post-boolean cleanup, four phases:
+	// Post-boolean cleanup -- runs after every Subtract / Union.
 	//
-	// Phase A — strip near-degenerate sliver triangles (area < 1e-9 m²)
+	// Phase A  -- strip near-degenerate sliver triangles (area < 1e-9 m^2)
 	//   that accumulate at intersection boundaries across multiple
 	//   boolean iterations.
 	//
-	// Phase B — detect and remove thin membrane regions.
+	// Phase A.2 -- merge coplanar adjacent faces and re-triangulate
+	//   with CDT.  Boolean ops split large flat surfaces into many
+	//   coplanar triangles; the unnecessary internal edges between
+	//   them create spurious open edges.  Merging eliminates those.
+	//
+	// Phase A.5 -- close obvious open-edge loops via ear-clipping.
+	//
+	// Phase B  -- detect and remove thin membrane regions.
 	//   B.1   Double-layer detection: ray-cast from each face centre
 	//         along ±normal within THIN_THRESHOLD (1 mm). Opposing
 	//         faces with anti-parallel normals -> both removed.
@@ -227,7 +233,7 @@ namespace fuzzybools
 	// (cell size = toleranceVectorEquality, 27-cell neighbourhood,
 	// exact distance check).
 	// ---------------------------------------------------------------
-	inline void CleanNonManifoldShells(fuzzybools::Geometry &result) {
+	inline void PostBooleanCleanup(fuzzybools::Geometry &result) {
 		result.hasPlanes = false;  // rebuild planes, since they could be invalid after fuzzybools::Subtract
 		result.planes.clear();
 		result.planeData.clear();
@@ -235,20 +241,44 @@ namespace fuzzybools
 		Geometry backup = result;
 
 		// -- Phase A: strip degenerate triangles
-		// Threshold 1e-9 m² sits well above the toleranceAddFace filter
-		// (~5e-11 m²) so it removes only absolute dregs, while staying
-		// far below the smallest real feature in any meter-scale model.
+		// Two-criteria degenerate triangle removal:
+		//   1. Area < 1e-9 m^2 (catches truly zero-area faces)
+		//   2. Minimum altitude < toleranceVectorEquality (catches
+		//      near-colinear faces that have long edges but negligible
+		//      height -- common boolean artifacts where z-coordinates
+		//      differ by ~1e-8, giving area ~4e-8 which exceeds the
+		//      pure area threshold but altitude ~1e-9 m)
 		{
 			constexpr double DEGENERATE_AREA_THRESHOLD = 1e-9;
+			const double ALTITUDE_THRESHOLD = toleranceVectorEquality; // 1e-4
+
+			auto isDegenerate = [&](const Vec &a, const Vec &b,
+			                        const Vec &c) -> bool
+			{
+				double area = areaOfTriangle(a, b, c);
+				if (area < DEGENERATE_AREA_THRESHOLD) return true;
+				double e0 = glm::length(b - a);
+				double e1 = glm::length(c - b);
+				double e2 = glm::length(a - c);
+				double maxEdge = std::max(e0, std::max(e1, e2));
+				if (maxEdge < 1e-15) return true;
+				double minAltitude = 2.0 * area / maxEdge;
+				return minAltitude < ALTITUDE_THRESHOLD;
+			};
+
 			const uint32_t n = result.numFaces;
+			std::vector<bool> isDegen(n, false);
 			uint32_t sliverCount = 0;
 			for (uint32_t i = 0; i < n; i++)
 			{
 				Face f = result.GetFace(i);
-				if (areaOfTriangle(result.GetPoint(f.i0),
-					result.GetPoint(f.i1),
-					result.GetPoint(f.i2)) < DEGENERATE_AREA_THRESHOLD)
+				if (isDegenerate(result.GetPoint(f.i0),
+				                 result.GetPoint(f.i1),
+				                 result.GetPoint(f.i2)))
+				{
+					isDegen[i] = true;
 					sliverCount++;
+				}
 			}
 			if (sliverCount > 0)
 			{
@@ -258,19 +288,11 @@ namespace fuzzybools
 				tmp.data = result.data;
 				for (uint32_t i = 0; i < n; i++)
 				{
+					if (isDegen[i]) continue;
 					Face f = result.GetFace(i);
-					Vec a = result.GetPoint(f.i0);
-					Vec b = result.GetPoint(f.i1);
-					Vec c = result.GetPoint(f.i2);
-					double area = areaOfTriangle(a, b, c);
-					if (area >= DEGENERATE_AREA_THRESHOLD) {
-						tmp.AddFace(a, b, c, f.pId);
-#ifdef _DEBUG
-						if (f.pId == UINT32_MAX) {
-							printf("Warning: face %u has no plane assigned\n", i);
-						}
-#endif
-					}
+					tmp.AddFace(result.GetPoint(f.i0),
+					            result.GetPoint(f.i1),
+					            result.GetPoint(f.i2), f.pId);
 				}
 				tmp.planeData.clear();
 				tmp.planes.clear();
@@ -284,13 +306,486 @@ namespace fuzzybools
 		BuildEdgeMap(result, emd);
 		uint32_t openBefore = emd.openEdgeCount;
 #if defined( CSG_DEBUG_OUTPUT ) || defined(_DEBUG)
-		if (openBefore > 0) {
-			DumpGeometry(result, L"CleanNonManifoldShells-entry.obj");
-		}
+		//if (openBefore > 0) {
+			DumpGeometry(result, L"PostBooleanCleanup-entry.obj");
+		//}
 		bool meshValidOnEntry = meshSanityCheck(result);
 #endif
 
+		// -- Phase A.2: merge coplanar adjacent faces ----------------------
+		// Boolean ops split large flat surfaces into many coplanar
+		// triangles.  The unnecessary internal edges between them can
+		// create spurious open edges.  Groups faces by GEOMETRIC
+		// coplanarity (same normal direction + same plane distance),
+		// not by plane ID, so faces from different boolean operands
+		// are correctly merged.  For each connected component, extract
+		// the boundary polygon(s), re-triangulate with CDT, and replace
+		// the original faces.
+		{
+			const uint32_t nf = result.numFaces;
+			if (nf >= 4)
+			{
+				auto &fids      = emd.fvid;
+				auto &fpids     = emd.fpid;
+				auto &edgeFaces = emd.edgeFaces;
+				auto &vidPos    = emd.vidPos;
 
+				// Step 1: Pre-compute geometric plane for every face.
+				struct FacePlane { Vec normal; Vec vertex; bool valid; };
+				std::vector<FacePlane> facePlane(nf);
+				for (uint32_t i = 0; i < nf; i++)
+				{
+					Vec a = vidPos[fids[i][0]];
+					Vec b = vidPos[fids[i][1]];
+					Vec c = vidPos[fids[i][2]];
+					Vec n;
+					if (computeSafeNormal(a, b, c, n, EPS_SMALL))
+						facePlane[i] = {n, a, true};
+					else
+						facePlane[i] = {Vec(0), a, false};
+				}
+
+				// Coplanarity test: same normal direction (not anti-parallel)
+				// and the neighbor's vertex lies on the seed's plane.
+				auto isCoplanar = [&](const FacePlane &seed,
+				                      const FacePlane &nb) -> bool
+				{
+					if (!seed.valid || !nb.valid) return false;
+					if (glm::dot(seed.normal, nb.normal) <
+					    1.0 - toleranceVectorEquality)
+						return false;
+					double dist = std::abs(glm::dot(
+						seed.normal, nb.vertex - seed.vertex));
+					return dist < toleranceVectorEquality;
+				};
+
+				// Step 2: BFS to find connected components of coplanar faces.
+				std::vector<bool> visited(nf, false);
+				std::vector<bool> removedFace(nf, false);
+				struct NewFace { Vec a, b, c; uint32_t pid; };
+				std::vector<NewFace> newFaces;
+
+				for (uint32_t seed = 0; seed < nf; seed++)
+				{
+					if (visited[seed]) continue;
+					if (!facePlane[seed].valid) { visited[seed] = true; continue; }
+					visited[seed] = true;
+
+					std::vector<uint32_t> group;
+					std::queue<uint32_t> q;
+					q.push(seed);
+
+					while (!q.empty())
+					{
+						uint32_t cur = q.front(); q.pop();
+						group.push_back(cur);
+
+						for (int e = 0; e < 3; e++)
+						{
+							uint32_t a = fids[cur][e];
+							uint32_t b = fids[cur][(e + 1) % 3];
+							EdgeMapData::EKey ek = {std::min(a, b),
+							                        std::max(a, b)};
+							auto it = edgeFaces.find(ek);
+							if (it == edgeFaces.end()) continue;
+							for (uint32_t nb : it->second)
+							{
+								if (nb != cur && !visited[nb] &&
+								    isCoplanar(facePlane[seed], facePlane[nb]))
+								{
+									visited[nb] = true;
+									q.push(nb);
+								}
+							}
+						}
+					}
+
+					if (group.size() < 2) continue;
+
+					// Step 3: Extract undirected boundary edges.
+					// An edge is a patch boundary if only 1 face in the
+					// group uses it.
+					std::unordered_set<uint32_t> patchSet(
+						group.begin(), group.end());
+
+					std::unordered_map<uint32_t, std::vector<uint32_t>> bdryAdj;
+
+					for (uint32_t fi : group)
+						for (int e = 0; e < 3; e++)
+						{
+							uint32_t a = fids[fi][e];
+							uint32_t b = fids[fi][(e + 1) % 3];
+							EdgeMapData::EKey ek = {std::min(a, b),
+							                        std::max(a, b)};
+							auto it = edgeFaces.find(ek);
+							bool isBoundary = true;
+							if (it != edgeFaces.end())
+								for (uint32_t nb : it->second)
+									if (nb != fi && patchSet.count(nb))
+									{
+										isBoundary = false;
+										break;
+									}
+							if (isBoundary)
+							{
+								bdryAdj[a].push_back(b);
+								bdryAdj[b].push_back(a);
+							}
+						}
+
+					if (bdryAdj.empty()) continue;
+
+					// Step 4: Trace boundary loops (undirected).
+					// Each boundary vertex should have degree 2 for a
+					// simple loop.  Skip the group if any vertex has
+					// degree != 2 (junction / non-manifold).
+					std::unordered_set<uint32_t> usedVerts;
+					std::vector<std::vector<uint32_t>> loops;
+					bool loopsValid = true;
+
+					for (auto &[start, adj] : bdryAdj)
+					{
+						if (usedVerts.count(start)) continue;
+						if (adj.size() != 2)
+						{
+							loopsValid = false;
+							break;
+						}
+
+						std::vector<uint32_t> loop;
+						loop.push_back(start);
+						usedVerts.insert(start);
+						uint32_t prev = start;
+						uint32_t cur = adj[0];
+
+						while (cur != start)
+						{
+							if (usedVerts.count(cur))
+							{
+								loopsValid = false;
+								break;
+							}
+							auto it2 = bdryAdj.find(cur);
+							if (it2 == bdryAdj.end() ||
+							    it2->second.size() != 2)
+							{
+								loopsValid = false;
+								break;
+							}
+							loop.push_back(cur);
+							usedVerts.insert(cur);
+							uint32_t next =
+								(it2->second[0] == prev)
+								? it2->second[1] : it2->second[0];
+							prev = cur;
+							cur = next;
+						}
+
+						if (!loopsValid || loop.size() < 3) break;
+
+						// Step 5: Determine correct winding by comparing
+						// the first edge with the adjacent face's edge.
+						EdgeMapData::EKey ek0 = {
+							std::min(loop[0], loop[1]),
+							std::max(loop[0], loop[1])};
+						auto eit = edgeFaces.find(ek0);
+						if (eit != edgeFaces.end())
+						{
+							// Find a face in the patch that uses this edge
+							for (uint32_t fi : eit->second)
+							{
+								if (!patchSet.count(fi)) continue;
+								for (int e = 0; e < 3; e++)
+								{
+									uint32_t fa = fids[fi][e];
+									uint32_t fb = fids[fi][(e + 1) % 3];
+									if (fa == loop[0] && fb == loop[1])
+									{
+										std::reverse(loop.begin(),
+										             loop.end());
+										goto windingDone;
+									}
+									if (fa == loop[1] && fb == loop[0])
+										goto windingDone;
+								}
+							}
+						}
+						windingDone:
+
+						loops.push_back(std::move(loop));
+					}
+
+					if (!loopsValid || loops.empty()) continue;
+
+					// Step 6: Project boundary vertices to 2D using the
+					// seed face's geometric plane.
+					Vec planeN = facePlane[seed].normal;
+					Vec origin = facePlane[seed].vertex;
+					Vec ref2 = (std::abs(planeN.x) < 0.9)
+					         ? Vec(1, 0, 0) : Vec(0, 1, 0);
+					Vec uAxis = glm::normalize(
+						glm::cross(planeN, ref2));
+					Vec vAxis = glm::cross(planeN, uAxis);
+
+					// Collect unique boundary vertices and project
+					std::vector<uint32_t> allVids;
+					std::unordered_map<uint32_t, uint32_t> vidToLocal;
+					for (auto &lp : loops)
+						for (uint32_t vid : lp)
+							if (!vidToLocal.count(vid))
+							{
+								vidToLocal[vid] = static_cast<uint32_t>(
+									allVids.size());
+								allVids.push_back(vid);
+							}
+
+					std::vector<glm::dvec2> projPts(allVids.size());
+					for (size_t i = 0; i < allVids.size(); i++)
+					{
+						Vec rel = vidPos[allVids[i]] - origin;
+						projPts[i] = glm::dvec2(
+							glm::dot(rel, uAxis),
+							glm::dot(rel, vAxis));
+					}
+
+					// Step 7: CDT triangulation with constraint edges.
+					// Degenerate loops (colinear vertices, signed area ~ 0)
+					// are kept as CDT constraints (to respect vertex placement)
+					// but excluded from isInsideBoundary (ray-casting is
+					// undefined for zero-area polygons).
+					std::vector<CDT::V2d<double>> cdtVerts(projPts.size());
+					for (size_t i = 0; i < projPts.size(); i++)
+						cdtVerts[i] = CDT::V2d<double>::make(
+							projPts[i].x, projPts[i].y);
+
+					std::vector<CDT::Edge> cdtEdges;
+					std::vector<std::pair<size_t, size_t>> bndEdgePairs;
+					for (auto &lp : loops)
+					{
+						size_t n = lp.size();
+
+						// Compute signed area of this loop in 2D
+						double loopArea = 0;
+						for (size_t i = 0; i < n; i++)
+						{
+							uint32_t li0 = vidToLocal[lp[i]];
+							uint32_t li1 = vidToLocal[lp[(i + 1) % n]];
+							loopArea += projPts[li0].x * projPts[li1].y
+							          - projPts[li1].x * projPts[li0].y;
+						}
+						bool degenerateLoop = (std::abs(loopArea) < 1e-9);
+
+						for (size_t i = 0; i < n; i++)
+						{
+							uint32_t li0 = vidToLocal[lp[i]];
+							uint32_t li1 = vidToLocal[lp[(i + 1) % n]];
+							cdtEdges.push_back(CDT::Edge(li0, li1));
+							// Only non-degenerate loops participate in
+							// the inside/outside boundary test.
+							if (!degenerateLoop)
+								bndEdgePairs.push_back({li0, li1});
+						}
+					}
+
+					// CDT dedup + triangulate
+					std::vector<uint32_t> cdtMapping;
+					try
+					{
+						auto dupResult =
+							CDT::RemoveDuplicatesAndRemapEdges(
+								cdtVerts, cdtEdges);
+						cdtMapping.resize(dupResult.mapping.size());
+						for (size_t i = 0; i < dupResult.mapping.size(); i++)
+							cdtMapping[i] = static_cast<uint32_t>(
+								dupResult.mapping[i]);
+
+						CDT::Triangulation<double> cdt(
+							CDT::VertexInsertionOrder::AsProvided);
+						cdt.insertVertices(cdtVerts);
+						cdt.insertEdges(cdtEdges);
+						cdt.eraseSuperTriangle();
+
+						// Step 8: Winding check + filter exterior triangles.
+						Face rf = result.GetFace(group[0]);
+						Vec refNormal;
+						bool hasRef = computeSafeNormal(
+							result.GetPoint(rf.i0),
+							result.GetPoint(rf.i1),
+							result.GetPoint(rf.i2),
+							refNormal, EPS_SMALL);
+
+						bool needFlip = false;
+						if (hasRef && !cdt.triangles.empty())
+						{
+							auto &t0 = cdt.triangles[0];
+							uint32_t vi0 = allVids[
+								cdtMapping[t0.vertices[0]]];
+							uint32_t vi1 = allVids[
+								cdtMapping[t0.vertices[1]]];
+							uint32_t vi2 = allVids[
+								cdtMapping[t0.vertices[2]]];
+							Vec triN;
+							if (computeSafeNormal(
+								vidPos[vi0], vidPos[vi1],
+								vidPos[vi2], triN, EPS_SMALL))
+							{
+								if (glm::dot(triN, refNormal) < 0)
+									needFlip = true;
+							}
+						}
+
+						// Remap boundary edges for inside test
+						std::vector<std::pair<size_t, size_t>> remappedEdges;
+						for (auto &ep : bndEdgePairs)
+							remappedEdges.push_back({
+								cdtMapping[ep.first],
+								cdtMapping[ep.second]});
+
+						std::vector<glm::dvec2> cdtProjPts(cdtVerts.size());
+						for (size_t i = 0; i < cdtVerts.size(); i++)
+							cdtProjPts[i] = glm::dvec2(
+								cdtVerts[i].x, cdtVerts[i].y);
+
+						uint32_t pid = fpids[seed];
+						bool anyAdded = false;
+						for (auto &tri : cdt.triangles)
+						{
+							uint32_t mi0 = cdtMapping[tri.vertices[0]];
+							uint32_t mi1 = cdtMapping[tri.vertices[1]];
+							uint32_t mi2 = cdtMapping[tri.vertices[2]];
+
+							if (!isInsideBoundary(
+								cdtProjPts[mi0], cdtProjPts[mi1],
+								cdtProjPts[mi2],
+								remappedEdges, cdtProjPts))
+								continue;
+
+							uint32_t vi0 = allVids[mi0];
+							uint32_t vi1 = allVids[mi1];
+							uint32_t vi2 = allVids[mi2];
+
+							Vec pa = vidPos[vi0];
+							Vec pb = vidPos[vi1];
+							Vec pc = vidPos[vi2];
+
+							if (areaOfTriangle(pa, pb, pc) < 1e-9)
+								continue;
+
+							if (needFlip)
+								newFaces.push_back({pa, pc, pb, pid});
+							else
+								newFaces.push_back({pa, pb, pc, pid});
+							anyAdded = true;
+						}
+
+						if (anyAdded)
+							for (uint32_t fi : group)
+								removedFace[fi] = true;
+					}
+					catch (...)
+					{
+						// CDT failed -- keep original faces
+						continue;
+					}
+				}
+
+				// Step 9: Rebuild if any faces were replaced.
+				bool anyRemoved = false;
+				for (uint32_t i = 0; i < nf; i++)
+					if (removedFace[i]) { anyRemoved = true; break; }
+
+				if (anyRemoved)
+				{
+					Geometry tmp;
+					tmp.planes = result.planes;
+					tmp.hasPlanes = result.hasPlanes;
+					tmp.data = result.data;
+
+					for (uint32_t i = 0; i < nf; i++)
+					{
+						if (removedFace[i]) continue;
+						Face f = result.GetFace(i);
+						tmp.AddFace(result.GetPoint(f.i0),
+						            result.GetPoint(f.i1),
+						            result.GetPoint(f.i2),
+						            f.pId);
+					}
+					for (auto &nf2 : newFaces)
+						tmp.AddFace(nf2.a, nf2.b, nf2.c, nf2.pid);
+
+					tmp.hasPlanes = false;
+					tmp.planes.clear();
+					tmp.planeData.clear();
+					tmp.buildPlanes();
+					result = tmp;
+
+					BuildEdgeMap(result, emd);
+
+#if defined( CSG_DEBUG_OUTPUT ) || defined(_DEBUG)
+					DumpGeometry(result, L"PostBooleanCleanup-coplanarMerged.obj");
+#endif
+				}
+			}
+		}
+
+		// -- Phase A.3: second degenerate-triangle pass ---------------------
+		// Phase A.2 (CDT) can introduce or expose degenerate colinear
+		// triangles whose edges cross valid triangulation edges on the
+		// same plane.  Uses the same area + altitude criteria as Phase A.
+		{
+			constexpr double DEGENERATE_AREA_THRESHOLD = 1e-9;
+			const double ALTITUDE_THRESHOLD = toleranceVectorEquality;
+
+			auto isDegenerate = [&](const Vec &a, const Vec &b,
+			                        const Vec &c) -> bool
+			{
+				double area = areaOfTriangle(a, b, c);
+				if (area < DEGENERATE_AREA_THRESHOLD) return true;
+				double e0 = glm::length(b - a);
+				double e1 = glm::length(c - b);
+				double e2 = glm::length(a - c);
+				double maxEdge = std::max(e0, std::max(e1, e2));
+				if (maxEdge < 1e-15) return true;
+				double minAltitude = 2.0 * area / maxEdge;
+				return minAltitude < ALTITUDE_THRESHOLD;
+			};
+
+			const uint32_t n = result.numFaces;
+			std::vector<bool> isDegen(n, false);
+			uint32_t sliverCount = 0;
+			for (uint32_t i = 0; i < n; i++)
+			{
+				Face f = result.GetFace(i);
+				if (isDegenerate(result.GetPoint(f.i0),
+				                 result.GetPoint(f.i1),
+				                 result.GetPoint(f.i2)))
+				{
+					isDegen[i] = true;
+					sliverCount++;
+				}
+			}
+			if (sliverCount > 0)
+			{
+				Geometry tmp;
+				tmp.planes = result.planes;
+				tmp.hasPlanes = result.hasPlanes;
+				tmp.data = result.data;
+				for (uint32_t i = 0; i < n; i++)
+				{
+					if (isDegen[i]) continue;
+					Face f = result.GetFace(i);
+					tmp.AddFace(result.GetPoint(f.i0),
+					            result.GetPoint(f.i1),
+					            result.GetPoint(f.i2), f.pId);
+				}
+				tmp.planeData.clear();
+				tmp.planes.clear();
+				tmp.hasPlanes = false;
+				tmp.buildPlanes();
+				result = tmp;
+				BuildEdgeMap(result, emd);
+			}
+		}
 
 		// -- Phase A.5: close obvious open-edge loops ----------------------
 		// Detect boundary edges (shared by exactly 1 face), build an
@@ -508,7 +1003,7 @@ namespace fuzzybools
 				BuildEdgeMap(result, emd);
 
 #if defined( CSG_DEBUG_OUTPUT ) || defined(_DEBUG)
-				DumpGeometry(result, L"CleanNonManifoldShells-loopsClosed.obj");
+				DumpGeometry(result, L"PostBooleanCleanup-loopsClosed.obj");
 #endif
 			}
 		}
@@ -832,11 +1327,11 @@ namespace fuzzybools
 		// Sanity-check the result geometry for internal consistency.
 		bool meshValidOnExit = meshSanityCheck(result);
 		if (!meshValidOnExit) {
-			printf("CleanNonManifoldShells: mesh sanity check failed after cleanup!\n");
+			printf("PostBooleanCleanup: mesh sanity check failed after cleanup!\n");
 		}
 		if (emd.openEdgeCount > 0) {
 			// remaining open edges
-			DumpGeometry(result, L"CleanNonManifoldShells-exit.obj");
+			DumpGeometry(result, L"PostBooleanCleanup-exit.obj");
 		}
 #endif
 	}
@@ -856,7 +1351,7 @@ namespace fuzzybools
 #endif
 
 		auto result = fuzzybools::clipSubtract(geom, bvh1, bvh2);
-		CleanNonManifoldShells(result);
+		PostBooleanCleanup(result);
 		return result;
 	}
 
@@ -871,7 +1366,7 @@ namespace fuzzybools
 		auto geom = Normalize(A, B, sp, true);
 
 		auto result = fuzzybools::clipJoin(geom, bvh1, bvh2);
-		CleanNonManifoldShells(result);
+		PostBooleanCleanup(result);
 		return result;
 	}
 }

@@ -3,7 +3,6 @@
 #include <glm/glm.hpp>
 #include "sweep.h"
 #include "epsilons.h"
-#include "geometry.h"
 #include "utils.h"
 
 using Vec = glm::dvec3;

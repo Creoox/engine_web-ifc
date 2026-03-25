@@ -14,7 +14,6 @@
 #include "../operations/boolean-utils/geometry.h"
 #include "../operations/bim-geometry/aabb.h"
 #include "../operations/bim-geometry/face.h"
-#include "../operations/bim-geometry/geometry.h"
 #include "../operations/bim-geometry/utils.h"
 
 #include "geometry.h"

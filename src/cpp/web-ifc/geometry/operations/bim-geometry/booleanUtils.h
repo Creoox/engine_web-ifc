@@ -1,5 +1,4 @@
 #include "../boolean-utils/fuzzy-bools.h"
-#include "geometry.h"
 
 #pragma once
 using namespace fuzzybools;
