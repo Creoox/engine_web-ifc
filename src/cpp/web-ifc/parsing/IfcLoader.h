@@ -18,8 +18,12 @@ namespace webifc::parsing
 {
   
 	class IfcLoader {
-  
     public:
+        struct IfcLine
+        {
+            uint32_t ifcType;
+            uint32_t tapeOffset;
+        };
       IfcLoader(uint32_t tapeSize, uint64_t memoryLimit,uint32_t lineWriterBuffer, const schema::IfcSchemaManager &schemaManager);  
       ~IfcLoader();
       const std::vector<uint32_t> GetHeaderLinesWithType(const uint32_t type) const;
@@ -71,13 +75,9 @@ namespace webifc::parsing
         _tokenStream->Push(input);
       }
       const schema::IfcSchemaManager& GetSchemaManager() const { return _schemaManager; }
+      const std::unordered_map<uint32_t, IfcLine*>& GetAllLinesMap() const { return _lines; }
 
     private:
-      struct IfcLine 
-      {
-        uint32_t ifcType;
-        uint32_t tapeOffset;
-      };
       IfcLoader(uint32_t maxExpressId, uint32_t lineWriterBuffer, const schema::IfcSchemaManager &schemaManager, IfcTokenStream * tokenStream, std::unordered_map<uint32_t,IfcLine*> &lines, std::vector<IfcLine*> &headerLines,std::unordered_map<uint32_t, std::vector<uint32_t>> &ifcTypeToExpressID);
       uint32_t _maxExpressId;
       const uint32_t _lineWriterBuffer;

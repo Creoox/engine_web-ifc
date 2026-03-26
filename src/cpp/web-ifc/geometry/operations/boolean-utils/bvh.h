@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stack>
 #include <vector>
 #include <glm/glm.hpp>
 
@@ -141,6 +142,38 @@ namespace fuzzybools
             }
 
             return false;
+        }
+
+        // Find all leaf AABBs that overlap a query AABB.
+        // Callback receives the face index of each overlapping box.
+        template <typename T>
+        void QueryAABB(const AABB& query, T callback)
+        {
+            if (nodes.empty()) return;
+
+            static std::vector<uint32_t> stack;
+            stack.clear();
+            stack.emplace_back(0);
+
+            while (!stack.empty())
+            {
+                const auto& node = nodes[stack.back()];
+                stack.pop_back();
+
+                if (!node.box.intersects(query)) continue;
+
+                if (node.IsLeaf())
+                {
+                    for (uint32_t i = node.start; i < node.end; i++)
+                        if (boxes[i].intersects(query))
+                            callback(boxes[i].index);
+                }
+                else
+                {
+                    stack.emplace_back(node.left);
+                    stack.emplace_back(node.right);
+                }
+            }
         }
 
     };
