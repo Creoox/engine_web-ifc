@@ -22,6 +22,83 @@ namespace fuzzybools
 		_BOOLSTATUS = BOOLSTATUS;
 	}
 
+	static bool isMeshWatertight(const Geometry& geom) {
+		if (geom.numFaces == 0) {
+			return false;
+		}
+
+		// Vertices are not shared between triangles, so edges must be compared
+		// by position. Snap coordinates to a grid to handle floating-point noise,
+		// then count how many triangles share each edge by position.
+		// A watertight mesh has every edge shared by exactly 2 triangles.
+
+		constexpr double SNAP = 1e4;  // snap to millimeter precision
+		constexpr int STRIDE = fuzzybools::VERTEX_FORMAT_SIZE_FLOATS;
+
+		auto snapCoord = [](double v) -> int64_t {
+			return static_cast<int64_t>(std::round(v * SNAP));
+			};
+
+		struct Vec3Key {
+			int64_t x, y, z;
+			bool operator==(const Vec3Key& o) const { return x == o.x && y == o.y && z == o.z; }
+		};
+
+		struct Vec3Hash {
+			size_t operator()(const Vec3Key& k) const {
+				size_t h = std::hash<int64_t>{}(k.x);
+				h ^= std::hash<int64_t>{}(k.y) + 0x9e3779b9 + (h << 6) + (h >> 2);
+				h ^= std::hash<int64_t>{}(k.z) + 0x9e3779b9 + (h << 6) + (h >> 2);
+				return h;
+			}
+		};
+
+		// Map each unique snapped position to a canonical index
+		std::unordered_map<Vec3Key, uint32_t, Vec3Hash> posToIndex;
+		std::vector<uint32_t> canonicalIndex(geom.numPoints);
+
+		uint32_t nextIndex = 0;
+		for (uint32_t i = 0; i < geom.numPoints; ++i) {
+			Vec3Key key{
+				snapCoord(geom.vertexData[i * STRIDE + 0]),
+				snapCoord(geom.vertexData[i * STRIDE + 1]),
+				snapCoord(geom.vertexData[i * STRIDE + 2])
+			};
+			auto [it, inserted] = posToIndex.emplace(key, nextIndex);
+			if (inserted) {
+				++nextIndex;
+			}
+			canonicalIndex[i] = it->second;
+		}
+
+		// Count edges using canonical indices
+		auto edgeKey = [](uint32_t a, uint32_t b) -> uint64_t {
+			if (a > b) std::swap(a, b);
+			return (static_cast<uint64_t>(a) << 32) | static_cast<uint64_t>(b);
+			};
+
+		std::unordered_map<uint64_t, int> edgeCount;
+		edgeCount.reserve(geom.numFaces * 3);
+
+		for (uint32_t f = 0; f < geom.numFaces; ++f) {
+			uint32_t i0 = canonicalIndex[geom.indexData[f * 3 + 0]];
+			uint32_t i1 = canonicalIndex[geom.indexData[f * 3 + 1]];
+			uint32_t i2 = canonicalIndex[geom.indexData[f * 3 + 2]];
+
+			edgeCount[edgeKey(i0, i1)]++;
+			edgeCount[edgeKey(i1, i2)]++;
+			edgeCount[edgeKey(i2, i0)]++;
+		}
+
+		for (const auto& [key, count] : edgeCount) {
+			if (count != 2) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
 	// ---------------------------------------------------------------
 	// Post-boolean cleanup, four phases:
 	//
@@ -222,7 +299,7 @@ namespace fuzzybools
 		constexpr double VOLUME_THRESHOLD = 1e-6; // 1 mm³
 		std::vector<bool> thinMarked(nFaces, false);
 
-		// Build BVH of the result mesh (used by B.1)
+		// Build BVH (Bounding Volume Hierarchy) of the result mesh (used by B.1)
 		BVH resultBVH = MakeBVH(result);
 
 		// B.1: double-layer detection — probe along ±normal for nearby

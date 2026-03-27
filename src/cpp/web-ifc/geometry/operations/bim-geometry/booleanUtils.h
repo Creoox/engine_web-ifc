@@ -5,7 +5,7 @@
 
 namespace bimGeometry 
 {
-    fuzzybools::Geometry convertToEngine(Geometry geom)
+    static fuzzybools::Geometry convertToEngine(Geometry geom)
     {
         fuzzybools::Geometry newGeom;
         newGeom.fvertexData = geom.fvertexData;
@@ -25,7 +25,7 @@ namespace bimGeometry
         return newGeom;
     }
 
-    Geometry convertToBim(fuzzybools::Geometry geom)
+    static Geometry convertToBim(fuzzybools::Geometry geom)
     {
         Geometry newGeom;
         newGeom.fvertexData = geom.fvertexData;
@@ -48,21 +48,21 @@ namespace bimGeometry
         return newGeom;
     }
 
-    Geometry Union(Geometry firstOperator, Geometry secondOperator)
+    static Geometry Union(Geometry firstOperator, Geometry secondOperator)
     {        
         fuzzybools::Geometry firstEngGeom = convertToEngine(firstOperator);
         fuzzybools::Geometry secondEngGeom = convertToEngine(secondOperator);
         return convertToBim(fuzzybools::Union(firstEngGeom, secondEngGeom));
     }
 
-    Geometry Subtract(Geometry firstOperator, Geometry secondOperator)
+    static Geometry Subtract(Geometry firstOperator, Geometry secondOperator)
     {
         fuzzybools::Geometry firstEngGeom = convertToEngine(firstOperator);
         fuzzybools::Geometry secondEngGeom = convertToEngine(secondOperator);
         return convertToBim(fuzzybools::Subtract(firstEngGeom, secondEngGeom));
     }
 
-    Geometry BoolProcess(Geometry firstOperator, std::vector<Geometry> &secondGeoms, std::string op)
+    static Geometry BoolProcess(Geometry firstOperator, std::vector<Geometry> &secondGeoms, std::string op)
     {
         Geometry finalResult;
 
