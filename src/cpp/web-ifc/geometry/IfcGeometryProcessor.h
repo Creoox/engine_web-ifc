@@ -42,9 +42,8 @@ namespace webifc::geometry
   public:
     IfcGeometry BoolProcess(const std::vector<IfcGeometry> &firstGeoms, std::vector<IfcGeometry> &secondGeoms, std::string op, IfcGeometrySettings _settings);
 
-  private:
-    fuzzybools::Geometry convertToEngine(Geometry geom);
-    IfcGeometry convertToWebIfc(fuzzybools::Geometry geom);
+    static fuzzybools::Geometry convertToEngine(Geometry geom);
+    static IfcGeometry convertToWebIfc(fuzzybools::Geometry geom);
     IfcGeometry Union(IfcGeometry firstOperator, IfcGeometry secondOperator);
     IfcGeometry Subtract(IfcGeometry firstOperator, IfcGeometry secondOperator);
   };
