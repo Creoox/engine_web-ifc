@@ -677,6 +677,9 @@ namespace meshCleanup {
 		const uint32_t nFaces = geom.numFaces;
 		if (nFaces == 0) return;
 
+		// Save backup for revert if patching doesn't improve the mesh
+		Geometry backup = geom;
+
 		// -- vertex deduplication (same spatial-hash as PostBooleanOperationMeshCleanup) --
 		const double cellSize = toleranceVectorEquality;
 		const double cellSizeSq = cellSize * cellSize;
@@ -1120,14 +1123,22 @@ namespace meshCleanup {
 			}
 		}
 		if (geom.numFaces > nFaces) {
-			// faces have been added -> rebuild planes
+			// faces have been added -> check if the result actually improved
 			geom.hasPlanes = false;
-			meshInfoResult = meshCleanup::isMeshWatertight(geom);
+			auto infoPatched = meshCleanup::isMeshWatertight(geom);
 
+			if (infoPatched.numOpenEdges < meshInfoInput.numOpenEdges) {
+				meshInfoResult = infoPatched;
 #ifdef DUMP_CSG_MESHES
-			webifc::geometry::IfcGeometry inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(geom);
-			webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup" + step + "-patched.obj");
+				webifc::geometry::IfcGeometry inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(geom);
+				webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup" + step + "-patched.obj");
 #endif
+			}
+			else {
+				// patching didn't improve -- revert
+				geom = std::move(backup);
+				meshInfoResult = meshInfoInput;
+			}
 		}
 		else {
 			meshInfoResult = meshInfoInput;
