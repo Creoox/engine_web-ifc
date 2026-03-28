@@ -169,13 +169,180 @@ namespace meshCleanup {
 		return info;
 	}
 
+	// ---------------------------------------------------------------
+	// Remove disconnected non-manifold zero-volume components.
+	// Safe to run at any point -- purely topological, no heuristics.
+	// ---------------------------------------------------------------
+	static void RemoveDisconnectedFragments(Geometry& workingMesh, std::string step,
+		const MeshWatertightInfo& meshInfoInput, MeshWatertightInfo& meshInfoResult) {
+		const uint32_t nFaces = workingMesh.numFaces;
+		if (nFaces == 0) { meshInfoResult = meshInfoInput; return; }
+
+		constexpr double VOLUME_THRESHOLD = 1e-6;
+
+		// Cache face vertices
+		struct FV { Vec a, b, c; uint32_t pId; Vec center; };
+		std::vector<FV> fv(nFaces);
+		for (uint32_t i = 0; i < nFaces; i++) {
+			Face f = workingMesh.GetFace(i);
+			Vec a = workingMesh.GetPoint(f.i0);
+			Vec b = workingMesh.GetPoint(f.i1);
+			Vec c = workingMesh.GetPoint(f.i2);
+			fv[i] = { a, b, c, static_cast<uint32_t>(f.pId), (a + b + c) / 3.0 };
+		}
+
+		// Vertex dedup
+		const double cellSize = toleranceVectorEquality;
+		const double cellSizeSq = cellSize * cellSize;
+		using GridKey = std::tuple<int64_t, int64_t, int64_t>;
+		struct GridKeyHash {
+			size_t operator()(const GridKey& k) const {
+				size_t h = std::hash<int64_t>()(std::get<0>(k));
+				h ^= std::hash<int64_t>()(std::get<1>(k)) + 0x9e3779b9 + (h << 6) + (h >> 2);
+				h ^= std::hash<int64_t>()(std::get<2>(k)) + 0x9e3779b9 + (h << 6) + (h >> 2);
+				return h;
+			}
+		};
+		std::unordered_map<GridKey, std::vector<std::pair<uint32_t, Vec>>, GridKeyHash> vtxGrid;
+		std::vector<std::array<uint32_t, 3>> fvid(nFaces);
+		uint32_t nextVid = 0;
+		auto getCell = [&](const Vec& p) -> GridKey {
+			return { static_cast<int64_t>(std::floor(p.x / cellSize)),
+					static_cast<int64_t>(std::floor(p.y / cellSize)),
+					static_cast<int64_t>(std::floor(p.z / cellSize)) };
+		};
+		auto findOrAdd = [&](const Vec& p) -> uint32_t {
+			auto center = getCell(p);
+			for (int dx = -1; dx <= 1; ++dx)
+				for (int dy = -1; dy <= 1; ++dy)
+					for (int dz = -1; dz <= 1; ++dz) {
+						GridKey nk = { std::get<0>(center) + dx,
+									  std::get<1>(center) + dy,
+									  std::get<2>(center) + dz };
+						auto it = vtxGrid.find(nk);
+						if (it != vtxGrid.end()) {
+							for (auto& [id, pos] : it->second) {
+								Vec d = p - pos;
+								if (glm::dot(d, d) < cellSizeSq) return id;
+							}
+						}
+					}
+			uint32_t id = nextVid++;
+			vtxGrid[center].emplace_back(id, p);
+			return id;
+		};
+		for (uint32_t i = 0; i < nFaces; i++) {
+			fvid[i][0] = findOrAdd(fv[i].a);
+			fvid[i][1] = findOrAdd(fv[i].b);
+			fvid[i][2] = findOrAdd(fv[i].c);
+		}
+
+		// Edge -> face adjacency
+		struct EKey {
+			uint32_t v0, v1;
+			bool operator==(const EKey& o) const { return v0 == o.v0 && v1 == o.v1; }
+		};
+		struct EKeyHash {
+			size_t operator()(const EKey& k) const {
+				size_t h = std::hash<uint32_t>()(k.v0);
+				h ^= std::hash<uint32_t>()(k.v1) + 0x9e3779b9 + (h << 6) + (h >> 2);
+				return h;
+			}
+		};
+		std::unordered_map<EKey, std::vector<uint32_t>, EKeyHash> edgeFaces;
+		for (uint32_t i = 0; i < nFaces; i++)
+			for (int e = 0; e < 3; e++) {
+				uint32_t va = fvid[i][e], vb = fvid[i][(e + 1) % 3];
+				edgeFaces[{std::min(va, vb), std::max(va, vb)}].push_back(i);
+			}
+
+		// Face adjacency + BFS components
+		std::vector<std::vector<uint32_t>> faceAdj(nFaces);
+		for (auto& [ek, fl] : edgeFaces)
+			for (size_t a = 0; a < fl.size(); a++)
+				for (size_t b = a + 1; b < fl.size(); b++) {
+					faceAdj[fl[a]].push_back(fl[b]);
+					faceAdj[fl[b]].push_back(fl[a]);
+				}
+
+		std::vector<int> compId(nFaces, -1);
+		int numComp = 0;
+		for (uint32_t i = 0; i < nFaces; i++) {
+			if (compId[i] >= 0) continue;
+			int cid = numComp++;
+			std::queue<uint32_t> q;
+			q.push(i); compId[i] = cid;
+			while (!q.empty()) {
+				uint32_t cur = q.front(); q.pop();
+				for (uint32_t nb : faceAdj[cur])
+					if (compId[nb] < 0) { compId[nb] = cid; q.push(nb); }
+			}
+		}
+
+		if (numComp <= 1) { meshInfoResult = meshInfoInput; return; }
+
+		// Per-component analysis
+		struct CompInfo { uint32_t faceCount = 0; uint32_t boundaryEdges = 0; Vec centroid{0}; double volume = 0; };
+		std::vector<CompInfo> comps(numComp);
+		for (uint32_t i = 0; i < nFaces; i++) {
+			comps[compId[i]].faceCount++;
+			comps[compId[i]].centroid += fv[i].center;
+		}
+		for (auto& comp : comps)
+			if (comp.faceCount > 0) comp.centroid /= static_cast<double>(comp.faceCount);
+		for (uint32_t i = 0; i < nFaces; i++) {
+			int cid = compId[i];
+			Vec va = fv[i].a - comps[cid].centroid;
+			Vec vb = fv[i].b - comps[cid].centroid;
+			Vec vc = fv[i].c - comps[cid].centroid;
+			comps[cid].volume += glm::dot(va, glm::cross(vb, vc)) / 6.0;
+		}
+		for (auto& [ek, fl] : edgeFaces)
+			if (fl.size() != 2)
+				comps[compId[fl[0]]].boundaryEdges++;
+
+		std::vector<bool> badComp(numComp, false);
+		uint32_t removedByComp = 0;
+		for (int cid = 0; cid < numComp; cid++) {
+			bool isManifold = (comps[cid].boundaryEdges == 0);
+			bool hasVolume = (std::abs(comps[cid].volume) >= VOLUME_THRESHOLD);
+			if (!isManifold && !hasVolume) {
+				badComp[cid] = true;
+				removedByComp += comps[cid].faceCount;
+			}
+		}
+
+		if (removedByComp == 0 || removedByComp >= nFaces) {
+			meshInfoResult = meshInfoInput;
+			return;
+		}
+
+		Geometry cleaned;
+		cleaned.planes = workingMesh.planes;
+		cleaned.hasPlanes = workingMesh.hasPlanes;
+		for (uint32_t i = 0; i < nFaces; i++) {
+			if (badComp[compId[i]]) continue;
+			cleaned.AddFace(fv[i].a, fv[i].b, fv[i].c, fv[i].pId);
+		}
+		cleaned.data = workingMesh.data;
+
+		auto infoCleaned = meshCleanup::isMeshWatertight(cleaned);
+		if (infoCleaned.numOpenEdges < meshInfoInput.numOpenEdges) {
+			workingMesh = std::move(cleaned);
+			meshInfoResult = infoCleaned;
+		}
+		else {
+			meshInfoResult = meshInfoInput;
+		}
+	}
+
 	// -- Phase A: strip sliver triangles -----------------------------
 		// Threshold 1e-9 m^2 sits well above the toleranceAddFace filter (~5e-11 m^2) so it removes only absolute dregs, while staying
 		// far below the smallest real feature in any meter-scale model.
 		// Additionally, detect altitude-based slivers: triangles with very long edges but nearly collinear vertices
 		// (minAltitude < toleranceVectorEquality). For these, snap the tip vertex onto the opposite edge
 		// so that adjacent faces can later be split at the snap point (T-junction resolution).
-	void removeDegeneratedTriangles(Geometry& workingMesh, std::string step, 
+	void removeDegeneratedTriangles(Geometry& workingMesh, std::string step,
 		const MeshWatertightInfo& meshInfoInput, MeshWatertightInfo& meshInfoResult) {
 		constexpr double SLIVER_AREA_THRESHOLD = 1e-9;
 		const double SLIVER_ALTITUDE_THRESHOLD = toleranceVectorEquality; // 1e-4 m
@@ -1306,7 +1473,10 @@ namespace meshCleanup {
 
 		// B.2: manifold-edge component analysis Build connectivity using ONLY manifold edges (count == 2).
 		// Junction edges (count 3+) are excluded, so the solid body and membrane artifacts fall into separate components.
-		// Signed volume relative to each component's centroid is used to detect membranes (flat -> V ≈ 0) vs solids (V >> 0).
+		// Signed volume relative to each component's centroid is used to detect membranes (flat -> V ~= 0) vs solids (V >> 0).
+		// B.2 marks are tracked separately (b2Marked) for independent removal pass.
+
+		std::vector<bool> b2Marked(nFaces, false);
 
 		std::vector<std::vector<uint32_t>> manifoldAdj(nFaces);
 		for (auto& [ek, fl] : edgeFaces) {
@@ -1333,6 +1503,7 @@ namespace meshCleanup {
 			}
 		}
 
+		uint32_t b2Count = 0;
 		if (mNumComp > 1) {
 			// Centroid per component (average of face centres)
 			struct MCInfo { uint32_t count = 0; Vec centroid{ 0 }; };
@@ -1347,7 +1518,7 @@ namespace meshCleanup {
 
 			// Signed volume relative to centroid:
 			//   closed surface -> actual enclosed volume (origin-invariant)
-			//   flat open surface -> V ≈ 0 (points coplanar with centroid)
+			//   flat open surface -> V ~= 0 (points coplanar with centroid)
 			std::vector<double> mVol(mNumComp, 0.0);
 			for (uint32_t i = 0; i < nFaces; i++) {
 				int ci = mCompId[i];
@@ -1357,9 +1528,12 @@ namespace meshCleanup {
 				mVol[ci] += glm::dot(va, glm::cross(vb, vc)) / 6.0;
 			}
 
-			for (uint32_t i = 0; i < nFaces; i++)
-				if (std::abs(mVol[mCompId[i]]) < VOLUME_THRESHOLD)
-					thinMarked[i] = true;
+			for (uint32_t i = 0; i < nFaces; i++) {
+				if (std::abs(mVol[mCompId[i]]) < VOLUME_THRESHOLD) {
+					b2Marked[i] = true;
+					b2Count++;
+				}
+			}
 		}
 
 
@@ -1456,13 +1630,14 @@ namespace meshCleanup {
 			}
 		}
 
-		// -- Two-pass rebuild: each pass has its own improvement check --
-		// Pass 1 (high certainty): remove only bad components (disconnected non-manifold zero-volume fragments)
-		// Pass 2 (lower certainty): additionally remove thin-marked faces (membrane heuristics)
+		// -- Three-pass rebuild: each pass has its own improvement check --
+		// Pass 1 (high certainty): remove bad components (Phase C: disconnected non-manifold zero-volume fragments)
+		// Pass 2 (medium certainty): also remove B.2 faces (zero-volume manifold-edge components)
+		// Pass 3 (lower certainty): also remove B.1+B.3 thin-marked faces (double-layer + erosion)
 
 		MeshWatertightInfo currentInfo = meshInfoInput;
 
-		// Pass 1: remove bad components only
+		// Pass 1: remove bad components only (Phase C)
 		if (removedByComp > 0 && removedByComp < nFaces) {
 			Geometry pass1;
 			pass1.planes = workingMesh.planes;
@@ -1480,14 +1655,14 @@ namespace meshCleanup {
 			}
 		}
 
-		// Pass 2: also remove thin-marked faces
-		if (thinEnabled && thinCount > 0) {
+		// Pass 2: also remove B.2 zero-volume manifold-edge components
+		if (b2Count > 0) {
 			Geometry pass2;
 			pass2.planes = workingMesh.planes;
 			pass2.hasPlanes = workingMesh.hasPlanes;
 			for (uint32_t i = 0; i < nFaces; i++) {
 				if (badComp[compId[i]]) continue;
-				if (thinMarked[i]) continue;
+				if (b2Marked[i]) continue;
 				pass2.AddFace(fv[i].a, fv[i].b, fv[i].c, fv[i].pId);
 			}
 			pass2.data = workingMesh.data;
@@ -1496,6 +1671,26 @@ namespace meshCleanup {
 			if (infoPass2.numOpenEdges < currentInfo.numOpenEdges) {
 				workingMesh = std::move(pass2);
 				currentInfo = infoPass2;
+			}
+		}
+
+		// Pass 3: also remove B.1+B.3 thin-marked faces
+		if (thinEnabled && thinCount > 0) {
+			Geometry pass3;
+			pass3.planes = workingMesh.planes;
+			pass3.hasPlanes = workingMesh.hasPlanes;
+			for (uint32_t i = 0; i < nFaces; i++) {
+				if (badComp[compId[i]]) continue;
+				if (b2Marked[i]) continue;
+				if (thinMarked[i]) continue;
+				pass3.AddFace(fv[i].a, fv[i].b, fv[i].c, fv[i].pId);
+			}
+			pass3.data = workingMesh.data;
+
+			auto infoPass3 = meshCleanup::isMeshWatertight(pass3);
+			if (infoPass3.numOpenEdges < currentInfo.numOpenEdges) {
+				workingMesh = std::move(pass3);
+				currentInfo = infoPass3;
 			}
 		}
 
@@ -1557,28 +1752,31 @@ namespace meshCleanup {
 		MeshWatertightInfo meshInfoAfterRemoveDegeneratedTriangles = meshInfoOnEntry;
 		removeDegeneratedTriangles(workingMesh, "1", meshInfoBeforeRemoveDegeneratedTriangles, meshInfoAfterRemoveDegeneratedTriangles);
 		
-		// 2: patch coplanar holes
-		// remove thin membranes later, since a (closable) loop of open edges can cause false membrane detection, 
-		// membrane removal increases open edges, result gets reverted, nothing gets fixed
-		MeshWatertightInfo meshInfoBeforePatchCoplanarHoles = meshInfoAfterRemoveDegeneratedTriangles;
-		MeshWatertightInfo meshInfoAfterPatchCoplanarHoles = meshInfoAfterRemoveDegeneratedTriangles;
-		PatchCoplanarHoles(workingMesh, "2", meshInfoBeforePatchCoplanarHoles, meshInfoAfterPatchCoplanarHoles);
+		// 2: remove disconnected fragments (Phase C only -- safe before hole patching)
+		MeshWatertightInfo meshInfoAfterRemoveFragments = meshInfoAfterRemoveDegeneratedTriangles;
+		RemoveDisconnectedFragments(workingMesh, "2", meshInfoAfterRemoveDegeneratedTriangles, meshInfoAfterRemoveFragments);
 
-		// 3: remove thin membranes
+		// 3: patch coplanar holes
+		// remove thin membranes later, since a (closable) loop of open edges can cause false membrane detection,
+		// membrane removal increases open edges, result gets reverted, nothing gets fixed
+		MeshWatertightInfo meshInfoBeforePatchCoplanarHoles = meshInfoAfterRemoveFragments;
+		MeshWatertightInfo meshInfoAfterPatchCoplanarHoles = meshInfoAfterRemoveFragments;
+		PatchCoplanarHoles(workingMesh, "3", meshInfoBeforePatchCoplanarHoles, meshInfoAfterPatchCoplanarHoles);
+
+		// 4: remove thin membranes
 		MeshWatertightInfo meshInfoBeforeRemoveThinMembranes = meshInfoAfterPatchCoplanarHoles;
 		MeshWatertightInfo meshInfoAfterRemoveThinMembranes = meshInfoAfterPatchCoplanarHoles;
-		RemoveThinMembranes(workingMesh, "3", meshInfoBeforeRemoveThinMembranes, meshInfoAfterRemoveThinMembranes);
+		RemoveThinMembranes(workingMesh, "4", meshInfoBeforeRemoveThinMembranes, meshInfoAfterRemoveThinMembranes);
 
-
-		// 4: resolve T-junctions
+		// 5: resolve T-junctions
 		MeshWatertightInfo meshInfoBeforeResolveTJunctions = meshInfoAfterRemoveThinMembranes;
 		MeshWatertightInfo meshInfoAfterResolveTJunctions = meshInfoAfterRemoveThinMembranes;
-		ResolveTJunctions(workingMesh, "4", meshInfoBeforeResolveTJunctions, meshInfoAfterResolveTJunctions);
+		ResolveTJunctions(workingMesh, "5", meshInfoBeforeResolveTJunctions, meshInfoAfterResolveTJunctions);
 
-		// 5: PatchCoplanarHoles re-run
+		// 6: PatchCoplanarHoles re-run
 		MeshWatertightInfo meshInfoBeforePatchCoplanarHoles2 = meshInfoAfterResolveTJunctions;
 		MeshWatertightInfo meshInfoAfterPatchCoplanarHoles2 = meshInfoAfterResolveTJunctions;
-		PatchCoplanarHoles(workingMesh, "5", meshInfoBeforePatchCoplanarHoles2, meshInfoAfterPatchCoplanarHoles2);
+		PatchCoplanarHoles(workingMesh, "6", meshInfoBeforePatchCoplanarHoles2, meshInfoAfterPatchCoplanarHoles2);
 
 		auto meshInfoOnExit = meshInfoAfterPatchCoplanarHoles2;
 		if(meshInfoOnEntry.numOpenEdges > meshInfoOnExit.numOpenEdges){
@@ -1586,7 +1784,7 @@ namespace meshCleanup {
 
 #ifdef DUMP_CSG_MESHES
 			webifc::geometry::IfcGeometry inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(input);
-			webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup6-improved.obj");
+			webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup7-improved.obj");
 #endif
 		}
 	}
