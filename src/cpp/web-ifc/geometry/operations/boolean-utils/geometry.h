@@ -99,25 +99,32 @@ namespace fuzzybools
 			numPoints += 1;
 		}
 
+		bool bailoutOnZeroArea = false;
 		inline void AddFace(glm::dvec3 a, glm::dvec3 b, glm::dvec3 c, uint32_t pId)
 		{
 			glm::dvec3 normal;
+			computeSafeNormal(a, b, c, normal, toleranceAddFace);
 
-			double area = areaOfTriangle(a, b, c);
-			if (!computeSafeNormal(a, b, c, normal, toleranceAddFace))
-			{
-				// bail out, zero area triangle
-				if (messages)
+			// in AddFace(uint32_t a, uint32_t b, uint32_t c, uint32_t pId) we don't bail out
+			// -> test to remove the bailout here as well, it could be a t-junction triangle that is 
+			// necessary to make a mesh watertight, but area is zero
+			
+			if (bailoutOnZeroArea) {
+				double area = areaOfTriangle(a, b, c);
+				if (area <= toleranceAddFace)
 				{
-					printf("zero triangle, AddFace(vec, vec, vec)\n");
+					// bail out, zero area triangle
+					if (messages)
+					{
+						printf("zero triangle, AddFace(vec, vec, vec)\n");
+					}
+					return;
 				}
-				return;
 			}
 
 			AddPoint(a, normal);
 			AddPoint(b, normal);
 			AddPoint(c, normal);
-
 			AddFace(numPoints - 3, numPoints - 2, numPoints - 1, pId);
 		}
 
@@ -138,10 +145,22 @@ namespace fuzzybools
 			//			if (!computeSafeNormal(GetPoint(a), GetPoint(b), GetPoint(c), normal, EPS_SMALL))
 			if (!computeSafeNormal(GetPoint(a), GetPoint(b), GetPoint(c), normal, toleranceAddFace))
 			{
-				// bail out, zero area triangle
+				// bail out, zero area triangle. Hmm, in web-ifc, there is this message to bail out, but we are NOT bailing out!!
+				// in AddFace(glm::dvec3 a, glm::dvec3 b, glm::dvec3 c, uint32_t pId) , see above,
+				// we ARE actually bailing out in the same situation!
+				// -> test to remove the bailout, it could be a t-junction triangle that is necessary to make a mesh watertight, 
+				// but area is zero
+
 				if (messages)
 				{
 					printf("zero triangle, AddFace(int, int, int)\n");
+				}
+				if (bailoutOnZeroArea) {
+					indexData.pop_back();
+					indexData.pop_back();
+					indexData.pop_back();
+					planeData.pop_back();
+					return;
 				}
 			}
 
