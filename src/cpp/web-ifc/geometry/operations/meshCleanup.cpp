@@ -1561,7 +1561,56 @@ namespace meshCleanup {
 			if (!changed) break;
 		}
 
-		// B.4: safety - if > 75 % of faces are thin, something went wrong (e.g. very thin but valid geometry); disable.
+		// B.5: boundary-edge peeling -- detect single-layer membrane flaps.
+		// A face with >= 2 boundary edges is a "tip" of a membrane. Iteratively
+		// peel tip faces: each removal exposes new boundary edges on adjacent
+		// faces, which may become new tips. This catches flat membranes that
+		// B.1 misses (not double-layer) and B.2 misses (connected to main body).
+		{
+			// Count boundary edges per face
+			auto countBoundaryEdges = [&](uint32_t fi, const std::vector<bool>& removed) -> int {
+				int count = 0;
+				for (int e = 0; e < 3; e++) {
+					uint32_t va = fvid[fi][e], vb = fvid[fi][(e + 1) % 3];
+					EKey ek = { std::min(va, vb), std::max(va, vb) };
+					auto it = edgeFaces.find(ek);
+					if (it == edgeFaces.end()) continue;
+					// Count non-removed faces sharing this edge
+					int alive = 0;
+					for (uint32_t adj : it->second) {
+						if (!removed[adj]) alive++;
+					}
+					// If only this face uses the edge, it's a boundary edge
+					if (alive <= 1) count++;
+				}
+				return count;
+			};
+
+			std::vector<bool> peeled(nFaces, false);
+			for (int iter = 0; iter < static_cast<int>(nFaces); iter++) {
+				bool changed = false;
+				for (uint32_t i = 0; i < nFaces; i++) {
+					if (peeled[i] || thinMarked[i]) continue;
+					if (countBoundaryEdges(i, peeled) >= 2) {
+						peeled[i] = true;
+						changed = true;
+					}
+				}
+				if (!changed) break;
+			}
+
+			// Safety: only accept if peeled region is < 50% of faces
+			uint32_t peelCount = 0;
+			for (uint32_t i = 0; i < nFaces; i++)
+				if (peeled[i]) peelCount++;
+
+			if (peelCount > 0 && peelCount < nFaces / 2) {
+				for (uint32_t i = 0; i < nFaces; i++)
+					if (peeled[i]) thinMarked[i] = true;
+			}
+		}
+
+		// B.6: safety - if > 75 % of faces are thin, something went wrong (e.g. very thin but valid geometry); disable.
 		uint32_t thinCount = 0;
 		for (uint32_t i = 0; i < nFaces; i++)
 			if (thinMarked[i]) thinCount++;
@@ -1656,6 +1705,9 @@ namespace meshCleanup {
 		}
 
 		// Pass 2: also remove B.2 zero-volume manifold-edge components
+		// Removing membrane faces may create new boundary edges where the membrane
+		// connected to the main body via non-manifold edges. Patch those holes
+		// before checking improvement.
 		if (b2Count > 0) {
 			Geometry pass2;
 			pass2.planes = workingMesh.planes;
@@ -1667,14 +1719,18 @@ namespace meshCleanup {
 			}
 			pass2.data = workingMesh.data;
 
-			auto infoPass2 = meshCleanup::isMeshWatertight(pass2);
+			MeshWatertightInfo infoPass2Before = meshCleanup::isMeshWatertight(pass2);
+			MeshWatertightInfo infoPass2 = infoPass2Before;
+			if (infoPass2Before.numOpenEdges > 0) {
+				PatchCoplanarHoles(pass2, step + "b", infoPass2Before, infoPass2);
+			}
 			if (infoPass2.numOpenEdges < currentInfo.numOpenEdges) {
 				workingMesh = std::move(pass2);
 				currentInfo = infoPass2;
 			}
 		}
 
-		// Pass 3: also remove B.1+B.3 thin-marked faces
+		// Pass 3: also remove B.1+B.3+B.5 thin-marked faces
 		if (thinEnabled && thinCount > 0) {
 			Geometry pass3;
 			pass3.planes = workingMesh.planes;
@@ -1687,7 +1743,11 @@ namespace meshCleanup {
 			}
 			pass3.data = workingMesh.data;
 
-			auto infoPass3 = meshCleanup::isMeshWatertight(pass3);
+			MeshWatertightInfo infoPass3Before = meshCleanup::isMeshWatertight(pass3);
+			MeshWatertightInfo infoPass3 = infoPass3Before;
+			if (infoPass3Before.numOpenEdges > 0) {
+				PatchCoplanarHoles(pass3, step + "c", infoPass3Before, infoPass3);
+			}
 			if (infoPass3.numOpenEdges < currentInfo.numOpenEdges) {
 				workingMesh = std::move(pass3);
 				currentInfo = infoPass3;
@@ -1741,6 +1801,9 @@ namespace meshCleanup {
 		// remove all E:\work\creoox\cxconverter\meshCleanup*.obj
 		removeTempFiles();
 
+		if (meshInfoOnEntry.numOpenEdges == 1) {
+			int wait = 0;
+		}
 		if (!meshInfoOnEntry.watertight) {
 			webifc::geometry::IfcGeometry inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(input);
 			webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup1.obj");
