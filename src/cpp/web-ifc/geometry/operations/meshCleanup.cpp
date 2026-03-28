@@ -78,46 +78,62 @@ namespace meshCleanup {
 		}
 
 		// Vertices are not shared between triangles, so edges must be compared
-		// by position. Snap coordinates to a grid to handle floating-point noise,
-		// then count how many triangles share each edge by position. A watertight mesh has every edge shared by exactly 2 triangles.
+		// by position. Use spatial-hash vertex deduplication with 27-cell
+		// neighbourhood search and exact distance check (same as the rest of
+		// this file) to avoid grid-boundary mismatches that a simple snap can
+		// cause. Then count how many triangles share each edge by position.
 
-		constexpr double SNAP = 1e4;  // snap to millimeter precision
 		constexpr int STRIDE = fuzzybools::VERTEX_FORMAT_SIZE_FLOATS;
+		const double cellSize = toleranceVectorEquality;
+		const double cellSizeSq = cellSize * cellSize;
 
-		auto snapCoord = [](double v) -> int64_t {
-			return static_cast<int64_t>(std::round(v * SNAP));
-			};
-
-		struct Vec3Key {
-			int64_t x, y, z;
-			bool operator==(const Vec3Key& o) const { return x == o.x && y == o.y && z == o.z; }
-		};
-
-		struct Vec3Hash {
-			size_t operator()(const Vec3Key& k) const {
-				size_t h = std::hash<int64_t>{}(k.x);
-				h ^= std::hash<int64_t>{}(k.y) + 0x9e3779b9 + (h << 6) + (h >> 2);
-				h ^= std::hash<int64_t>{}(k.z) + 0x9e3779b9 + (h << 6) + (h >> 2);
+		using GridKey = std::tuple<int64_t, int64_t, int64_t>;
+		struct GridKeyHash {
+			size_t operator()(const GridKey& k) const {
+				size_t h = std::hash<int64_t>()(std::get<0>(k));
+				h ^= std::hash<int64_t>()(std::get<1>(k)) + 0x9e3779b9 + (h << 6) + (h >> 2);
+				h ^= std::hash<int64_t>()(std::get<2>(k)) + 0x9e3779b9 + (h << 6) + (h >> 2);
 				return h;
 			}
 		};
 
-		// Map each unique snapped position to a canonical index
-		std::unordered_map<Vec3Key, uint32_t, Vec3Hash> posToIndex;
+		std::unordered_map<GridKey, std::vector<std::pair<uint32_t, Vec>>, GridKeyHash> vtxGrid;
 		std::vector<uint32_t> canonicalIndex(geom.numPoints);
-
 		uint32_t nextIndex = 0;
+
+		auto getCell = [&](const Vec& p) -> GridKey {
+			return { static_cast<int64_t>(std::floor(p.x / cellSize)),
+					static_cast<int64_t>(std::floor(p.y / cellSize)),
+					static_cast<int64_t>(std::floor(p.z / cellSize)) };
+		};
+
+		auto findOrAdd = [&](const Vec& p) -> uint32_t {
+			auto center = getCell(p);
+			for (int dx = -1; dx <= 1; ++dx)
+				for (int dy = -1; dy <= 1; ++dy)
+					for (int dz = -1; dz <= 1; ++dz) {
+						GridKey nk = { std::get<0>(center) + dx,
+									  std::get<1>(center) + dy,
+									  std::get<2>(center) + dz };
+						auto it = vtxGrid.find(nk);
+						if (it != vtxGrid.end()) {
+							for (auto& [id, pos] : it->second) {
+								Vec d = p - pos;
+								if (glm::dot(d, d) < cellSizeSq)
+									return id;
+							}
+						}
+					}
+			uint32_t id = nextIndex++;
+			vtxGrid[center].emplace_back(id, p);
+			return id;
+		};
+
 		for (uint32_t i = 0; i < geom.numPoints; ++i) {
-			Vec3Key key{
-				snapCoord(geom.vertexData[i * STRIDE + 0]),
-				snapCoord(geom.vertexData[i * STRIDE + 1]),
-				snapCoord(geom.vertexData[i * STRIDE + 2])
-			};
-			auto [it, inserted] = posToIndex.emplace(key, nextIndex);
-			if (inserted) {
-				++nextIndex;
-			}
-			canonicalIndex[i] = it->second;
+			Vec p(geom.vertexData[i * STRIDE + 0],
+				  geom.vertexData[i * STRIDE + 1],
+				  geom.vertexData[i * STRIDE + 2]);
+			canonicalIndex[i] = findOrAdd(p);
 		}
 
 		// Count edges using canonical indices
@@ -143,11 +159,8 @@ namespace meshCleanup {
 		info.numTotalEdges = static_cast<uint32_t>(edgeCount.size());
 
 		for (const auto& [key, count] : edgeCount) {
-			if (count != 2) {
+			if (count == 1) {
 				++info.numOpenEdges;
-				if (count == 1) {
-					++info.numBoundaryEdges;
-				}
 			}
 		}
 
@@ -161,7 +174,8 @@ namespace meshCleanup {
 		// Additionally, detect altitude-based slivers: triangles with very long edges but nearly collinear vertices
 		// (minAltitude < toleranceVectorEquality). For these, snap the tip vertex onto the opposite edge
 		// so that adjacent faces can later be split at the snap point (T-junction resolution).
-	void removeDegeneratedTriangles(Geometry& workingMesh, const MeshWatertightInfo& meshInfoInput, MeshWatertightInfo& meshInfoResult) {
+	void removeDegeneratedTriangles(Geometry& workingMesh, std::string step, 
+		const MeshWatertightInfo& meshInfoInput, MeshWatertightInfo& meshInfoResult) {
 		constexpr double SLIVER_AREA_THRESHOLD = 1e-9;
 		const double SLIVER_ALTITUDE_THRESHOLD = toleranceVectorEquality; // 1e-4 m
 		const uint32_t n = workingMesh.numFaces;
@@ -291,7 +305,7 @@ namespace meshCleanup {
 			meshInfoResult = meshInfoInput;
 #ifdef DUMP_CSG_MESHES
 			webifc::geometry::IfcGeometry inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(workingMesh);
-			webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup1-fail.obj");
+			webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup"+step+"-fail.obj");
 #endif
 		}
 	}
@@ -302,9 +316,15 @@ namespace meshCleanup {
 	// This closes open edges caused by boolean operations where one face's
 	// edge lies on another face's surface without topological connection.
 	// ---------------------------------------------------------------
-	static void ResolveTJunctions(Geometry& geom, const MeshWatertightInfo& meshInfoInput, MeshWatertightInfo& meshInfoResult) {
+	static void ResolveTJunctions(Geometry& geom, std::string step, 
+		const MeshWatertightInfo& meshInfoInput, MeshWatertightInfo& meshInfoResult) {
 		const uint32_t nFaces = geom.numFaces;
 		if (nFaces == 0) {
+			meshInfoResult = meshInfoInput;
+			return;
+		}
+
+		if (meshInfoInput.numOpenEdges == 0) {
 			meshInfoResult = meshInfoInput;
 			return;
 		}
@@ -636,8 +656,8 @@ namespace meshCleanup {
 #ifdef _DEBUG
 			webifc::geometry::IfcGeometry webifcGeom = webifc::geometry::booleanManager::convertToWebIfc(geom);
 			webifc::geometry::IfcGeometry geomFail = webifc::geometry::booleanManager::convertToWebIfc(rebuilt);
-			webifc::io::DumpIfcGeometry(webifcGeom, "meshCleanup3-input.obj");
-			webifc::io::DumpIfcGeometry(geomFail, "meshCleanup3-fail.obj");
+			webifc::io::DumpIfcGeometry(webifcGeom, "meshCleanup" + step + "-input.obj");
+			webifc::io::DumpIfcGeometry(geomFail, "meshCleanup" + step + "-fail.obj");
 #endif
 		}
 	}
@@ -645,7 +665,8 @@ namespace meshCleanup {
 	// ---------------------------------------------------------------
 	// Patch coplanar holes: find boundary-edge loops and fill them with earcut triangulation when all loop vertices are coplanar.
 	// ---------------------------------------------------------------
-	static void PatchCoplanarHoles(Geometry& geom, const MeshWatertightInfo& meshInfoInput, MeshWatertightInfo& meshInfoResult) {
+	static void PatchCoplanarHoles(Geometry& geom, std::string step, 
+		const MeshWatertightInfo& meshInfoInput, MeshWatertightInfo& meshInfoResult) {
 		if (meshInfoInput.numOpenEdges == 0) {
 			meshInfoResult = meshInfoInput;
 			return;
@@ -1024,7 +1045,7 @@ namespace meshCleanup {
 
 #ifdef DUMP_CSG_MESHES
 			webifc::geometry::IfcGeometry inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(geom);
-			webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup3-patched.obj");
+			webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup" + step + "-patched.obj");
 #endif
 		}
 		else {
@@ -1032,7 +1053,8 @@ namespace meshCleanup {
 		}
 	}
 
-	void RemoveThinMembranes(Geometry& workingMesh, const MeshWatertightInfo& meshInfoInput, MeshWatertightInfo& meshInfoResult) {
+	void RemoveThinMembranes(Geometry& workingMesh, std::string step, 
+		const MeshWatertightInfo& meshInfoInput, MeshWatertightInfo& meshInfoResult) {
 		// -- Shared setup for Phases B & C 
 		const uint32_t nFaces = workingMesh.numFaces;
 
@@ -1373,8 +1395,10 @@ namespace meshCleanup {
 		else {
 			meshInfoResult = meshInfoInput;
 #ifdef _DEBUG
-			webifc::geometry::IfcGeometry inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(workingMesh);
-			webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup3-fail.obj");
+			if (meshInfoCleaned.numOpenEdges > meshInfoInput.numOpenEdges) {
+				webifc::geometry::IfcGeometry inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(workingMesh);
+				webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup" + step + "-fail.obj");
+			}
 #endif
 		}
 	}
@@ -1400,45 +1424,45 @@ namespace meshCleanup {
 		// 1: remove degenerated triangles
 		MeshWatertightInfo meshInfoBeforeRemoveDegeneratedTriangles = meshInfoOnEntry;
 		MeshWatertightInfo meshInfoAfterRemoveDegeneratedTriangles = meshInfoOnEntry;
-		removeDegeneratedTriangles(workingMesh, meshInfoBeforeRemoveDegeneratedTriangles, meshInfoAfterRemoveDegeneratedTriangles);
+		removeDegeneratedTriangles(workingMesh, "1", meshInfoBeforeRemoveDegeneratedTriangles, meshInfoAfterRemoveDegeneratedTriangles);
 		
-		// 2: remove thin membranes
-		auto meshInfoBeforeRemoveThinMembranes = meshInfoAfterRemoveDegeneratedTriangles;
-		MeshWatertightInfo meshInfoAfterRemoveThinMembranes = meshInfoBeforeRemoveThinMembranes;
-		//RemoveThinMembranes(workingMesh, meshInfoBeforeRemoveThinMembranes, meshInfoAfterRemoveThinMembranes);
+		// 2: patch coplanar holes
+		// remove thin membranes later, since a (closable) loop of open edges can cause false membrane detection, 
+		// membrane removal increases open edges, result gets reverted, nothing gets fixed
+		MeshWatertightInfo meshInfoBeforePatchCoplanarHoles = meshInfoAfterRemoveDegeneratedTriangles;
+		MeshWatertightInfo meshInfoAfterPatchCoplanarHoles = meshInfoAfterRemoveDegeneratedTriangles;
+		PatchCoplanarHoles(workingMesh, "2", meshInfoBeforePatchCoplanarHoles, meshInfoAfterPatchCoplanarHoles);
 
-		// 3: patch coplanar holes
-		MeshWatertightInfo meshInfoAfterPatchCoplanarHoles = meshInfoAfterRemoveThinMembranes;
-		PatchCoplanarHoles(workingMesh, meshInfoAfterRemoveThinMembranes, meshInfoAfterPatchCoplanarHoles);
+		// 3: remove thin membranes
+		MeshWatertightInfo meshInfoBeforeRemoveThinMembranes = meshInfoAfterPatchCoplanarHoles;
+		MeshWatertightInfo meshInfoAfterRemoveThinMembranes = meshInfoAfterPatchCoplanarHoles;
+		RemoveThinMembranes(workingMesh, "3", meshInfoBeforeRemoveThinMembranes, meshInfoAfterRemoveThinMembranes);
+
 
 		// 4: resolve T-junctions
-		auto meshInfoBeforeResolveTJunctions = meshInfoAfterRemoveThinMembranes;
-		MeshWatertightInfo meshInfoAfterResolveTJunctions = meshInfoBeforeResolveTJunctions;
-		if (meshInfoBeforeResolveTJunctions.numOpenEdges > 0) {
-#ifdef _DEBUG
-			webifc::geometry::IfcGeometry beforeResolveTJunctions = webifc::geometry::booleanManager::convertToWebIfc(workingMesh);
-			webifc::io::DumpIfcGeometry(beforeResolveTJunctions, "meshCleanup3.obj");
-#endif
-			ResolveTJunctions(workingMesh, meshInfoBeforeResolveTJunctions, meshInfoAfterResolveTJunctions);
-		}
+		MeshWatertightInfo meshInfoBeforeResolveTJunctions = meshInfoAfterRemoveThinMembranes;
+		MeshWatertightInfo meshInfoAfterResolveTJunctions = meshInfoAfterRemoveThinMembranes;
+		ResolveTJunctions(workingMesh, "4", meshInfoBeforeResolveTJunctions, meshInfoAfterResolveTJunctions);
 
-		// TODO: PatchCoplanarHoles re-run makes sense?
+		// 5: PatchCoplanarHoles re-run
+		MeshWatertightInfo meshInfoBeforePatchCoplanarHoles2 = meshInfoAfterResolveTJunctions;
+		MeshWatertightInfo meshInfoAfterPatchCoplanarHoles2 = meshInfoAfterResolveTJunctions;
+		PatchCoplanarHoles(workingMesh, "5", meshInfoBeforePatchCoplanarHoles2, meshInfoAfterPatchCoplanarHoles2);
 
-		auto meshInfoOnExit = meshInfoAfterPatchCoplanarHoles;
+		auto meshInfoOnExit = meshInfoAfterPatchCoplanarHoles2;
 #ifdef DUMP_CSG_MESHES
 		if (!meshInfoOnExit.watertight) {
 			webifc::geometry::IfcGeometry inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(workingMesh);
-			webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup5-cleaned.obj");
+			webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup6-cleaned.obj");
 		}
 #endif
 
-		//if (isWatertightOnExit) {
 		if(meshInfoOnEntry.numOpenEdges > meshInfoOnExit.numOpenEdges){
 			input = std::move(workingMesh);
 
 #ifdef DUMP_CSG_MESHES
 			webifc::geometry::IfcGeometry inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(input);
-			webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup6-improved.obj");
+			webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup7-improved.obj");
 #endif
 		}
 	}
