@@ -1445,43 +1445,57 @@ namespace meshCleanup {
 			}
 		}
 
-		// Rebuild: keep faces not marked thin AND not in bad components
-		uint32_t totalRemoved = (thinEnabled ? thinCount : 0) + removedByComp;
-		if (totalRemoved == 0 || totalRemoved >= nFaces) {
-			if (meshInfoInput.watertight) {
-				meshInfoResult = meshInfoInput;
-				return;
+		// -- Two-pass rebuild: each pass has its own improvement check --
+		// Pass 1 (high certainty): remove only bad components (disconnected non-manifold zero-volume fragments)
+		// Pass 2 (lower certainty): additionally remove thin-marked faces (membrane heuristics)
+
+		MeshWatertightInfo currentInfo = meshInfoInput;
+
+		// Pass 1: remove bad components only
+		if (removedByComp > 0 && removedByComp < nFaces) {
+			Geometry pass1;
+			pass1.planes = workingMesh.planes;
+			pass1.hasPlanes = workingMesh.hasPlanes;
+			for (uint32_t i = 0; i < nFaces; i++) {
+				if (badComp[compId[i]]) continue;
+				pass1.AddFace(fv[i].a, fv[i].b, fv[i].c, fv[i].pId);
 			}
-#ifdef _DEBUG
-			//std::cout << "Not able to fix open mesh by removing degenerated faces. Continue with hole patching" << std::endl;
-#endif
-		}
+			pass1.data = workingMesh.data;
 
-		Geometry cleaned;
-		cleaned.planes = workingMesh.planes;
-		cleaned.hasPlanes = workingMesh.hasPlanes;
-		for (uint32_t i = 0; i < nFaces; i++) {
-			if (thinEnabled && thinMarked[i]) continue;
-			if (badComp[compId[i]]) continue;
-			cleaned.AddFace(fv[i].a, fv[i].b, fv[i].c, fv[i].pId);
-		}
-		cleaned.data = workingMesh.data; // preserve face-count metadata
-
-		auto meshInfoCleaned = meshCleanup::isMeshWatertight(cleaned);
-
-		if (meshInfoCleaned.numOpenEdges < meshInfoInput.numOpenEdges) {
-			workingMesh = std::move(cleaned);
-			meshInfoResult = meshInfoCleaned;
-		}
-		else {
-			meshInfoResult = meshInfoInput;
-#ifdef _DEBUG
-			if (meshInfoCleaned.numOpenEdges > meshInfoInput.numOpenEdges) {
-				webifc::geometry::IfcGeometry inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(workingMesh);
-				webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup" + step + "-fail.obj");
+			auto infoPass1 = meshCleanup::isMeshWatertight(pass1);
+			if (infoPass1.numOpenEdges < currentInfo.numOpenEdges) {
+				workingMesh = std::move(pass1);
+				currentInfo = infoPass1;
 			}
-#endif
 		}
+
+		// Pass 2: also remove thin-marked faces
+		if (thinEnabled && thinCount > 0) {
+			Geometry pass2;
+			pass2.planes = workingMesh.planes;
+			pass2.hasPlanes = workingMesh.hasPlanes;
+			for (uint32_t i = 0; i < nFaces; i++) {
+				if (badComp[compId[i]]) continue;
+				if (thinMarked[i]) continue;
+				pass2.AddFace(fv[i].a, fv[i].b, fv[i].c, fv[i].pId);
+			}
+			pass2.data = workingMesh.data;
+
+			auto infoPass2 = meshCleanup::isMeshWatertight(pass2);
+			if (infoPass2.numOpenEdges < currentInfo.numOpenEdges) {
+				workingMesh = std::move(pass2);
+				currentInfo = infoPass2;
+			}
+		}
+
+		meshInfoResult = currentInfo;
+
+#ifdef _DEBUG
+		if (currentInfo.numOpenEdges > 0 && currentInfo.numOpenEdges >= meshInfoInput.numOpenEdges) {
+			webifc::geometry::IfcGeometry inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(workingMesh);
+			webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup" + step + "-fail.obj");
+		}
+#endif
 	}
 
 	void removeTempFiles() {
