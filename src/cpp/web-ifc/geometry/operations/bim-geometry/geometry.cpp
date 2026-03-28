@@ -90,8 +90,6 @@ namespace bimGeometry
         indexData.push_back(b);
         indexData.push_back(c);
 
-        double area = areaOfTriangle(GetPoint(a), GetPoint(b), GetPoint(c));
-
         numFaces++;
 
         planeData.push_back(pId);

@@ -38,7 +38,7 @@ namespace fuzzybools
 #endif
 
 		auto result = fuzzybools::clipSubtract(geom, bvh1, bvh2);
-		CleanNonManifoldShells(result);
+		meshCleanup::PostBooleanOperationMeshCleanup(result);
 		return result;
 	}
 
@@ -53,7 +53,7 @@ namespace fuzzybools
 		auto geom = Normalize(A, B, sp, true);
 
 		auto result = fuzzybools::clipJoin(geom, bvh1, bvh2);
-		CleanNonManifoldShells(result);
+		meshCleanup::PostBooleanOperationMeshCleanup(result);
 		return result;
 	}
 }
