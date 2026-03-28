@@ -66,21 +66,16 @@ namespace bimGeometry
         return f;
     }
 
-    void Geometry::AddFace(glm::dvec3 a, glm::dvec3 b, glm::dvec3 c, uint32_t pId)
-    {
+    void Geometry::AddFace(glm::dvec3 a, glm::dvec3 b, glm::dvec3 c, uint32_t pId){
         glm::dvec3 normal;
-
-        double area = areaOfTriangle(a, b, c);
-
-        if (!computeSafeNormal(a, b, c, normal, toleranceAddFace))
-        {
-            return;
+        if (!computeSafeNormal(a, b, c, normal, toleranceAddFace)) {
+            if(bailoutOnZeroAreaFace2)
+                return;
         }
 
         AddPoint(a, normal);
         AddPoint(b, normal);
         AddPoint(c, normal);
-
         AddFace(numPoints - 3, numPoints - 2, numPoints - 1, pId);
     }
 

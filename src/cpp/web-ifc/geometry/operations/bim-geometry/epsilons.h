@@ -1,5 +1,11 @@
 #pragma once
 
+// TODO: consolidate this file with web-ifc\geometry\operations\boolean-utils\eps.h
+// duplicating everything leads to bugs and low maintainability
+// also eliminate bimGeometry::Geometry, use exact duplicate fuzzybools::Geometry instead
+
+
+
 namespace bimGeometry
 {
 
@@ -20,6 +26,7 @@ namespace bimGeometry
     */
     constexpr double toleranceAddFace = 1.0E-10;
     constexpr double toleranceVectorEquality = 1.0E-04;
+    constexpr bool bailoutOnZeroAreaFace2 = false;
 
     /*
         Used in geometry.cpp

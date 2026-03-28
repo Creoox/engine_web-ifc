@@ -1,6 +1,7 @@
 ﻿#include <queue>
 #include <array>
 #include <tuple>
+#include <filesystem>
 #include <functional>
 #include <algorithm>
 #include <limits>
@@ -290,8 +291,10 @@ namespace meshCleanup {
 			}
 
 			// Skip degenerate faces (area check covers both original slivers and collapsed altitude-slivers)
-			if (areaOfTriangle(a, b, c) >= SLIVER_AREA_THRESHOLD)
+			if (areaOfTriangle(a, b, c) >= SLIVER_AREA_THRESHOLD) {
 				tmp.AddFace(a, b, c, f.pId);
+				tmp.hasPlanes = false; // enforce re-compute of planes
+			}
 		}
 
 		auto meshInfoRemovedSlivers = meshCleanup::isMeshWatertight(tmp);
@@ -739,7 +742,7 @@ namespace meshCleanup {
 			faces[i].pId = static_cast<uint32_t>(f.pId);
 		}
 
-		// -- Build undirected edge map and find boundary edges --
+		// -- Build edge -> face adjacency --
 		struct EKey {
 			uint32_t v0, v1;
 			bool operator==(const EKey& o) const { return v0 == o.v0 && v1 == o.v1; }
@@ -751,81 +754,159 @@ namespace meshCleanup {
 				return h;
 			}
 		};
-		struct EdgeInfo {
-			uint32_t count;
-			uint32_t faceIdx; // one adjacent face (for normal/planeId lookup)
+		auto makeEKey = [](uint32_t a, uint32_t b) -> EKey {
+			return { std::min(a, b), std::max(a, b) };
 		};
-		std::unordered_map<EKey, EdgeInfo, EKeyHash> edgeMap;
+		std::unordered_map<EKey, std::vector<uint32_t>, EKeyHash> edgeFaces;
 		for (uint32_t i = 0; i < nFaces; i++) {
 			auto& v = faces[i].vid;
 			for (int e = 0; e < 3; e++) {
-				uint32_t va = v[e], vb = v[(e + 1) % 3];
-				EKey ek = { std::min(va, vb), std::max(va, vb) };
-				auto it = edgeMap.find(ek);
-				if (it != edgeMap.end())
-					it->second.count++;
-				else
-					edgeMap[ek] = { 1, i };
+				edgeFaces[makeEKey(v[e], v[(e + 1) % 3])].push_back(i);
 			}
 		}
 
-		// Build boundary vertex adjacency (undirected)
-		std::unordered_map<uint32_t, std::vector<uint32_t>> boundaryAdj;
-		std::unordered_map<uint32_t, uint32_t> vertexAdjFace; // vertex -> one adjacent boundary face
-		for (auto& [ek, info] : edgeMap) {
-			if (info.count != 1) continue;
-			boundaryAdj[ek.v0].push_back(ek.v1);
-			boundaryAdj[ek.v1].push_back(ek.v0);
-			vertexAdjFace[ek.v0] = info.faceIdx;
-			vertexAdjFace[ek.v1] = info.faceIdx;
+		// Collect boundary edges and build vertexAdjFace for raw position lookup
+		std::unordered_map<uint32_t, uint32_t> vertexAdjFace;
+		bool hasBoundaryEdges = false;
+		for (auto& [ek, fl] : edgeFaces) {
+			if (fl.size() == 1) {
+				hasBoundaryEdges = true;
+				vertexAdjFace[ek.v0] = fl[0];
+				vertexAdjFace[ek.v1] = fl[0];
+			}
 		}
 
-		if (boundaryAdj.empty()) return; // mesh is already closed
+		if (!hasBoundaryEdges) return; // mesh is already closed
 
-		// -- Trace boundary loops via adjacency --
-		std::unordered_set<uint32_t> visited;
+		// -- Face-fan walk: given boundary edge prev->cur on face prevFace,
+		//    find the next boundary edge cur->next by walking around cur
+		//    through the face fan. Returns {next vertex, face of edge cur->next}.
+		auto findNextBoundary = [&](uint32_t cur, uint32_t prev, uint32_t prevFace,
+								   uint32_t& outNext, uint32_t& outFace) -> bool {
+			// Find the "other" vertex of prevFace (the one that is neither prev nor cur)
+			uint32_t other = UINT32_MAX;
+			for (int j = 0; j < 3; j++) {
+				uint32_t v = faces[prevFace].vid[j];
+				if (v != prev && v != cur) { other = v; break; }
+			}
+			if (other == UINT32_MAX) return false;
+
+			// Walk the face fan around cur: start from edge cur-other
+			uint32_t walkEdgeOther = other;
+			uint32_t walkFace = prevFace;
+			for (uint32_t safety = 0; safety < nFaces; safety++) {
+				EKey ek = makeEKey(cur, walkEdgeOther);
+				auto it = edgeFaces.find(ek);
+				if (it == edgeFaces.end()) return false;
+
+				auto& fl = it->second;
+				if (fl.size() == 1) {
+					// Boundary edge found -- this is the next edge in the loop
+					outNext = walkEdgeOther;
+					outFace = fl[0];
+					return true;
+				}
+
+				// Internal edge (size >= 2): cross to the other face
+				uint32_t nextFace = UINT32_MAX;
+				for (uint32_t fi : fl) {
+					if (fi != walkFace) { nextFace = fi; break; }
+				}
+				if (nextFace == UINT32_MAX) return false;
+
+				// Find the next vertex in nextFace (the one that is neither cur nor walkEdgeOther)
+				uint32_t nextOther = UINT32_MAX;
+				for (int j = 0; j < 3; j++) {
+					uint32_t v = faces[nextFace].vid[j];
+					if (v != cur && v != walkEdgeOther) { nextOther = v; break; }
+				}
+				if (nextOther == UINT32_MAX) return false;
+
+				walkFace = nextFace;
+				walkEdgeOther = nextOther;
+			}
+			return false; // fan walk exceeded safety limit
+		};
+
+		// -- Trace boundary loops using face-fan walk --
+		// Track visited directed boundary edges (as prev<<32|cur) to handle
+		// junction vertices where two loops share a vertex.
+		std::unordered_set<uint64_t> visitedEdges;
+		auto dirEdgeKey = [](uint32_t from, uint32_t to) -> uint64_t {
+			return (static_cast<uint64_t>(from) << 32) | static_cast<uint64_t>(to);
+		};
+
 		std::vector<std::vector<uint32_t>> loops;
-		std::vector<uint32_t> loopAdjacentFace; // one adjacent face per loop
+		std::vector<uint32_t> loopAdjacentFace;
 
-		for (auto& [start, _] : boundaryAdj) {
-			if (visited.count(start)) continue;
-			// Skip vertices with valence != 2 (non-manifold junctions)
-			if (boundaryAdj[start].size() != 2) continue;
-
-			std::vector<uint32_t> loop;
-			uint32_t prev = UINT32_MAX;
-			uint32_t cur = start;
-			bool valid = true;
-			while (true) {
-				visited.insert(cur);
-				loop.push_back(cur);
-
-				auto& neighbors = boundaryAdj[cur];
-				if (neighbors.size() != 2) {
-					valid = false;
-					break;
-				}
-
-				uint32_t next = (neighbors[0] == prev) ? neighbors[1] : neighbors[0];
-				prev = cur;
-				cur = next;
-
-				if (cur == start) break;
-
-				if (visited.count(cur)) {
-					valid = false;
-					break;
-				}
-
-				if (loop.size() > canonPos.size()) {
-					valid = false;
-					break;
-				}
+		// Find all boundary edges to use as potential starting edges
+		struct BoundaryEdge { uint32_t v0, v1; uint32_t faceIdx; };
+		std::vector<BoundaryEdge> boundaryEdges;
+		for (auto& [ek, fl] : edgeFaces) {
+			if (fl.size() == 1) {
+				boundaryEdges.push_back({ ek.v0, ek.v1, fl[0] });
 			}
+		}
 
-			if (valid && loop.size() >= 3) {
-				loops.push_back(std::move(loop));
-				loopAdjacentFace.push_back(vertexAdjFace[start]);
+		for (auto& be : boundaryEdges) {
+			// Try starting from this boundary edge in both directions
+			for (int dir = 0; dir < 2; dir++) {
+				uint32_t startPrev = dir == 0 ? be.v0 : be.v1;
+				uint32_t startCur = dir == 0 ? be.v1 : be.v0;
+
+				if (visitedEdges.count(dirEdgeKey(startPrev, startCur))) continue;
+
+				std::vector<uint32_t> loop;
+				uint32_t prev = startPrev;
+				uint32_t cur = startCur;
+				uint32_t curFace = be.faceIdx;
+				uint32_t firstFace = be.faceIdx;
+				bool valid = true;
+
+				loop.push_back(startPrev);
+
+				while (true) {
+					visitedEdges.insert(dirEdgeKey(prev, cur));
+					loop.push_back(cur);
+
+					if (cur == startPrev && prev == loop[loop.size() - 2]) {
+						// Check: did we return to the start edge?
+						// We pushed startPrev at the beginning. If cur == startPrev,
+						// we've closed the loop.
+						break;
+					}
+
+					uint32_t next, nextFace;
+					if (!findNextBoundary(cur, prev, curFace, next, nextFace)) {
+						valid = false;
+						break;
+					}
+
+					prev = cur;
+					cur = next;
+					curFace = nextFace;
+
+					// Check if we've returned to starting vertex to close the loop
+					if (cur == startPrev) {
+						visitedEdges.insert(dirEdgeKey(prev, cur));
+						break;
+					}
+
+					if (visitedEdges.count(dirEdgeKey(prev, cur))) {
+						valid = false;
+						break;
+					}
+
+					if (loop.size() > canonPos.size() + 1) {
+						valid = false;
+						break;
+					}
+				}
+
+				if (valid && loop.size() >= 3) {
+					loops.push_back(std::move(loop));
+					loopAdjacentFace.push_back(firstFace);
+				}
 			}
 		}
 
@@ -844,7 +925,7 @@ namespace meshCleanup {
 		};
 
 		std::unordered_map<uint32_t, Vec> rawBoundaryPos;
-		rawBoundaryPos.reserve(boundaryAdj.size());
+		rawBoundaryPos.reserve(vertexAdjFace.size());
 
 		auto getRawBoundaryPos = [&](uint32_t vid) -> Vec {
 			auto rawIt = rawBoundaryPos.find(vid);
@@ -1403,6 +1484,28 @@ namespace meshCleanup {
 		}
 	}
 
+	void removeTempFiles() {
+		const std::filesystem::path dir = R"(E:\work\creoox\cxconverter)";
+
+		for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+			if (!entry.is_regular_file())
+				continue;
+
+			const auto& path = entry.path();
+			const std::string filename = path.filename().string();
+
+			// match: meshCleanup*.obj
+			if (filename.rfind("meshCleanup", 0) == 0 && path.extension() == ".obj") {
+				try {
+					std::filesystem::remove(path);
+				}
+				catch (const std::exception& e) {
+					std::cerr << "Failed to delete: " << path << " (" << e.what() << ")\n";
+				}
+			}
+		}
+	}
+
 	// Post-boolean cleanup
 	void PostBooleanOperationMeshCleanup(fuzzybools::Geometry& input) {
 		if (input.numFaces > 8000) {
@@ -1415,6 +1518,9 @@ namespace meshCleanup {
 		auto meshInfoOnEntry = meshCleanup::isMeshWatertight(input);
 
 #ifdef DUMP_CSG_MESHES
+		// remove all E:\work\creoox\cxconverter\meshCleanup*.obj
+		removeTempFiles();
+
 		if (!meshInfoOnEntry.watertight) {
 			webifc::geometry::IfcGeometry inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(input);
 			webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup1.obj");
@@ -1450,19 +1556,12 @@ namespace meshCleanup {
 		PatchCoplanarHoles(workingMesh, "5", meshInfoBeforePatchCoplanarHoles2, meshInfoAfterPatchCoplanarHoles2);
 
 		auto meshInfoOnExit = meshInfoAfterPatchCoplanarHoles2;
-#ifdef DUMP_CSG_MESHES
-		if (!meshInfoOnExit.watertight) {
-			webifc::geometry::IfcGeometry inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(workingMesh);
-			webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup6-cleaned.obj");
-		}
-#endif
-
 		if(meshInfoOnEntry.numOpenEdges > meshInfoOnExit.numOpenEdges){
 			input = std::move(workingMesh);
 
 #ifdef DUMP_CSG_MESHES
 			webifc::geometry::IfcGeometry inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(input);
-			webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup7-improved.obj");
+			webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup6-improved.obj");
 #endif
 		}
 	}

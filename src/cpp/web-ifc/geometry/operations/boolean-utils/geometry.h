@@ -99,7 +99,6 @@ namespace fuzzybools
 			numPoints += 1;
 		}
 
-		bool bailoutOnZeroArea = false;
 		inline void AddFace(glm::dvec3 a, glm::dvec3 b, glm::dvec3 c, uint32_t pId)
 		{
 			glm::dvec3 normal;
@@ -109,7 +108,7 @@ namespace fuzzybools
 			// -> test to remove the bailout here as well, it could be a t-junction triangle that is 
 			// necessary to make a mesh watertight, but area is zero
 			
-			if (bailoutOnZeroArea) {
+			if (bailoutOnZeroAreaFace) {
 				double area = areaOfTriangle(a, b, c);
 				if (area <= toleranceAddFace)
 				{
@@ -155,7 +154,7 @@ namespace fuzzybools
 				{
 					printf("zero triangle, AddFace(int, int, int)\n");
 				}
-				if (bailoutOnZeroArea) {
+				if (bailoutOnZeroAreaFace) {
 					indexData.pop_back();
 					indexData.pop_back();
 					indexData.pop_back();

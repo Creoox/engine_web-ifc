@@ -62,6 +62,8 @@ constexpr double toleranceThinTriangle = 1.0e-10;
     Constants used in function AddFace in geometry.h
 */
 constexpr double toleranceAddFace = 1.0E-10;
+constexpr bool bailoutOnZeroAreaFace = false;
+
 
 /*
         Round all coordinates when they are read to a specified number of decimal places.
