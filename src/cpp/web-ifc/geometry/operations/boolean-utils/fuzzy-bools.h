@@ -25,6 +25,16 @@ namespace fuzzybools
 
 	inline Geometry Subtract(const Geometry &A, const Geometry &B)
 	{
+		auto bboxA = A.GetAABB();
+		auto bboxB = B.GetAABB();
+		if (!bboxA.intersects(bboxB)) {
+			return A;
+		}
+#ifdef _DEBUG
+		if (A.vertexData.size() == 720) {
+			int wait = 0;
+		}
+#endif
 		fuzzybools::SharedPosition sp;
 		sp.Construct(A, B, false);
 

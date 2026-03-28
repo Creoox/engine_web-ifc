@@ -1080,6 +1080,35 @@ namespace meshCleanup {
 			}
 		}
 
+		// Deduplicate loops: the tracer tries both directions for each starting
+		// edge, so each physical loop is traced forward and reverse. Remove
+		// duplicates by comparing vertex sets.
+		{
+			std::vector<bool> isDuplicate(loops.size(), false);
+			for (size_t i = 0; i < loops.size(); i++) {
+				if (isDuplicate[i]) continue;
+				std::unordered_set<uint32_t> setI(loops[i].begin(), loops[i].end());
+				for (size_t j = i + 1; j < loops.size(); j++) {
+					if (isDuplicate[j]) continue;
+					if (loops[j].size() != loops[i].size()) continue;
+					std::unordered_set<uint32_t> setJ(loops[j].begin(), loops[j].end());
+					if (setI == setJ) {
+						isDuplicate[j] = true;
+					}
+				}
+			}
+			std::vector<std::vector<uint32_t>> uniqueLoops;
+			std::vector<uint32_t> uniqueLoopFaces;
+			for (size_t i = 0; i < loops.size(); i++) {
+				if (!isDuplicate[i]) {
+					uniqueLoops.push_back(std::move(loops[i]));
+					uniqueLoopFaces.push_back(loopAdjacentFace[i]);
+				}
+			}
+			loops = std::move(uniqueLoops);
+			loopAdjacentFace = std::move(uniqueLoopFaces);
+		}
+
 		if (loops.empty()) {
 			meshInfoResult = meshInfoInput;
 			return;
@@ -1164,129 +1193,127 @@ namespace meshCleanup {
 			return;
 		}
 
-		auto samePlane = [&](const LoopInfo& a, const LoopInfo& b) -> bool {
-			if (std::abs(glm::dot(a.planeNormal, b.planeNormal)) < 1.0 - 1e-6) {
-				return false;
-			}
-			double dist = std::abs(glm::dot(b.planePoint - a.planePoint, a.planeNormal));
-			return dist <= PLANE_EPS;
+		// -- Global parent-child containment detection across ALL loops --
+		// For each candidate parent, project both loops using the PARENT's normal
+		// (the correct axis for that parent's plane). This handles loops with
+		// slightly different normals that a single global axis would miss.
+		struct ProjectedLoop {
+			size_t loopIndex;
+			int dropAxis;  // per-loop projection axis
+			std::vector<std::array<double, 2>> projected;
+			double area = 0.0;
+			int parent = -1;
+			int depth = 0;
 		};
 
-		std::vector<bool> grouped(validLoops.size(), false);
+		std::vector<ProjectedLoop> projectedLoops;
+		projectedLoops.reserve(validLoops.size());
+
 		for (size_t i = 0; i < validLoops.size(); i++) {
-			if (grouped[i]) continue;
-
-			std::vector<size_t> planeGroup = { i };
-			grouped[i] = true;
-			for (size_t j = i + 1; j < validLoops.size(); j++) {
-				if (grouped[j]) continue;
-				if (!samePlane(validLoops[i], validLoops[j])) continue;
-				grouped[j] = true;
-				planeGroup.push_back(j);
+			ProjectedLoop pl;
+			pl.loopIndex = i;
+			pl.dropAxis = SelectProjectionAxis(validLoops[i].planeNormal);
+			pl.projected.reserve(validLoops[i].vid.size());
+			for (uint32_t vid : validLoops[i].vid) {
+				pl.projected.push_back(ProjectTo2D(canonPos[vid], pl.dropAxis));
 			}
-
-			struct ProjectedLoop {
-				size_t loopIndex;
-				std::vector<std::array<double, 2>> projected;
-				double area = 0.0;
-				int parent = -1;
-				int depth = 0;
-			};
-
-			const int dropAxis = SelectProjectionAxis(validLoops[planeGroup[0]].planeNormal);
-			std::vector<ProjectedLoop> projectedLoops;
-			projectedLoops.reserve(planeGroup.size());
-
-			for (size_t loopIndex : planeGroup) {
-				ProjectedLoop projectedLoop;
-				projectedLoop.loopIndex = loopIndex;
-				projectedLoop.projected.reserve(validLoops[loopIndex].vid.size());
-				for (uint32_t vid : validLoops[loopIndex].vid) {
-					projectedLoop.projected.push_back(ProjectTo2D(canonPos[vid], dropAxis));
-				}
-				projectedLoop.area = std::abs(SignedArea2D(projectedLoop.projected));
-				if (projectedLoop.area > 1e-12) {
-					projectedLoops.push_back(std::move(projectedLoop));
-				}
+			pl.area = std::abs(SignedArea2D(pl.projected));
+			if (pl.area > 1e-12) {
+				projectedLoops.push_back(std::move(pl));
 			}
+		}
 
-			for (size_t loopIdx = 0; loopIdx < projectedLoops.size(); loopIdx++) {
-				const auto samplePoint = projectedLoops[loopIdx].projected[0];
-				double bestParentArea = std::numeric_limits<double>::max();
+		// Find parent (smallest enclosing loop) for each loop.
+		// For each candidate parent, re-project the child's sample point using
+		// the PARENT's axis and test containment against the parent's polygon.
+		for (size_t loopIdx = 0; loopIdx < projectedLoops.size(); loopIdx++) {
+			double bestParentArea = std::numeric_limits<double>::max();
 
-				for (size_t candidateIdx = 0; candidateIdx < projectedLoops.size(); candidateIdx++) {
-					if (candidateIdx == loopIdx) continue;
-					if (projectedLoops[candidateIdx].area <= projectedLoops[loopIdx].area + 1e-12) continue;
-					if (!PointInPolygon2D(samplePoint, projectedLoops[candidateIdx].projected)) continue;
+			for (size_t candidateIdx = 0; candidateIdx < projectedLoops.size(); candidateIdx++) {
+				if (candidateIdx == loopIdx) continue;
+				if (projectedLoops[candidateIdx].area <= projectedLoops[loopIdx].area + 1e-12) continue;
 
-					if (projectedLoops[candidateIdx].area < bestParentArea) {
-						bestParentArea = projectedLoops[candidateIdx].area;
-						projectedLoops[loopIdx].parent = static_cast<int>(candidateIdx);
-					}
+				// Project the child's first vertex using the CANDIDATE PARENT's axis
+				int parentAxis = projectedLoops[candidateIdx].dropAxis;
+				uint32_t sampleVid = validLoops[projectedLoops[loopIdx].loopIndex].vid[0];
+				auto samplePoint = ProjectTo2D(canonPos[sampleVid], parentAxis);
+
+				if (!PointInPolygon2D(samplePoint, projectedLoops[candidateIdx].projected)) continue;
+
+				if (projectedLoops[candidateIdx].area < bestParentArea) {
+					bestParentArea = projectedLoops[candidateIdx].area;
+					projectedLoops[loopIdx].parent = static_cast<int>(candidateIdx);
 				}
 			}
+		}
 
-			for (auto& projectedLoop : projectedLoops) {
-				for (int parent = projectedLoop.parent; parent >= 0; parent = projectedLoops[parent].parent) {
-					projectedLoop.depth++;
+		// Compute nesting depth
+		for (auto& pl : projectedLoops) {
+			for (int p = pl.parent; p >= 0; p = projectedLoops[p].parent) {
+				pl.depth++;
+			}
+		}
+
+		// Triangulate: even-depth loops are outer boundaries, odd-depth are holes
+		for (size_t outerIdx = 0; outerIdx < projectedLoops.size(); outerIdx++) {
+			if ((projectedLoops[outerIdx].depth & 1) != 0) continue;
+
+			const LoopInfo& outerLoop = validLoops[projectedLoops[outerIdx].loopIndex];
+
+			std::vector<std::vector<std::array<double, 2>>> polygon;
+			std::vector<uint32_t> polygonVertexIds;
+			polygon.reserve(projectedLoops.size());
+			polygonVertexIds.reserve(outerLoop.vid.size());
+
+			polygon.push_back(projectedLoops[outerIdx].projected);
+			polygonVertexIds.insert(polygonVertexIds.end(), outerLoop.vid.begin(), outerLoop.vid.end());
+
+			for (size_t holeIdx = 0; holeIdx < projectedLoops.size(); holeIdx++) {
+				if (projectedLoops[holeIdx].parent != static_cast<int>(outerIdx)) continue;
+
+				// Re-project hole using the OUTER loop's axis for consistent earcut input
+				const auto& holeLoop = validLoops[projectedLoops[holeIdx].loopIndex];
+				int outerAxis = projectedLoops[outerIdx].dropAxis;
+				std::vector<std::array<double, 2>> holeProjected;
+				holeProjected.reserve(holeLoop.vid.size());
+				for (uint32_t vid : holeLoop.vid) {
+					holeProjected.push_back(ProjectTo2D(canonPos[vid], outerAxis));
 				}
+				polygon.push_back(std::move(holeProjected));
+				polygonVertexIds.insert(polygonVertexIds.end(), holeLoop.vid.begin(), holeLoop.vid.end());
 			}
 
-			for (size_t outerIdx = 0; outerIdx < projectedLoops.size(); outerIdx++) {
-				if ((projectedLoops[outerIdx].depth & 1) != 0) continue;
+			std::vector<uint32_t> indices = mapbox::earcut<uint32_t>(polygon);
+			if (indices.size() < 3) continue;
 
-				const LoopInfo& outerLoop = validLoops[projectedLoops[outerIdx].loopIndex];
+			Vec fillNormal(0);
+			for (size_t tri = 0; tri < indices.size(); tri += 3) {
+				Vec ta = getRawBoundaryPos(polygonVertexIds[indices[tri]]);
+				Vec tb = getRawBoundaryPos(polygonVertexIds[indices[tri + 1]]);
+				Vec tc = getRawBoundaryPos(polygonVertexIds[indices[tri + 2]]);
+				fillNormal += glm::cross(tb - ta, tc - ta);
+			}
 
-				std::vector<std::vector<std::array<double, 2>>> polygon;
-				std::vector<uint32_t> polygonVertexIds;
-				polygon.reserve(projectedLoops.size());
-				polygonVertexIds.reserve(outerLoop.vid.size());
+			bool flipWinding = glm::dot(fillNormal, outerLoop.adjNormal) < 0;
+			Vec n = flipWinding ? -outerLoop.planeNormal : outerLoop.planeNormal;
 
-				polygon.push_back(projectedLoops[outerIdx].projected);
-				polygonVertexIds.insert(polygonVertexIds.end(), outerLoop.vid.begin(), outerLoop.vid.end());
+			for (size_t tri = 0; tri < indices.size(); tri += 3) {
+				Vec va = getRawBoundaryPos(polygonVertexIds[indices[tri]]);
+				Vec vb = getRawBoundaryPos(polygonVertexIds[indices[tri + 1]]);
+				Vec vc = getRawBoundaryPos(polygonVertexIds[indices[tri + 2]]);
 
-				for (size_t holeIdx = 0; holeIdx < projectedLoops.size(); holeIdx++) {
-					if (projectedLoops[holeIdx].parent != static_cast<int>(outerIdx)) continue;
-					polygon.push_back(projectedLoops[holeIdx].projected);
-
-					const auto& holeLoop = validLoops[projectedLoops[holeIdx].loopIndex];
-					polygonVertexIds.insert(polygonVertexIds.end(), holeLoop.vid.begin(), holeLoop.vid.end());
+				if (flipWinding) {
+					geom.AddPoint(va, n);
+					geom.AddPoint(vc, n);
+					geom.AddPoint(vb, n);
 				}
-
-				std::vector<uint32_t> indices = mapbox::earcut<uint32_t>(polygon);
-				if (indices.size() < 3) continue;
-
-				Vec fillNormal(0);
-				for (size_t tri = 0; tri < indices.size(); tri += 3) {
-					Vec ta = getRawBoundaryPos(polygonVertexIds[indices[tri]]);
-					Vec tb = getRawBoundaryPos(polygonVertexIds[indices[tri + 1]]);
-					Vec tc = getRawBoundaryPos(polygonVertexIds[indices[tri + 2]]);
-					fillNormal += glm::cross(tb - ta, tc - ta);
+				else {
+					geom.AddPoint(va, n);
+					geom.AddPoint(vb, n);
+					geom.AddPoint(vc, n);
 				}
-
-				bool flipWinding = glm::dot(fillNormal, outerLoop.adjNormal) < 0;
-				Vec n = flipWinding ? -outerLoop.planeNormal : outerLoop.planeNormal;
-
-				for (size_t tri = 0; tri < indices.size(); tri += 3) {
-					Vec va = getRawBoundaryPos(polygonVertexIds[indices[tri]]);
-					Vec vb = getRawBoundaryPos(polygonVertexIds[indices[tri + 1]]);
-					Vec vc = getRawBoundaryPos(polygonVertexIds[indices[tri + 2]]);
-
-					// Use index-based AddFace to avoid rejection of near-degenerate triangles by computeSafeNormal.
-					// These triangles may have near-zero area but are topologically necessary to close the hole.
-					if (flipWinding) {
-						geom.AddPoint(va, n);
-						geom.AddPoint(vc, n);
-						geom.AddPoint(vb, n);
-					}
-					else {
-						geom.AddPoint(va, n);
-						geom.AddPoint(vb, n);
-						geom.AddPoint(vc, n);
-					}
-					geom.AddFace(geom.numPoints - 3, geom.numPoints - 2, geom.numPoints - 1,
-						outerLoop.adjPlaneId);
-				}
+				geom.AddFace(geom.numPoints - 3, geom.numPoints - 2, geom.numPoints - 1,
+					outerLoop.adjPlaneId);
 			}
 		}
 		if (geom.numFaces > nFaces) {
@@ -1796,18 +1823,19 @@ namespace meshCleanup {
 		}
 		fuzzybools::Geometry workingMesh = input;
 		auto meshInfoOnEntry = meshCleanup::isMeshWatertight(input);
-
+		if (meshInfoOnEntry.watertight) {
+			return;
+		}
 #ifdef DUMP_CSG_MESHES
 		// remove all E:\work\creoox\cxconverter\meshCleanup*.obj
 		removeTempFiles();
 
-		if (meshInfoOnEntry.numOpenEdges == 1) {
+		if (meshInfoOnEntry.numOpenEdges == 4) {
 			int wait = 0;
 		}
-		if (!meshInfoOnEntry.watertight) {
-			webifc::geometry::IfcGeometry inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(input);
-			webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup1.obj");
-		}
+		
+		webifc::geometry::IfcGeometry inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(input);
+		webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup1.obj");
 #endif
 
 		// 1: remove degenerated triangles
@@ -1844,6 +1872,7 @@ namespace meshCleanup {
 		auto meshInfoOnExit = meshInfoAfterPatchCoplanarHoles2;
 		if(meshInfoOnEntry.numOpenEdges > meshInfoOnExit.numOpenEdges){
 			input = std::move(workingMesh);
+			input.hasPlanes = false;
 
 #ifdef DUMP_CSG_MESHES
 			webifc::geometry::IfcGeometry inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(input);

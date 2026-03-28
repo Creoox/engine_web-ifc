@@ -912,7 +912,7 @@ namespace webifc::geometry
 		if (geomIt != geometryMap.end())
 		{
 			auto meshGeom = geomIt->second;
-
+			meshGeom.entityID = mesh.expressID;
 			std::vector<IfcGeometry> transformedGeoms = transformIfcGeometry(meshGeom, newMat, transformationBreaksWinding);
 			geoms.insert(geoms.end(), transformedGeoms.begin(), transformedGeoms.end());
 		}

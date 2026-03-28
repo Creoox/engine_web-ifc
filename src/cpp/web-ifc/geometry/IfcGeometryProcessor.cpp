@@ -192,6 +192,7 @@ namespace webifc::geometry
                 for (auto relVoidExpressID : relVoidsIt->second)
                 {
                     IfcComposedMesh voidGeom = GetMesh(relVoidExpressID);
+
                     auto flatVoidMesh = flatten(voidGeom, _expressIDToGeometry, normalizeMat);
                     voidGeoms.insert(voidGeoms.end(), flatVoidMesh.begin(), flatVoidMesh.end());
                 }
@@ -580,6 +581,11 @@ namespace webifc::geometry
                 for (auto &repToken : repItems)
                 {
                     uint32_t repID = _loader.GetRefArgument(repToken);
+                    uint32_t repType = _loader.GetLineType(repID);
+                    std::string repTypeString = _loader.GetSchemaManager().IfcTypeCodeToType(repType);
+                    if (repType == schema::IFCBOUNDINGBOX) {
+                        continue;
+                    }
                     mesh.children.push_back(GetMesh(repID));
                 }
 
@@ -2143,6 +2149,11 @@ namespace webifc::geometry
                 // BOOLSTATUS++;
 
 #endif
+                auto bboxA = firstOperator.GetAABB();
+                auto bboxB = secondOperator.GetAABB();
+                if (!bboxA.intersects(bboxB)) {
+                    continue;
+                }
 
                 firstOperator.buildPlanes();
                 secondOperator.buildPlanes();
