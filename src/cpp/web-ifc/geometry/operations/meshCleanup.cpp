@@ -71,6 +71,600 @@ namespace meshCleanup {
 		return inside;
 	}
 
+	static double Cross2D(const std::array<double, 2>& a, const std::array<double, 2>& b, const std::array<double, 2>& c) {
+		return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+	}
+
+	static bool PointInTriangle2D(const std::array<double, 2>& p,
+		const std::array<double, 2>& a,
+		const std::array<double, 2>& b,
+		const std::array<double, 2>& c) {
+		const double eps = 1e-9;
+		double c1 = Cross2D(a, b, p);
+		double c2 = Cross2D(b, c, p);
+		double c3 = Cross2D(c, a, p);
+		bool hasNeg = (c1 < -eps) || (c2 < -eps) || (c3 < -eps);
+		bool hasPos = (c1 > eps) || (c2 > eps) || (c3 > eps);
+		return !(hasNeg && hasPos);
+	}
+
+	static bool OnSegment2D(const std::array<double, 2>& a,
+		const std::array<double, 2>& b,
+		const std::array<double, 2>& p) {
+		const double eps = 1e-9;
+		return std::min(a[0], b[0]) - eps <= p[0] && p[0] <= std::max(a[0], b[0]) + eps &&
+			std::min(a[1], b[1]) - eps <= p[1] && p[1] <= std::max(a[1], b[1]) + eps;
+	}
+
+	static bool SegmentsIntersect2D(const std::array<double, 2>& a0,
+		const std::array<double, 2>& a1,
+		const std::array<double, 2>& b0,
+		const std::array<double, 2>& b1) {
+		const double eps = 1e-9;
+		double d1 = Cross2D(a0, a1, b0);
+		double d2 = Cross2D(a0, a1, b1);
+		double d3 = Cross2D(b0, b1, a0);
+		double d4 = Cross2D(b0, b1, a1);
+
+		bool intersectsProper =
+			((d1 > eps && d2 < -eps) || (d1 < -eps && d2 > eps)) &&
+			((d3 > eps && d4 < -eps) || (d3 < -eps && d4 > eps));
+		if (intersectsProper) return true;
+
+		if (std::abs(d1) <= eps && OnSegment2D(a0, a1, b0)) return true;
+		if (std::abs(d2) <= eps && OnSegment2D(a0, a1, b1)) return true;
+		if (std::abs(d3) <= eps && OnSegment2D(b0, b1, a0)) return true;
+		if (std::abs(d4) <= eps && OnSegment2D(b0, b1, a1)) return true;
+		return false;
+	}
+
+	static bool TriangleIntersectsPolygon2D(const std::array<std::array<double, 2>, 3>& tri,
+		const std::vector<std::array<double, 2>>& polygon,
+		const std::array<double, 2>& polyMin,
+		const std::array<double, 2>& polyMax) {
+		if (polygon.size() < 3) return false;
+
+		std::array<double, 2> triMin{ std::numeric_limits<double>::max(), std::numeric_limits<double>::max() };
+		std::array<double, 2> triMax{ -std::numeric_limits<double>::max(), -std::numeric_limits<double>::max() };
+		for (const auto& p : tri) {
+			triMin[0] = std::min(triMin[0], p[0]);
+			triMin[1] = std::min(triMin[1], p[1]);
+			triMax[0] = std::max(triMax[0], p[0]);
+			triMax[1] = std::max(triMax[1], p[1]);
+		}
+		if (triMax[0] < polyMin[0] || triMin[0] > polyMax[0] ||
+			triMax[1] < polyMin[1] || triMin[1] > polyMax[1]) {
+			return false;
+		}
+
+		for (const auto& p : tri) {
+			if (PointInPolygon2D(p, polygon)) {
+				return true;
+			}
+		}
+
+		for (const auto& p : polygon) {
+			if (PointInTriangle2D(p, tri[0], tri[1], tri[2])) {
+				return true;
+			}
+		}
+
+		for (int i = 0; i < 3; i++) {
+			const auto& ta = tri[i];
+			const auto& tb = tri[(i + 1) % 3];
+			for (size_t j = 0, k = polygon.size() - 1; j < polygon.size(); k = j++) {
+				if (SegmentsIntersect2D(ta, tb, polygon[k], polygon[j])) {
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	static bool TraceSimpleLoop(const std::vector<std::pair<uint32_t, uint32_t>>& edges,
+		std::vector<uint32_t>& loopOut) {
+		loopOut.clear();
+		if (edges.size() < 3) return false;
+
+		std::unordered_map<uint32_t, std::vector<uint32_t>> adjacency;
+		for (const auto& edge : edges) {
+			adjacency[edge.first].push_back(edge.second);
+			adjacency[edge.second].push_back(edge.first);
+		}
+
+		for (const auto& [vertex, neighbours] : adjacency) {
+			if (neighbours.size() != 2) {
+				return false;
+			}
+		}
+
+		uint32_t start = edges.front().first;
+		uint32_t prev = UINT32_MAX;
+		uint32_t cur = start;
+
+		for (size_t safety = 0; safety <= edges.size() + 1; safety++) {
+			loopOut.push_back(cur);
+
+			const auto& neighbours = adjacency[cur];
+			uint32_t next = neighbours[0];
+			if (next == prev) next = neighbours[1];
+
+			prev = cur;
+			cur = next;
+			if (cur == start) {
+				return loopOut.size() >= 3;
+			}
+		}
+
+		loopOut.clear();
+		return false;
+	}
+
+	static uint32_t RetriangulateHostPlaneOpeningPatches(Geometry& geom) {
+		const uint32_t nFaces = geom.numFaces;
+		if (nFaces == 0) return 0;
+
+		const double cellSize = toleranceVectorEquality;
+		const double cellSizeSq = cellSize * cellSize;
+
+		using GridKey = std::tuple<int64_t, int64_t, int64_t>;
+		struct GridKeyHash {
+			size_t operator()(const GridKey& k) const {
+				size_t h = std::hash<int64_t>()(std::get<0>(k));
+				h ^= std::hash<int64_t>()(std::get<1>(k)) + 0x9e3779b9 + (h << 6) + (h >> 2);
+				h ^= std::hash<int64_t>()(std::get<2>(k)) + 0x9e3779b9 + (h << 6) + (h >> 2);
+				return h;
+			}
+		};
+
+		auto getCell = [&](const Vec& p) -> GridKey {
+			return { static_cast<int64_t>(std::floor(p.x / cellSize)),
+					static_cast<int64_t>(std::floor(p.y / cellSize)),
+					static_cast<int64_t>(std::floor(p.z / cellSize)) };
+		};
+
+		struct CanonFace {
+			std::array<uint32_t, 3> vid;
+			Vec normal;
+			double area;
+			uint32_t pId;
+		};
+
+		std::unordered_map<GridKey, std::vector<std::pair<uint32_t, Vec>>, GridKeyHash> vtxGrid;
+		std::vector<Vec> canonPos;
+		uint32_t nextVid = 0;
+
+		auto findOrAdd = [&](const Vec& p) -> uint32_t {
+			auto center = getCell(p);
+			for (int dx = -1; dx <= 1; ++dx)
+				for (int dy = -1; dy <= 1; ++dy)
+					for (int dz = -1; dz <= 1; ++dz) {
+						GridKey nk = { std::get<0>(center) + dx,
+									  std::get<1>(center) + dy,
+									  std::get<2>(center) + dz };
+						auto it = vtxGrid.find(nk);
+						if (it != vtxGrid.end()) {
+							for (const auto& [id, pos] : it->second) {
+								Vec d = p - pos;
+								if (glm::dot(d, d) < cellSizeSq) {
+									return id;
+								}
+							}
+						}
+					}
+			uint32_t id = nextVid++;
+			vtxGrid[center].emplace_back(id, p);
+			canonPos.push_back(p);
+			return id;
+		};
+
+		std::vector<CanonFace> faces(nFaces);
+		for (uint32_t i = 0; i < nFaces; i++) {
+			Face f = geom.GetFace(i);
+			Vec a = geom.GetPoint(f.i0);
+			Vec b = geom.GetPoint(f.i1);
+			Vec c = geom.GetPoint(f.i2);
+			Vec cr = glm::cross(b - a, c - a);
+			double len = glm::length(cr);
+			faces[i].vid = { findOrAdd(a), findOrAdd(b), findOrAdd(c) };
+			faces[i].normal = len > 1e-15 ? cr / len : Vec(0);
+			faces[i].area = len * 0.5;
+			faces[i].pId = static_cast<uint32_t>(f.pId);
+		}
+
+		struct EKey {
+			uint32_t v0, v1;
+			bool operator==(const EKey& o) const { return v0 == o.v0 && v1 == o.v1; }
+		};
+		struct EKeyHash {
+			size_t operator()(const EKey& k) const {
+				size_t h = std::hash<uint32_t>()(k.v0);
+				h ^= std::hash<uint32_t>()(k.v1) + 0x9e3779b9 + (h << 6) + (h >> 2);
+				return h;
+			}
+		};
+		auto makeEKey = [](uint32_t a, uint32_t b) -> EKey {
+			return { std::min(a, b), std::max(a, b) };
+		};
+
+		std::unordered_map<EKey, uint32_t, EKeyHash> allEdgeCount;
+		for (const auto& face : faces) {
+			for (int e = 0; e < 3; e++) {
+				allEdgeCount[makeEKey(face.vid[e], face.vid[(e + 1) % 3])]++;
+			}
+		}
+
+		std::array<double, 3> dominantNormalArea = { 0.0, 0.0, 0.0 };
+		double meshAxisMin = std::numeric_limits<double>::max();
+		double meshAxisMax = -std::numeric_limits<double>::max();
+		for (const auto& face : faces) {
+			dominantNormalArea[0] += face.area * std::abs(face.normal.x);
+			dominantNormalArea[1] += face.area * std::abs(face.normal.y);
+			dominantNormalArea[2] += face.area * std::abs(face.normal.z);
+			for (uint32_t vid : face.vid) {
+				meshAxisMin = std::min(meshAxisMin, canonPos[vid].x);
+				meshAxisMax = std::max(meshAxisMax, canonPos[vid].x);
+			}
+		}
+
+		int dominantAxis = 0;
+		if (dominantNormalArea[1] > dominantNormalArea[dominantAxis]) dominantAxis = 1;
+		if (dominantNormalArea[2] > dominantNormalArea[dominantAxis]) dominantAxis = 2;
+		meshAxisMin = std::numeric_limits<double>::max();
+		meshAxisMax = -std::numeric_limits<double>::max();
+		for (const auto& point : canonPos) {
+			double axisValue = dominantAxis == 0 ? point.x : (dominantAxis == 1 ? point.y : point.z);
+			meshAxisMin = std::min(meshAxisMin, axisValue);
+			meshAxisMax = std::max(meshAxisMax, axisValue);
+		}
+
+		auto axisComponent = [&](const Vec& v) -> double {
+			return dominantAxis == 0 ? v.x : (dominantAxis == 1 ? v.y : v.z);
+		};
+
+		const double sideTol = std::max(1e-3 * 4.0, toleranceVectorEquality * 2.0);
+		auto vertexOnSide = [&](uint32_t vid, bool minSide) -> bool {
+			double axisValue = axisComponent(canonPos[vid]);
+			return minSide ? std::abs(axisValue - meshAxisMin) <= sideTol : std::abs(axisValue - meshAxisMax) <= sideTol;
+		};
+
+		auto faceOnSide = [&](const CanonFace& face, bool minSide) -> bool {
+			double faceMin = std::min({ axisComponent(canonPos[face.vid[0]]), axisComponent(canonPos[face.vid[1]]), axisComponent(canonPos[face.vid[2]]) });
+			double faceMax = std::max({ axisComponent(canonPos[face.vid[0]]), axisComponent(canonPos[face.vid[1]]), axisComponent(canonPos[face.vid[2]]) });
+			return minSide ? faceMax <= meshAxisMin + sideTol : faceMin >= meshAxisMax - sideTol;
+		};
+
+		auto isHostAligned = [&](const CanonFace& face) -> bool {
+			return glm::length(face.normal) > 0.5 && std::abs(axisComponent(face.normal)) > 0.85;
+		};
+
+		auto isOrthogonalToHost = [&](const CanonFace& face) -> bool {
+			return glm::length(face.normal) > 0.5 && std::abs(axisComponent(face.normal)) < 0.35;
+		};
+
+		struct PatchCandidate {
+			std::vector<uint32_t> removedFaces;
+			std::vector<uint32_t> polygonVertexIds;
+			std::vector<uint32_t> triangulation;
+			Vec planeNormal;
+			Vec normalHint;
+			uint32_t planeId = 0;
+		};
+
+		std::vector<PatchCandidate> patches;
+		std::vector<bool> faceReserved(nFaces, false);
+
+		for (int side = 0; side < 2; side++) {
+			bool minSide = side == 0;
+			bool hasBoundaryEdgesOnSide = false;
+			for (const auto& [edge, count] : allEdgeCount) {
+				if (count != 1) continue;
+				if (vertexOnSide(edge.v0, minSide) && vertexOnSide(edge.v1, minSide)) {
+					hasBoundaryEdgesOnSide = true;
+					break;
+				}
+			}
+			if (!hasBoundaryEdgesOnSide) continue;
+			std::array<double, 2> sideHostMin{ std::numeric_limits<double>::max(), std::numeric_limits<double>::max() };
+			std::array<double, 2> sideHostMax{ -std::numeric_limits<double>::max(), -std::numeric_limits<double>::max() };
+			bool hasHostSideBounds = false;
+			for (const auto& face : faces) {
+				if (!isHostAligned(face)) continue;
+				if (!faceOnSide(face, minSide)) continue;
+				for (uint32_t vid : face.vid) {
+					auto projected = ProjectTo2D(canonPos[vid], dominantAxis);
+					sideHostMin[0] = std::min(sideHostMin[0], projected[0]);
+					sideHostMin[1] = std::min(sideHostMin[1], projected[1]);
+					sideHostMax[0] = std::max(sideHostMax[0], projected[0]);
+					sideHostMax[1] = std::max(sideHostMax[1], projected[1]);
+				}
+				hasHostSideBounds = true;
+			}
+			if (!hasHostSideBounds) continue;
+
+			std::unordered_set<EKey, EKeyHash> holeEdgeSet;
+			for (uint32_t i = 0; i < nFaces; i++) {
+				if (!isOrthogonalToHost(faces[i])) continue;
+				for (int e = 0; e < 3; e++) {
+					uint32_t v0 = faces[i].vid[e];
+					uint32_t v1 = faces[i].vid[(e + 1) % 3];
+					if (vertexOnSide(v0, minSide) && vertexOnSide(v1, minSide)) {
+						holeEdgeSet.insert(makeEKey(v0, v1));
+					}
+				}
+			}
+
+			if (holeEdgeSet.empty()) continue;
+
+			std::unordered_map<uint32_t, std::vector<uint32_t>> holeAdj;
+			for (const auto& edge : holeEdgeSet) {
+				holeAdj[edge.v0].push_back(edge.v1);
+				holeAdj[edge.v1].push_back(edge.v0);
+			}
+
+			std::unordered_set<uint32_t> visitedHoleVertices;
+			for (const auto& entry : holeAdj) {
+				uint32_t startVertex = entry.first;
+				if (visitedHoleVertices.count(startVertex)) continue;
+
+				std::vector<uint32_t> componentVertices;
+				std::queue<uint32_t> queue;
+				queue.push(startVertex);
+				visitedHoleVertices.insert(startVertex);
+
+				while (!queue.empty()) {
+					uint32_t cur = queue.front();
+					queue.pop();
+					componentVertices.push_back(cur);
+					for (uint32_t nb : holeAdj[cur]) {
+						if (visitedHoleVertices.insert(nb).second) {
+							queue.push(nb);
+						}
+					}
+				}
+
+				std::unordered_set<uint32_t> componentSet(componentVertices.begin(), componentVertices.end());
+				std::vector<std::pair<uint32_t, uint32_t>> componentEdges;
+				for (const auto& edge : holeEdgeSet) {
+					if (componentSet.count(edge.v0) && componentSet.count(edge.v1)) {
+						componentEdges.push_back({ edge.v0, edge.v1 });
+					}
+				}
+
+				std::vector<uint32_t> holeLoop;
+				if (!TraceSimpleLoop(componentEdges, holeLoop)) continue;
+				if (holeLoop.size() < 3) continue;
+
+				std::vector<std::array<double, 2>> holeProjected;
+				holeProjected.reserve(holeLoop.size());
+				std::array<double, 2> holeMin{ std::numeric_limits<double>::max(), std::numeric_limits<double>::max() };
+				std::array<double, 2> holeMax{ -std::numeric_limits<double>::max(), -std::numeric_limits<double>::max() };
+				for (uint32_t vid : holeLoop) {
+					auto projected = ProjectTo2D(canonPos[vid], dominantAxis);
+					holeProjected.push_back(projected);
+					holeMin[0] = std::min(holeMin[0], projected[0]);
+					holeMin[1] = std::min(holeMin[1], projected[1]);
+					holeMax[0] = std::max(holeMax[0], projected[0]);
+					holeMax[1] = std::max(holeMax[1], projected[1]);
+				}
+				if (std::abs(SignedArea2D(holeProjected)) <= 1e-10) continue;
+				const double edgeMargin = toleranceVectorEquality * 4.0;
+				if (holeMin[0] <= sideHostMin[0] + edgeMargin ||
+					holeMin[1] <= sideHostMin[1] + edgeMargin ||
+					holeMax[0] >= sideHostMax[0] - edgeMargin ||
+					holeMax[1] >= sideHostMax[1] - edgeMargin) {
+					continue;
+				}
+
+				std::vector<uint32_t> selectedFaces;
+				Vec normalHint(0);
+				std::unordered_map<uint32_t, double> planeArea;
+
+				for (uint32_t i = 0; i < nFaces; i++) {
+					if (!isHostAligned(faces[i])) continue;
+					if (!faceOnSide(faces[i], minSide)) continue;
+
+					std::array<std::array<double, 2>, 3> triProjected = {
+						ProjectTo2D(canonPos[faces[i].vid[0]], dominantAxis),
+						ProjectTo2D(canonPos[faces[i].vid[1]], dominantAxis),
+						ProjectTo2D(canonPos[faces[i].vid[2]], dominantAxis)
+					};
+
+					if (!TriangleIntersectsPolygon2D(triProjected, holeProjected, holeMin, holeMax)) {
+						continue;
+					}
+
+					selectedFaces.push_back(i);
+					normalHint += faces[i].normal * faces[i].area;
+					planeArea[faces[i].pId] += faces[i].area;
+				}
+
+				if (selectedFaces.empty()) continue;
+
+				bool overlapsExistingPatch = false;
+				for (uint32_t fi : selectedFaces) {
+					if (faceReserved[fi]) {
+						overlapsExistingPatch = true;
+						break;
+					}
+				}
+				if (overlapsExistingPatch) continue;
+
+				std::unordered_map<EKey, uint32_t, EKeyHash> patchEdgeCount;
+				for (uint32_t fi : selectedFaces) {
+					for (int e = 0; e < 3; e++) {
+						patchEdgeCount[makeEKey(faces[fi].vid[e], faces[fi].vid[(e + 1) % 3])]++;
+					}
+				}
+
+				std::unordered_map<uint32_t, std::vector<uint32_t>> patchBoundaryAdj;
+				for (const auto& [edge, count] : patchEdgeCount) {
+					if (count != 1) continue;
+					patchBoundaryAdj[edge.v0].push_back(edge.v1);
+					patchBoundaryAdj[edge.v1].push_back(edge.v0);
+				}
+				if (patchBoundaryAdj.empty()) continue;
+
+				std::unordered_set<uint32_t> visitedPatchVertices;
+				std::vector<uint32_t> outerLoop;
+				double outerArea = 0.0;
+
+				for (const auto& entry : patchBoundaryAdj) {
+					uint32_t vertex = entry.first;
+					if (visitedPatchVertices.count(vertex)) continue;
+
+					std::vector<uint32_t> componentVerticesPatch;
+					std::queue<uint32_t> patchQueue;
+					patchQueue.push(vertex);
+					visitedPatchVertices.insert(vertex);
+					while (!patchQueue.empty()) {
+						uint32_t cur = patchQueue.front();
+						patchQueue.pop();
+						componentVerticesPatch.push_back(cur);
+						for (uint32_t nb : patchBoundaryAdj[cur]) {
+							if (visitedPatchVertices.insert(nb).second) {
+								patchQueue.push(nb);
+							}
+						}
+					}
+
+					std::unordered_set<uint32_t> patchComponentSet(componentVerticesPatch.begin(), componentVerticesPatch.end());
+					std::vector<std::pair<uint32_t, uint32_t>> patchEdges;
+					for (const auto& [edge, count] : patchEdgeCount) {
+						if (count != 1) continue;
+						if (patchComponentSet.count(edge.v0) && patchComponentSet.count(edge.v1)) {
+							patchEdges.push_back({ edge.v0, edge.v1 });
+						}
+					}
+
+					std::vector<uint32_t> boundaryLoop;
+					if (!TraceSimpleLoop(patchEdges, boundaryLoop)) continue;
+
+					std::vector<std::array<double, 2>> boundaryProjected;
+					boundaryProjected.reserve(boundaryLoop.size());
+					for (uint32_t vid : boundaryLoop) {
+						boundaryProjected.push_back(ProjectTo2D(canonPos[vid], dominantAxis));
+					}
+
+					double area = std::abs(SignedArea2D(boundaryProjected));
+					if (area > outerArea) {
+						outerArea = area;
+						outerLoop = std::move(boundaryLoop);
+					}
+				}
+
+				if (outerLoop.size() < 3 || outerArea <= 1e-10) continue;
+
+				std::vector<std::vector<std::array<double, 2>>> polygon;
+				std::vector<uint32_t> polygonVertexIds;
+				polygon.reserve(2);
+				polygonVertexIds.reserve(outerLoop.size() + holeLoop.size());
+
+				polygon.emplace_back();
+				for (uint32_t vid : outerLoop) {
+					polygon.back().push_back(ProjectTo2D(canonPos[vid], dominantAxis));
+					polygonVertexIds.push_back(vid);
+				}
+
+				polygon.emplace_back();
+				for (uint32_t vid : holeLoop) {
+					polygon.back().push_back(ProjectTo2D(canonPos[vid], dominantAxis));
+					polygonVertexIds.push_back(vid);
+				}
+
+				std::vector<uint32_t> triangulation = mapbox::earcut<uint32_t>(polygon);
+				if (triangulation.size() < 3) continue;
+
+				uint32_t planeId = selectedFaces.front() < faces.size() ? faces[selectedFaces.front()].pId : 0;
+				double bestPlaneArea = -1.0;
+				for (const auto& [pId, area] : planeArea) {
+					if (area > bestPlaneArea) {
+						bestPlaneArea = area;
+						planeId = pId;
+					}
+				}
+
+				Vec planeNormal(0);
+				if (dominantAxis == 0) planeNormal = Vec(minSide ? -1.0 : 1.0, 0.0, 0.0);
+				if (dominantAxis == 1) planeNormal = Vec(0.0, minSide ? -1.0 : 1.0, 0.0);
+				if (dominantAxis == 2) planeNormal = Vec(0.0, 0.0, minSide ? -1.0 : 1.0);
+				if (glm::length(normalHint) < 1e-9) {
+					normalHint = planeNormal;
+				}
+
+				for (uint32_t fi : selectedFaces) {
+					faceReserved[fi] = true;
+				}
+
+				patches.push_back({
+					std::move(selectedFaces),
+					std::move(polygonVertexIds),
+					std::move(triangulation),
+					planeNormal,
+					normalHint,
+					planeId
+					});
+			}
+		}
+
+		if (patches.empty()) {
+			return 0;
+		}
+
+		std::vector<bool> removeFace(nFaces, false);
+		for (const auto& patch : patches) {
+			for (uint32_t fi : patch.removedFaces) {
+				removeFace[fi] = true;
+			}
+		}
+
+		Geometry rebuilt;
+		rebuilt.planes = geom.planes;
+		rebuilt.hasPlanes = geom.hasPlanes;
+		rebuilt.data = geom.data;
+
+		for (uint32_t i = 0; i < nFaces; i++) {
+			if (removeFace[i]) continue;
+			Face f = geom.GetFace(i);
+			rebuilt.AddFace(geom.GetPoint(f.i0), geom.GetPoint(f.i1), geom.GetPoint(f.i2), f.pId);
+		}
+
+		uint32_t rebuiltFaces = 0;
+		for (const auto& patch : patches) {
+			Vec fillNormal(0);
+			for (size_t tri = 0; tri < patch.triangulation.size(); tri += 3) {
+				Vec a = canonPos[patch.polygonVertexIds[patch.triangulation[tri]]];
+				Vec b = canonPos[patch.polygonVertexIds[patch.triangulation[tri + 1]]];
+				Vec c = canonPos[patch.polygonVertexIds[patch.triangulation[tri + 2]]];
+				fillNormal += glm::cross(b - a, c - a);
+			}
+
+			bool flipWinding = glm::dot(fillNormal, patch.normalHint) < 0;
+			for (size_t tri = 0; tri < patch.triangulation.size(); tri += 3) {
+				Vec a = canonPos[patch.polygonVertexIds[patch.triangulation[tri]]];
+				Vec b = canonPos[patch.polygonVertexIds[patch.triangulation[tri + 1]]];
+				Vec c = canonPos[patch.polygonVertexIds[patch.triangulation[tri + 2]]];
+
+				if (flipWinding) {
+					rebuilt.AddFace(a, c, b, patch.planeId);
+				}
+				else {
+					rebuilt.AddFace(a, b, c, patch.planeId);
+				}
+				rebuiltFaces++;
+			}
+		}
+
+		if (rebuiltFaces == 0) {
+			return 0;
+		}
+
+		geom = std::move(rebuilt);
+		geom.hasPlanes = false;
+		return rebuiltFaces;
+	}
+
 	MeshWatertightInfo isMeshWatertight(const fuzzybools::Geometry& geom) {
 		MeshWatertightInfo info;
 		info.numFaces = geom.numFaces;
@@ -920,6 +1514,7 @@ namespace meshCleanup {
 		struct FaceInfo {
 			std::array<uint32_t, 3> vid;
 			Vec normal;
+			double area;
 			uint32_t pId;
 		};
 		std::vector<FaceInfo> faces(nFaces);
@@ -932,6 +1527,7 @@ namespace meshCleanup {
 			double len = glm::length(cr);
 			faces[i].vid = { findOrAdd(a), findOrAdd(b), findOrAdd(c) };
 			faces[i].normal = len > 1e-15 ? cr / len : Vec(0);
+			faces[i].area = len * 0.5;
 			faces[i].pId = static_cast<uint32_t>(f.pId);
 		}
 
@@ -1227,6 +1823,8 @@ namespace meshCleanup {
 			int dropAxis;  // per-loop projection axis
 			std::vector<std::array<double, 2>> projected;
 			double area = 0.0;
+			std::array<double, 2> bboxMin{ 0.0, 0.0 };
+			std::array<double, 2> bboxMax{ 0.0, 0.0 };
 			int parent = -1;
 			int depth = 0;
 		};
@@ -1244,6 +1842,14 @@ namespace meshCleanup {
 			}
 			pl.area = std::abs(SignedArea2D(pl.projected));
 			if (pl.area > 1e-12) {
+				pl.bboxMin = { std::numeric_limits<double>::max(), std::numeric_limits<double>::max() };
+				pl.bboxMax = { -std::numeric_limits<double>::max(), -std::numeric_limits<double>::max() };
+				for (const auto& p : pl.projected) {
+					pl.bboxMin[0] = std::min(pl.bboxMin[0], p[0]);
+					pl.bboxMin[1] = std::min(pl.bboxMin[1], p[1]);
+					pl.bboxMax[0] = std::max(pl.bboxMax[0], p[0]);
+					pl.bboxMax[1] = std::max(pl.bboxMax[1], p[1]);
+				}
 				projectedLoops.push_back(std::move(pl));
 			}
 		}
@@ -1279,9 +1885,63 @@ namespace meshCleanup {
 			}
 		}
 
+		// Skip paired opening mouths: two similar coplanar loops on opposite
+		// host planes indicate an intentional through-opening corridor, not a
+		// missing cap that should be patched.
+		std::array<double, 3> dominantNormalArea = { 0.0, 0.0, 0.0 };
+		for (const auto& face : faces) {
+			dominantNormalArea[0] += face.area * std::abs(face.normal.x);
+			dominantNormalArea[1] += face.area * std::abs(face.normal.y);
+			dominantNormalArea[2] += face.area * std::abs(face.normal.z);
+		}
+		int dominantAxis = 0;
+		if (dominantNormalArea[1] > dominantNormalArea[dominantAxis]) dominantAxis = 1;
+		if (dominantNormalArea[2] > dominantNormalArea[dominantAxis]) dominantAxis = 2;
+
+		auto axisComponent = [&](const Vec& v) -> double {
+			return dominantAxis == 0 ? v.x : (dominantAxis == 1 ? v.y : v.z);
+		};
+
+		std::vector<bool> skipProjectedLoop(projectedLoops.size(), false);
+		for (size_t i = 0; i < projectedLoops.size(); i++) {
+			const LoopInfo& loopA = validLoops[projectedLoops[i].loopIndex];
+			if (std::abs(axisComponent(loopA.planeNormal)) < 0.85) continue;
+			if (projectedLoops[i].dropAxis != dominantAxis) continue;
+
+			for (size_t j = i + 1; j < projectedLoops.size(); j++) {
+				const LoopInfo& loopB = validLoops[projectedLoops[j].loopIndex];
+				if (std::abs(axisComponent(loopB.planeNormal)) < 0.85) continue;
+				if (projectedLoops[j].dropAxis != dominantAxis) continue;
+				if (std::abs(glm::dot(loopA.planeNormal, loopB.planeNormal)) < 0.95) continue;
+
+				double minX = std::max(projectedLoops[i].bboxMin[0], projectedLoops[j].bboxMin[0]);
+				double minY = std::max(projectedLoops[i].bboxMin[1], projectedLoops[j].bboxMin[1]);
+				double maxX = std::min(projectedLoops[i].bboxMax[0], projectedLoops[j].bboxMax[0]);
+				double maxY = std::min(projectedLoops[i].bboxMax[1], projectedLoops[j].bboxMax[1]);
+				double overlapWidth = std::max(0.0, maxX - minX);
+				double overlapHeight = std::max(0.0, maxY - minY);
+				double overlapArea = overlapWidth * overlapHeight;
+				double minLoopArea = std::min(projectedLoops[i].area, projectedLoops[j].area);
+				if (minLoopArea <= 1e-12 || overlapArea < minLoopArea * 0.8) continue;
+
+				double separation = std::abs(glm::dot(loopB.planePoint - loopA.planePoint, loopA.planeNormal));
+				double transverseSpan = std::max({ projectedLoops[i].bboxMax[0] - projectedLoops[i].bboxMin[0],
+												   projectedLoops[i].bboxMax[1] - projectedLoops[i].bboxMin[1],
+												   projectedLoops[j].bboxMax[0] - projectedLoops[j].bboxMin[0],
+												   projectedLoops[j].bboxMax[1] - projectedLoops[j].bboxMin[1] });
+				if (separation <= toleranceVectorEquality * 2.0) continue;
+				if (transverseSpan <= 1e-12) continue;
+				if (separation >= transverseSpan * 0.25) continue;
+
+				skipProjectedLoop[i] = true;
+				skipProjectedLoop[j] = true;
+			}
+		}
+
 		// Triangulate: even-depth loops are outer boundaries, odd-depth are holes
 		for (size_t outerIdx = 0; outerIdx < projectedLoops.size(); outerIdx++) {
 			if ((projectedLoops[outerIdx].depth & 1) != 0) continue;
+			if (skipProjectedLoop[outerIdx]) continue;
 
 			const LoopInfo& outerLoop = validLoops[projectedLoops[outerIdx].loopIndex];
 
@@ -1295,6 +1955,7 @@ namespace meshCleanup {
 
 			for (size_t holeIdx = 0; holeIdx < projectedLoops.size(); holeIdx++) {
 				if (projectedLoops[holeIdx].parent != static_cast<int>(outerIdx)) continue;
+				if (skipProjectedLoop[holeIdx]) continue;
 
 				// Re-project hole using the OUTER loop's axis for consistent earcut input
 				const auto& holeLoop = validLoops[projectedLoops[holeIdx].loopIndex];
@@ -1666,6 +2327,180 @@ namespace meshCleanup {
 			}
 		}
 
+		// B.7: host-plane membrane detection for incomplete opening cuts.
+		// A failed subtract can leave a cap-like sheet on one host wall plane.
+		// Detect the opening corridor from abnormal side-wall faces, then grow
+		// only host-aligned faces that lie on an outer host plane and stay
+		// inside that corridor. This targets the membrane itself instead of the
+		// tunnel walls of a valid opening.
+		{
+			std::array<double, 3> dominantNormalArea = { 0.0, 0.0, 0.0 };
+			for (uint32_t i = 0; i < nFaces; i++) {
+				dominantNormalArea[0] += fv[i].area * std::abs(fv[i].normal.x);
+				dominantNormalArea[1] += fv[i].area * std::abs(fv[i].normal.y);
+				dominantNormalArea[2] += fv[i].area * std::abs(fv[i].normal.z);
+			}
+
+			int dominantAxis = 0;
+			if (dominantNormalArea[1] > dominantNormalArea[dominantAxis]) dominantAxis = 1;
+			if (dominantNormalArea[2] > dominantNormalArea[dominantAxis]) dominantAxis = 2;
+
+			double dominantArea = dominantNormalArea[dominantAxis];
+			double secondaryArea = 0.0;
+			for (int axis = 0; axis < 3; axis++) {
+				if (axis == dominantAxis) continue;
+				secondaryArea = std::max(secondaryArea, dominantNormalArea[axis]);
+			}
+
+			if (dominantArea > secondaryArea * 2.0) {
+				auto faceBoundaryEdges = [&](uint32_t fi) -> int {
+					int count = 0;
+					for (int e = 0; e < 3; e++) {
+						uint32_t va = fvid[fi][e], vb = fvid[fi][(e + 1) % 3];
+						EKey ek = { std::min(va, vb), std::max(va, vb) };
+						auto it = edgeFaces.find(ek);
+						if (it != edgeFaces.end() && it->second.size() == 1) {
+							count++;
+						}
+					}
+					return count;
+				};
+
+				auto faceNonManifoldEdges = [&](uint32_t fi) -> int {
+					int count = 0;
+					for (int e = 0; e < 3; e++) {
+						uint32_t va = fvid[fi][e], vb = fvid[fi][(e + 1) % 3];
+						EKey ek = { std::min(va, vb), std::max(va, vb) };
+						auto it = edgeFaces.find(ek);
+						if (it != edgeFaces.end() && it->second.size() > 2) {
+							count++;
+						}
+					}
+					return count;
+				};
+
+				auto axisComponent = [&](const Vec& v) -> double {
+					return dominantAxis == 0 ? v.x : (dominantAxis == 1 ? v.y : v.z);
+				};
+
+				auto isOrthogonalToHost = [&](uint32_t fi) -> bool {
+					if (glm::length(fv[fi].normal) < 0.5) return false;
+					return std::abs(axisComponent(fv[fi].normal)) < 0.35;
+				};
+
+				auto isHostAligned = [&](uint32_t fi) -> bool {
+					if (glm::length(fv[fi].normal) < 0.5) return false;
+					return std::abs(axisComponent(fv[fi].normal)) > 0.85;
+				};
+
+				Vec corridorMin(std::numeric_limits<double>::max());
+				Vec corridorMax(-std::numeric_limits<double>::max());
+				std::vector<uint32_t> corridorFaces;
+				auto expandBounds = [&](const Vec& p, Vec& minP, Vec& maxP) {
+					minP.x = std::min(minP.x, p.x);
+					minP.y = std::min(minP.y, p.y);
+					minP.z = std::min(minP.z, p.z);
+					maxP.x = std::max(maxP.x, p.x);
+					maxP.y = std::max(maxP.y, p.y);
+					maxP.z = std::max(maxP.z, p.z);
+				};
+
+				for (uint32_t i = 0; i < nFaces; i++) {
+					if (!isOrthogonalToHost(i)) continue;
+					if (faceBoundaryEdges(i) == 0 && faceNonManifoldEdges(i) == 0) continue;
+					corridorFaces.push_back(i);
+					expandBounds(fv[i].a, corridorMin, corridorMax);
+					expandBounds(fv[i].b, corridorMin, corridorMax);
+					expandBounds(fv[i].c, corridorMin, corridorMax);
+				}
+
+				if (!corridorFaces.empty()) {
+					double meshAxisMin = std::numeric_limits<double>::max();
+					double meshAxisMax = -std::numeric_limits<double>::max();
+					for (uint32_t i = 0; i < nFaces; i++) {
+						meshAxisMin = std::min(meshAxisMin, std::min({ axisComponent(fv[i].a), axisComponent(fv[i].b), axisComponent(fv[i].c) }));
+						meshAxisMax = std::max(meshAxisMax, std::max({ axisComponent(fv[i].a), axisComponent(fv[i].b), axisComponent(fv[i].c) }));
+					}
+
+					const double corridorTol = toleranceVectorEquality * 2.0;
+					const double sideTol = std::max(THIN_THRESHOLD * 4.0, toleranceVectorEquality * 2.0);
+
+					auto withinCorridor = [&](const Vec& p) -> bool {
+						if (dominantAxis != 0 && (p.x < corridorMin.x - corridorTol || p.x > corridorMax.x + corridorTol)) return false;
+						if (dominantAxis != 1 && (p.y < corridorMin.y - corridorTol || p.y > corridorMax.y + corridorTol)) return false;
+						if (dominantAxis != 2 && (p.z < corridorMin.z - corridorTol || p.z > corridorMax.z + corridorTol)) return false;
+						return true;
+					};
+
+					auto isOnOuterHostSide = [&](uint32_t fi, bool minSide) -> bool {
+						double faceMinAxis = std::min({ axisComponent(fv[fi].a), axisComponent(fv[fi].b), axisComponent(fv[fi].c) });
+						double faceMaxAxis = std::max({ axisComponent(fv[fi].a), axisComponent(fv[fi].b), axisComponent(fv[fi].c) });
+						if (minSide) return faceMaxAxis <= meshAxisMin + sideTol;
+						return faceMinAxis >= meshAxisMax - sideTol;
+					};
+
+					auto isHostMembraneCandidate = [&](uint32_t fi, bool minSide) -> bool {
+						if (!isHostAligned(fi)) return false;
+						if (!isOnOuterHostSide(fi, minSide)) return false;
+						return withinCorridor(fv[fi].a) && withinCorridor(fv[fi].b) && withinCorridor(fv[fi].c);
+					};
+
+					for (int side = 0; side < 2; side++) {
+						std::vector<bool> visitedCandidate(nFaces, false);
+						for (uint32_t corridorFace : corridorFaces) {
+							for (uint32_t seed : faceAdj[corridorFace]) {
+								if (visitedCandidate[seed]) continue;
+								if (thinMarked[seed]) continue;
+								if (!isHostMembraneCandidate(seed, side == 0)) continue;
+
+								std::vector<uint32_t> region;
+								std::queue<uint32_t> q;
+								q.push(seed);
+								visitedCandidate[seed] = true;
+								uint32_t boundaryLinkedFaces = 0;
+								uint32_t nonManifoldLinkedFaces = 0;
+
+								while (!q.empty()) {
+									uint32_t cur = q.front();
+									q.pop();
+									region.push_back(cur);
+
+									bool touchesCorridor = false;
+									for (uint32_t nb : faceAdj[cur]) {
+										if (isOrthogonalToHost(nb)) {
+											touchesCorridor = true;
+											if (faceBoundaryEdges(nb) > 0) boundaryLinkedFaces++;
+											if (faceNonManifoldEdges(nb) > 0) nonManifoldLinkedFaces++;
+										}
+										if (visitedCandidate[nb]) continue;
+										if (thinMarked[nb]) continue;
+										if (!isHostMembraneCandidate(nb, side == 0)) continue;
+										visitedCandidate[nb] = true;
+										q.push(nb);
+									}
+
+									if (!touchesCorridor && faceBoundaryEdges(cur) > 0) {
+										boundaryLinkedFaces++;
+									}
+								}
+
+								bool membraneRegion =
+									!region.empty() &&
+									region.size() < nFaces / 4 &&
+									(boundaryLinkedFaces > 0 || nonManifoldLinkedFaces > 0);
+
+								if (membraneRegion) {
+									for (uint32_t fi : region) {
+										thinMarked[fi] = true;
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
 		// B.6: safety - if > 75 % of faces are thin, something went wrong (e.g. very thin but valid geometry); disable.
 		uint32_t thinCount = 0;
 		for (uint32_t i = 0; i < nFaces; i++)
@@ -1786,6 +2621,9 @@ namespace meshCleanup {
 				pass2.AddFace(fv[i].a, fv[i].b, fv[i].c, fv[i].pId);
 			}
 			pass2.data = workingMesh.data;
+			if (pass2RemovedMembraneFaces > 0) {
+				RetriangulateHostPlaneOpeningPatches(pass2);
+			}
 
 			MeshWatertightInfo infoPass2Before = meshCleanup::isMeshWatertight(pass2);
 			MeshWatertightInfo infoPass2 = infoPass2Before;
@@ -1812,6 +2650,9 @@ namespace meshCleanup {
 				pass3.AddFace(fv[i].a, fv[i].b, fv[i].c, fv[i].pId);
 			}
 			pass3.data = workingMesh.data;
+			if (pass3RemovedMembraneFaces > 0) {
+				RetriangulateHostPlaneOpeningPatches(pass3);
+			}
 
 			MeshWatertightInfo infoPass3Before = meshCleanup::isMeshWatertight(pass3);
 			MeshWatertightInfo infoPass3 = infoPass3Before;
@@ -1833,6 +2674,12 @@ namespace meshCleanup {
 		if (currentInfo.numOpenEdges > 0 && currentInfo.numOpenEdges >= meshInfoInput.numOpenEdges) {
 			webifc::geometry::IfcGeometry inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(workingMesh);
 			webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup" + step + "-fail.obj");
+		}
+		if (removedMembraneFaces > 7) {
+			if (currentInfo.numFaces > 87) {
+				webifc::geometry::IfcGeometry inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(workingMesh);
+				webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup" + step + "-removedMembranes.obj");
+			}
 		}
 #endif
 		return removedMembraneFaces;
