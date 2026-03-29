@@ -4,7 +4,7 @@
 #include <map>
 #include <unordered_map>
 #include <set>
-#include <ranges>
+#include <optional>
 
 #include <glm/glm.hpp>
 
@@ -201,17 +201,125 @@ namespace fuzzybools
             points.insert(it, std::make_pair(dist, id));
         }
 
-        auto GetSegments() const
+        void AddCoveredInterval(double start, double end)
         {
-            const auto makeSegments = [&](int i)
+            if (end < start)
             {
-                return std::make_pair(points[i - 1].second, points[i].second);
-            };
+                std::swap(start, end);
+            }
 
-            return std::views::iota(size_t(1), points.size()) | std::views::transform(makeSegments);
+            coveredIntervals.emplace_back(start, end);
+            std::sort(coveredIntervals.begin(), coveredIntervals.end());
+
+            std::vector<std::pair<double, double>> merged;
+            merged.reserve(coveredIntervals.size());
+
+            for (const auto &interval : coveredIntervals)
+            {
+                if (merged.empty() || interval.first > merged.back().second + TOLERANCE_SCALAR_EQUALITY)
+                {
+                    merged.push_back(interval);
+                }
+                else
+                {
+                    merged.back().second = std::max(merged.back().second, interval.second);
+                }
+            }
+
+            coveredIntervals.swap(merged);
+        }
+
+        bool ContainsParameter(double param, double eps = TOLERANCE_SCALAR_EQUALITY) const
+        {
+            for (const auto &interval : coveredIntervals)
+            {
+                if (param >= interval.first - eps && param <= interval.second + eps)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        std::optional<std::pair<size_t, size_t>> FindSegmentAt(double param, double eps = TOLERANCE_SCALAR_EQUALITY) const
+        {
+            for (const auto &interval : coveredIntervals)
+            {
+                if (param < interval.first - eps || param > interval.second + eps)
+                {
+                    continue;
+                }
+
+                bool haveStart = false;
+                size_t startPoint = SIZE_MAX;
+                double startParam = 0.0;
+
+                for (const auto &point : points)
+                {
+                    if (point.first < interval.first - eps || point.first > interval.second + eps)
+                    {
+                        continue;
+                    }
+
+                    if (!haveStart)
+                    {
+                        haveStart = true;
+                        startPoint = point.second;
+                        startParam = point.first;
+                        continue;
+                    }
+
+                    if (param >= startParam - eps && param <= point.first + eps)
+                    {
+                        return std::make_pair(startPoint, point.second);
+                    }
+
+                    startPoint = point.second;
+                    startParam = point.first;
+                }
+            }
+
+            return std::nullopt;
+        }
+
+        std::vector<std::pair<size_t, size_t>> GetSegments(double eps = TOLERANCE_SCALAR_EQUALITY) const
+        {
+            std::vector<std::pair<size_t, size_t>> segments;
+
+            for (const auto &interval : coveredIntervals)
+            {
+                bool haveStart = false;
+                size_t startPoint = SIZE_MAX;
+
+                for (const auto &point : points)
+                {
+                    if (point.first < interval.first - eps || point.first > interval.second + eps)
+                    {
+                        continue;
+                    }
+
+                    if (!haveStart)
+                    {
+                        haveStart = true;
+                        startPoint = point.second;
+                        continue;
+                    }
+
+                    if (startPoint != point.second)
+                    {
+                        segments.emplace_back(startPoint, point.second);
+                    }
+
+                    startPoint = point.second;
+                }
+            }
+
+            return segments;
         }
 
         std::vector<std::pair<double, size_t>> points;
+        std::vector<std::pair<double, double>> coveredIntervals;
 
         std::vector<ReferencePlane> planes;
     };
@@ -322,8 +430,11 @@ namespace fuzzybools
                 }
             }
 
-            lines[lineId.first].AddPointToLine(lines[lineId.first].GetPosOnLine(a.location3D), a.id);
-            lines[lineId.first].AddPointToLine(lines[lineId.first].GetPosOnLine(b.location3D), b.id);
+            const double distA = lines[lineId.first].GetPosOnLine(a.location3D);
+            const double distB = lines[lineId.first].GetPosOnLine(b.location3D);
+            lines[lineId.first].AddPointToLine(distA, a.id);
+            lines[lineId.first].AddPointToLine(distB, b.id);
+            lines[lineId.first].AddCoveredInterval(distA, distB);
 
             return lineId;
         }
@@ -1045,53 +1156,76 @@ namespace fuzzybools
         // pair of lineID, distance
         std::vector<std::pair<double, double>> BuildSegments(const std::vector<double> &a, const std::vector<double> &b) const
         {
-            if (a.size() == 0 || b.size() == 0)
+            auto buildIntervals = [](const std::vector<double> &values)
+            {
+                if (values.size() < 2)
+                {
+                    return std::vector<std::pair<double, double>>{};
+                }
+
+                std::vector<double> uniqueValues;
+                uniqueValues.reserve(values.size());
+
+                for (double value : values)
+                {
+                    if (uniqueValues.empty() || std::fabs(uniqueValues.back() - value) > _TOLERANCE_PLANE_INTERSECTION)
+                    {
+                        uniqueValues.push_back(value);
+                    }
+                }
+
+                std::vector<std::pair<double, double>> intervals;
+                intervals.reserve(uniqueValues.size() / 2);
+
+                for (size_t i = 1; i < uniqueValues.size(); i += 2)
+                {
+                    const double start = uniqueValues[i - 1];
+                    const double end = uniqueValues[i];
+                    if (end > start + _TOLERANCE_PLANE_INTERSECTION)
+                    {
+                        intervals.emplace_back(start, end);
+                    }
+                }
+
+                return intervals;
+            };
+
+            auto intervalsA = buildIntervals(a);
+            auto intervalsB = buildIntervals(b);
+
+            if (intervalsA.empty() || intervalsB.empty())
             {
                 return {};
             }
 
-            // we need to figure out the overlap between the two lists of intersections
-            // we can be clever here and try to conclude that the first point must be the start of a segment and the next point would end that segment
-            // however, we would really shoot ourselves in the foot as any coplanar results are missing from these two sets
-            // let's just make some segments that span both intersection lists, and eat the overhead
-
-            double min = std::max(a[0], b[0]);
-            double max = std::min(a[a.size() - 1], b[b.size() - 1]);
-
-            std::vector<double> points;
-
-            for (size_t i = 0; i < a.size(); i++)
-            {
-                double val = a[i];
-                if (val >= min && val <= max)
-                {
-                    points.push_back(val);
-                }
-            }
-
-            for (size_t i = 0; i < b.size(); i++)
-            {
-                double val = b[i];
-                if (val >= min && val <= max)
-                {
-                    points.push_back(val);
-                }
-            }
-
-            const auto double_less = +[](double left, double right)
-            { return left < right; };
-            std::sort(points.begin(), points.end(), double_less);
-
             std::vector<std::pair<double, double>> result;
-            result.reserve(points.size() * 2);
+            size_t idxA = 0;
+            size_t idxB = 0;
 
-            for (size_t i = 1; i < points.size(); i++)
+            while (idxA < intervalsA.size() && idxB < intervalsB.size())
             {
-                result.emplace_back(points[i - 1], points[i]);
-            }
+                const double start = std::max(intervalsA[idxA].first, intervalsB[idxB].first);
+                const double end = std::min(intervalsA[idxA].second, intervalsB[idxB].second);
 
-            // Remove redundant lines
-            result.erase(std::unique(result.begin(), result.end()), result.end());
+                if (end > start + _TOLERANCE_PLANE_INTERSECTION)
+                {
+                    result.emplace_back(start, end);
+                }
+
+                if (intervalsA[idxA].second < intervalsB[idxB].second - _TOLERANCE_PLANE_INTERSECTION)
+                {
+                    idxA++;
+                }
+                else if (intervalsB[idxB].second < intervalsA[idxA].second - _TOLERANCE_PLANE_INTERSECTION)
+                {
+                    idxB++;
+                }
+                else
+                {
+                    idxA++;
+                    idxB++;
+                }
+            }
 
             return result;
         }
@@ -1497,8 +1631,11 @@ namespace fuzzybools
 
             // if (ptA != ptB)
             {
-                isectLine.AddPointToLine(isectLine.GetPosOnLine(sp.points[ptA].location3D), ptA);
-                isectLine.AddPointToLine(isectLine.GetPosOnLine(sp.points[ptB].location3D), ptB);
+                const double distA = isectLine.GetPosOnLine(sp.points[ptA].location3D);
+                const double distB = isectLine.GetPosOnLine(sp.points[ptB].location3D);
+                isectLine.AddPointToLine(distA, ptA);
+                isectLine.AddPointToLine(distB, ptB);
+                isectLine.AddCoveredInterval(distA, distB);
             }
 
             if (!p.IsPointOnPlane(sp.points[ptA].location3D))
@@ -1534,9 +1671,9 @@ namespace fuzzybools
         //
         // The classic "shortest distance between two lines" formula gives us the
         // parameter t along lineA and u along the candidate line in O(1).  We
-        // then verify the distance is within tolerance and that u falls within
-        // the covered extent [points.front(), points.back()] of the line's sorted
-        // point list - which is equivalent to checking every segment but O(1).
+        // then verify the distance is within tolerance and that u falls on one
+        // of the line's real covered intervals, avoiding false positives from
+        // unrelated collinear segments that happen to share the same infinite line.
         // -----------------------------------------------------------------------
         std::vector<double> distances;
         distances.reserve(p.lines.size());
@@ -1556,7 +1693,7 @@ namespace fuzzybools
             const double denom = 1.0 - daDb * daDb;
 
             // Guard against nearly-parallel lines (collinear already handled above).
-            if (std::fabs(denom) < EPS_SMALL) continue;
+            if (std::fabs(denom) < toleranceParallelLineDenominator) continue;
 
             const double dcDa = glm::dot(dc, da);
             const double dcDb = glm::dot(dc, db);
@@ -1571,13 +1708,9 @@ namespace fuzzybools
             const Vec3 pointOnB = line.origin  + u * db;
             if (glm::distance(pointOnA, pointOnB) >= _TOLERANCE_PLANE_INTERSECTION) continue;
 
-            // Check that the intersection lies within the covered extent of 'line'.
-            // line.points is always sorted by distance (maintained by AddPointToLine),
-            // so [front.first, back.first] is the union of all its segments.
-            const double uMin = line.points.front().first;
-            const double uMax = line.points.back().first;
-            if (u < uMin - _TOLERANCE_PLANE_INTERSECTION ||
-                u > uMax + _TOLERANCE_PLANE_INTERSECTION) continue;
+            // Check that the intersection lies on a real covered segment, not just
+            // somewhere inside the line's overall parameter span.
+            if (!line.ContainsParameter(u, _TOLERANCE_PLANE_INTERSECTION)) continue;
 
             distances.emplace_back(t);
         }
@@ -1606,7 +1739,7 @@ namespace fuzzybools
 
         const double daDb  = glm::dot(da, db);
         const double denom = 1.0 - daDb * daDb;   // |da × db|²
-        if (std::fabs(denom) < EPS_SMALL) return; // nearly parallel
+        if (std::fabs(denom) < toleranceParallelLineDenominator) return; // nearly parallel
 
         const double dcDa = glm::dot(dc, da);
         const double dcDb = glm::dot(dc, db);
@@ -1618,40 +1751,17 @@ namespace fuzzybools
         const Vec3 pointOnB = lineB.origin + u * db;
         if (glm::distance(pointOnA, pointOnB) >= SCALED_EPS_BIG) return;
 
-        // Fast rejection: t / u must be within the overall covered extent of each line.
-        // points[] is always sorted by parameter value (maintained by AddPointToLine).
-        if (t < lineA.points.front().first - SCALED_EPS_BIG ||
-            t > lineA.points.back().first  + SCALED_EPS_BIG) return;
-        if (u < lineB.points.front().first - SCALED_EPS_BIG ||
-            u > lineB.points.back().first  + SCALED_EPS_BIG) return;
+        if (!lineA.ContainsParameter(t, SCALED_EPS_BIG)) return;
+        if (!lineB.ContainsParameter(u, SCALED_EPS_BIG)) return;
 
-        // Identify which segment of lineA contains t and which of lineB contains u.
-        // (Typically only 1-5 segments per line, so this is effectively O(1) in practice.)
-        auto findSegIdx = [](const std::vector<std::pair<double, size_t>> &pts,
-                              double param) -> size_t
-        {
-            for (size_t i = 1; i < pts.size(); i++)
-            {
-                if (param >= pts[i - 1].first - SCALED_EPS_BIG &&
-                    param <= pts[i].first     + SCALED_EPS_BIG)
-                    return i - 1;
-            }
-            return SIZE_MAX;
-        };
-
-        const size_t segIdxA = findSegIdx(lineA.points, t);
-        if (segIdxA == SIZE_MAX) return;
-        const size_t segIdxB = findSegIdx(lineB.points, u);
-        if (segIdxB == SIZE_MAX) return;
-
-        const auto segA = std::make_pair(lineA.points[segIdxA].second,
-                                         lineA.points[segIdxA + 1].second);
-        const auto segB = std::make_pair(lineB.points[segIdxB].second,
-                                         lineB.points[segIdxB + 1].second);
+        const auto segA = lineA.FindSegmentAt(t, SCALED_EPS_BIG);
+        if (!segA) return;
+        const auto segB = lineB.FindSegmentAt(u, SCALED_EPS_BIG);
+        if (!segB) return;
 
         // Skip if the containing segments already share an endpoint - the intersection
         // point is already part of both lines.
-        if (p.HasOverlap(segA, segB)) return;
+        if (p.HasOverlap(*segA, *segB)) return;
 
         if (!p.aabb.contains(pointOnA))
         {
@@ -1826,7 +1936,7 @@ namespace fuzzybools
                 // new lines result in new line intersects
                 // new line intersects result in new points
 
-                if (std::fabs(glm::dot(planeA.normal, planeB.normal)) > 1.0 - EPS_BIG)
+                if (std::fabs(glm::dot(planeA.normal, planeB.normal)) > 1.0 - toleranceParallelPlaneDot)
                 {
                     // parallel planes, don't care
                     continue;

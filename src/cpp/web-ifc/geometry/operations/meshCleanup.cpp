@@ -1775,7 +1775,9 @@ namespace meshCleanup {
 			if (infoPass3Before.numOpenEdges > 0) {
 				PatchCoplanarHoles(pass3, step + "c", infoPass3Before, infoPass3);
 			}
-			if (infoPass3.numOpenEdges < currentInfo.numOpenEdges) {
+
+			// keep result only in case the number of open edges is not higher than before:
+			if (infoPass3.numOpenEdges <= currentInfo.numOpenEdges) {
 				workingMesh = std::move(pass3);
 				currentInfo = infoPass3;
 			}
@@ -1824,13 +1826,14 @@ namespace meshCleanup {
 		fuzzybools::Geometry workingMesh = input;
 		auto meshInfoOnEntry = meshCleanup::isMeshWatertight(input);
 		if (meshInfoOnEntry.watertight) {
-			return;
+			// TODO: test return here, and do a more aggressive membrane removal before rendering/export
+			//return;
 		}
 #ifdef DUMP_CSG_MESHES
 		// remove all E:\work\creoox\cxconverter\meshCleanup*.obj
 		removeTempFiles();
 
-		if (meshInfoOnEntry.numOpenEdges == 4) {
+		if (meshInfoOnEntry.numFaces > 97) {
 			int wait = 0;
 		}
 		
