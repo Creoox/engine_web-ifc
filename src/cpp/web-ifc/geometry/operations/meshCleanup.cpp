@@ -173,10 +173,10 @@ namespace meshCleanup {
 	// Remove disconnected non-manifold zero-volume components.
 	// Safe to run at any point -- purely topological, no heuristics.
 	// ---------------------------------------------------------------
-	static void RemoveDisconnectedFragments(Geometry& workingMesh, std::string step,
+	static uint32_t RemoveDisconnectedFragments(Geometry& workingMesh, std::string step,
 		const MeshWatertightInfo& meshInfoInput, MeshWatertightInfo& meshInfoResult) {
 		const uint32_t nFaces = workingMesh.numFaces;
-		if (nFaces == 0) { meshInfoResult = meshInfoInput; return; }
+		if (nFaces == 0) { meshInfoResult = meshInfoInput; return 0; }
 
 		constexpr double VOLUME_THRESHOLD = 1e-6;
 
@@ -279,7 +279,7 @@ namespace meshCleanup {
 			}
 		}
 
-		if (numComp <= 1) { meshInfoResult = meshInfoInput; return; }
+		if (numComp <= 1) { meshInfoResult = meshInfoInput; return 0; }
 
 		// Per-component analysis
 		struct CompInfo { uint32_t faceCount = 0; uint32_t boundaryEdges = 0; Vec centroid{0}; double volume = 0; };
@@ -314,7 +314,7 @@ namespace meshCleanup {
 
 		if (removedByComp == 0 || removedByComp >= nFaces) {
 			meshInfoResult = meshInfoInput;
-			return;
+			return 0;
 		}
 
 		Geometry cleaned;
@@ -330,9 +330,11 @@ namespace meshCleanup {
 		if (infoCleaned.numOpenEdges < meshInfoInput.numOpenEdges) {
 			workingMesh = std::move(cleaned);
 			meshInfoResult = infoCleaned;
+			return removedByComp;
 		}
 		else {
 			meshInfoResult = meshInfoInput;
+			return 0;
 		}
 	}
 
@@ -342,7 +344,7 @@ namespace meshCleanup {
 		// Additionally, detect altitude-based slivers: triangles with very long edges but nearly collinear vertices
 		// (minAltitude < toleranceVectorEquality). For these, snap the tip vertex onto the opposite edge
 		// so that adjacent faces can later be split at the snap point (T-junction resolution).
-	void removeDegeneratedTriangles(Geometry& workingMesh, std::string step,
+	static uint32_t removeDegeneratedTriangles(Geometry& workingMesh, std::string step,
 		const MeshWatertightInfo& meshInfoInput, MeshWatertightInfo& meshInfoResult) {
 		constexpr double SLIVER_AREA_THRESHOLD = 1e-9;
 		const double SLIVER_ALTITUDE_THRESHOLD = toleranceVectorEquality; // 1e-4 m
@@ -438,7 +440,7 @@ namespace meshCleanup {
 
 		if (snapEntries.empty() && !hasAreaSlivers) {
 			meshInfoResult = meshInfoInput;
-			return;
+			return 0;
 		}
 		Geometry tmp;
 		tmp.planes = workingMesh.planes;
@@ -465,11 +467,14 @@ namespace meshCleanup {
 		}
 
 		auto meshInfoRemovedSlivers = meshCleanup::isMeshWatertight(tmp);
+		const uint32_t removedFaces = n - tmp.numFaces;
+		const uint32_t appliedChanges = removedFaces + static_cast<uint32_t>(snapEntries.size());
 
 		if (meshInfoRemovedSlivers.numOpenEdges < meshInfoInput.numOpenEdges) {
 			// improvement found. TODO: check if this condition is sufficient, or if other conditions make it safer
 			workingMesh = tmp;
 			meshInfoResult = meshInfoRemovedSlivers;
+			return appliedChanges;
 		}
 		else {
 			meshInfoResult = meshInfoInput;
@@ -477,6 +482,7 @@ namespace meshCleanup {
 			webifc::geometry::IfcGeometry inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(workingMesh);
 			webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup"+step+"-fail.obj");
 #endif
+			return 0;
 		}
 	}
 
@@ -486,17 +492,17 @@ namespace meshCleanup {
 	// This closes open edges caused by boolean operations where one face's
 	// edge lies on another face's surface without topological connection.
 	// ---------------------------------------------------------------
-	static void ResolveTJunctions(Geometry& geom, std::string step, 
+	static uint32_t ResolveTJunctions(Geometry& geom, std::string step, 
 		const MeshWatertightInfo& meshInfoInput, MeshWatertightInfo& meshInfoResult) {
 		const uint32_t nFaces = geom.numFaces;
 		if (nFaces == 0) {
 			meshInfoResult = meshInfoInput;
-			return;
+			return 0;
 		}
 
 		if (meshInfoInput.numOpenEdges == 0) {
 			meshInfoResult = meshInfoInput;
-			return;
+			return 0;
 		}
 
 		// -- vertex deduplication (same spatial-hash pattern) --
@@ -599,7 +605,10 @@ namespace meshCleanup {
 			}
 		}
 
-		if (boundaryVids.empty()) return;
+		if (boundaryVids.empty()) {
+			meshInfoResult = meshInfoInput;
+			return 0;
+		}
 
 		// -- For each boundary vertex, find faces it lies on --
 		// Map: faceIdx -> list of {canonical vid, 3D position} to insert
@@ -709,18 +718,25 @@ namespace meshCleanup {
 			}
 		}
 
-		if (faceInsertions.empty()) return;
+		if (faceInsertions.empty()) {
+			meshInfoResult = meshInfoInput;
+			return 0;
+		}
 
 		// Safety: if too many insertions, skip
 		uint32_t totalInsertions = 0;
 		for (auto& [fi, pts] : faceInsertions) totalInsertions += static_cast<uint32_t>(pts.size());
-		if (totalInsertions > nFaces) return;
+		if (totalInsertions > nFaces) {
+			meshInfoResult = meshInfoInput;
+			return 0;
+		}
 
 		// -- Re-triangulate affected faces and rebuild geometry --
 		Geometry rebuilt;
 		rebuilt.planes = geom.planes;
 		rebuilt.hasPlanes = geom.hasPlanes;
 		rebuilt.data = geom.data;
+		uint32_t retriangulatedFaces = 0;
 
 		for (uint32_t fi = 0; fi < nFaces; fi++) {
 			auto insertIt = faceInsertions.find(fi);
@@ -809,6 +825,9 @@ namespace meshCleanup {
 					// CDT produced no valid triangles -- keep original face
 					rebuilt.AddFace(faces[fi].verts[0], faces[fi].verts[1], faces[fi].verts[2], faces[fi].pId);
 				}
+				else {
+					++retriangulatedFaces;
+				}
 			}
 			catch (...) {
 				// CDT failed -- keep original face unmodified
@@ -820,6 +839,7 @@ namespace meshCleanup {
 		if (infoRebuilt.numOpenEdges < meshInfoInput.numOpenEdges) {
 			geom = std::move(rebuilt);
 			meshInfoResult = infoRebuilt;
+			return retriangulatedFaces;
 		}
 		else {
 			meshInfoResult = meshInfoInput;
@@ -829,25 +849,28 @@ namespace meshCleanup {
 			webifc::io::DumpIfcGeometry(webifcGeom, "meshCleanup" + step + "-input.obj");
 			webifc::io::DumpIfcGeometry(geomFail, "meshCleanup" + step + "-fail.obj");
 #endif
+			return 0;
 		}
 	}
 
-	// ---------------------------------------------------------------
-	// Patch coplanar holes: find boundary-edge loops and fill them with earcut triangulation when all loop vertices are coplanar.
-	// ---------------------------------------------------------------
-	static void PatchCoplanarHoles(Geometry& geom, std::string step, 
+	// Patch coplanar holes: find boundary-edge loops and fill them with earcut triangulation 
+	// when all loop vertices are coplanar.
+	static uint32_t PatchCoplanarHoles(Geometry& geom, std::string step, 
 		const MeshWatertightInfo& meshInfoInput, MeshWatertightInfo& meshInfoResult) {
 		if (meshInfoInput.numOpenEdges == 0) {
 			meshInfoResult = meshInfoInput;
-			return;
+			return 0;
 		}
 		const uint32_t nFaces = geom.numFaces;
-		if (nFaces == 0) return;
+		if (nFaces == 0) {
+			meshInfoResult = meshInfoInput;
+			return 0;
+		}
 
 		// Save backup for revert if patching doesn't improve the mesh
 		Geometry backup = geom;
 
-		// -- vertex deduplication (same spatial-hash as PostBooleanOperationMeshCleanup) --
+		// -- vertex deduplication (same spatial-hash as PostBooleanOperationMeshCleanup)
 		const double cellSize = toleranceVectorEquality;
 		const double cellSizeSq = cellSize * cellSize;
 
@@ -912,7 +935,7 @@ namespace meshCleanup {
 			faces[i].pId = static_cast<uint32_t>(f.pId);
 		}
 
-		// -- Build edge -> face adjacency --
+		// Build edge -> face adjacency
 		struct EKey {
 			uint32_t v0, v1;
 			bool operator==(const EKey& o) const { return v0 == o.v0 && v1 == o.v1; }
@@ -946,9 +969,11 @@ namespace meshCleanup {
 			}
 		}
 
-		if (!hasBoundaryEdges) return; // mesh is already closed
+		if (!hasBoundaryEdges) {
+			return 0; // mesh is already closed
+		}
 
-		// -- Face-fan walk: given boundary edge prev->cur on face prevFace,
+		// Face-fan walk: given boundary edge prev->cur on face prevFace,
 		//    find the next boundary edge cur->next by walking around cur
 		//    through the face fan. Returns {next vertex, face of edge cur->next}.
 		auto findNextBoundary = [&](uint32_t cur, uint32_t prev, uint32_t prevFace,
@@ -1111,7 +1136,7 @@ namespace meshCleanup {
 
 		if (loops.empty()) {
 			meshInfoResult = meshInfoInput;
-			return;
+			return 0;
 		}
 
 		const double PLANE_EPS = 1e-5;
@@ -1190,7 +1215,7 @@ namespace meshCleanup {
 
 		if (validLoops.empty()) {
 			meshInfoResult = meshInfoInput;
-			return;
+			return 0;
 		}
 
 		// -- Global parent-child containment detection across ALL loops --
@@ -1320,6 +1345,7 @@ namespace meshCleanup {
 			// faces have been added -> check if the result actually improved
 			geom.hasPlanes = false;
 			auto infoPatched = meshCleanup::isMeshWatertight(geom);
+			const uint32_t addedPatchFaces = geom.numFaces - nFaces;
 
 			if (infoPatched.numOpenEdges < meshInfoInput.numOpenEdges) {
 				meshInfoResult = infoPatched;
@@ -1327,19 +1353,22 @@ namespace meshCleanup {
 				webifc::geometry::IfcGeometry inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(geom);
 				webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup" + step + "-patched.obj");
 #endif
+				return addedPatchFaces;
 			}
 			else {
 				// patching didn't improve -- revert
 				geom = std::move(backup);
 				meshInfoResult = meshInfoInput;
+				return 0;
 			}
 		}
 		else {
 			meshInfoResult = meshInfoInput;
+			return 0;
 		}
 	}
 
-	void RemoveThinMembranes(Geometry& workingMesh, std::string step, 
+	static uint32_t RemoveThinMembranes(Geometry& workingMesh, std::string step, 
 		const MeshWatertightInfo& meshInfoInput, MeshWatertightInfo& meshInfoResult) {
 		// -- Shared setup for Phases B & C 
 		const uint32_t nFaces = workingMesh.numFaces;
@@ -1712,6 +1741,18 @@ namespace meshCleanup {
 		// Pass 3 (lower certainty): also remove B.1+B.3 thin-marked faces (double-layer + erosion)
 
 		MeshWatertightInfo currentInfo = meshInfoInput;
+		uint32_t removedMembraneFaces = 0;
+		uint32_t pass2RemovedMembraneFaces = 0;
+		uint32_t pass3RemovedMembraneFaces = 0;
+		for (uint32_t i = 0; i < nFaces; i++) {
+			if (badComp[compId[i]]) continue;
+			if (b2Marked[i]) {
+				++pass2RemovedMembraneFaces;
+			}
+			if (b2Marked[i] || thinMarked[i]) {
+				++pass3RemovedMembraneFaces;
+			}
+		}
 
 		// Pass 1: remove bad components only (Phase C)
 		if (removedByComp > 0 && removedByComp < nFaces) {
@@ -1751,9 +1792,11 @@ namespace meshCleanup {
 			if (infoPass2Before.numOpenEdges > 0) {
 				PatchCoplanarHoles(pass2, step + "b", infoPass2Before, infoPass2);
 			}
-			if (infoPass2.numOpenEdges < currentInfo.numOpenEdges) {
+			if (infoPass2.numOpenEdges < currentInfo.numOpenEdges ||
+				(pass2RemovedMembraneFaces > 0 && infoPass2.numOpenEdges <= currentInfo.numOpenEdges)) {
 				workingMesh = std::move(pass2);
 				currentInfo = infoPass2;
+				removedMembraneFaces = pass2RemovedMembraneFaces;
 			}
 		}
 
@@ -1780,6 +1823,7 @@ namespace meshCleanup {
 			if (infoPass3.numOpenEdges <= currentInfo.numOpenEdges) {
 				workingMesh = std::move(pass3);
 				currentInfo = infoPass3;
+				removedMembraneFaces = pass3RemovedMembraneFaces;
 			}
 		}
 
@@ -1791,6 +1835,7 @@ namespace meshCleanup {
 			webifc::io::DumpIfcGeometry(inputWebIfc, "meshCleanup" + step + "-fail.obj");
 		}
 #endif
+		return removedMembraneFaces;
 	}
 
 	void removeTempFiles() {
@@ -1817,6 +1862,15 @@ namespace meshCleanup {
 
 	// Post-boolean cleanup
 	void PostBooleanOperationMeshCleanup(fuzzybools::Geometry& input) {
+		struct CleanupMeshCounts {
+			uint32_t removedDegeneratedTriangleChanges = 0;
+			uint32_t removedDisconnectedFragmentFaces = 0;
+			uint32_t patchedHoleFacesPass1 = 0;
+			uint32_t removedMembraneFaces = 0;
+			uint32_t resolvedTJunctionFaces = 0;
+			uint32_t patchedHoleFacesPass2 = 0;
+		} changeCounts;
+
 		if (input.numFaces > 8000) {
 #ifdef _DEBUG
 			std::cout << "PostBooleanOperationMeshCleanup: skipping mesh with " << input.numFaces << " faces" << std::endl;
@@ -1844,36 +1898,44 @@ namespace meshCleanup {
 		// 1: remove degenerated triangles
 		MeshWatertightInfo meshInfoBeforeRemoveDegeneratedTriangles = meshInfoOnEntry;
 		MeshWatertightInfo meshInfoAfterRemoveDegeneratedTriangles = meshInfoOnEntry;
-		removeDegeneratedTriangles(workingMesh, "1", meshInfoBeforeRemoveDegeneratedTriangles, meshInfoAfterRemoveDegeneratedTriangles);
+		changeCounts.removedDegeneratedTriangleChanges =
+			removeDegeneratedTriangles(workingMesh, "1", meshInfoBeforeRemoveDegeneratedTriangles, meshInfoAfterRemoveDegeneratedTriangles);
 		
 		// 2: remove disconnected fragments (Phase C only -- safe before hole patching)
 		MeshWatertightInfo meshInfoAfterRemoveFragments = meshInfoAfterRemoveDegeneratedTriangles;
-		RemoveDisconnectedFragments(workingMesh, "2", meshInfoAfterRemoveDegeneratedTriangles, meshInfoAfterRemoveFragments);
+		changeCounts.removedDisconnectedFragmentFaces =
+			RemoveDisconnectedFragments(workingMesh, "2", meshInfoAfterRemoveDegeneratedTriangles, meshInfoAfterRemoveFragments);
 
 		// 3: patch coplanar holes
 		// remove thin membranes later, since a (closable) loop of open edges can cause false membrane detection,
 		// membrane removal increases open edges, result gets reverted, nothing gets fixed
 		MeshWatertightInfo meshInfoBeforePatchCoplanarHoles = meshInfoAfterRemoveFragments;
 		MeshWatertightInfo meshInfoAfterPatchCoplanarHoles = meshInfoAfterRemoveFragments;
-		PatchCoplanarHoles(workingMesh, "3", meshInfoBeforePatchCoplanarHoles, meshInfoAfterPatchCoplanarHoles);
+		changeCounts.patchedHoleFacesPass1 =
+			PatchCoplanarHoles(workingMesh, "3", meshInfoBeforePatchCoplanarHoles, meshInfoAfterPatchCoplanarHoles);
 
 		// 4: remove thin membranes
 		MeshWatertightInfo meshInfoBeforeRemoveThinMembranes = meshInfoAfterPatchCoplanarHoles;
 		MeshWatertightInfo meshInfoAfterRemoveThinMembranes = meshInfoAfterPatchCoplanarHoles;
-		RemoveThinMembranes(workingMesh, "4", meshInfoBeforeRemoveThinMembranes, meshInfoAfterRemoveThinMembranes);
+		changeCounts.removedMembraneFaces =
+			RemoveThinMembranes(workingMesh, "4", meshInfoBeforeRemoveThinMembranes, meshInfoAfterRemoveThinMembranes);
 
 		// 5: resolve T-junctions
 		MeshWatertightInfo meshInfoBeforeResolveTJunctions = meshInfoAfterRemoveThinMembranes;
 		MeshWatertightInfo meshInfoAfterResolveTJunctions = meshInfoAfterRemoveThinMembranes;
-		ResolveTJunctions(workingMesh, "5", meshInfoBeforeResolveTJunctions, meshInfoAfterResolveTJunctions);
+		changeCounts.resolvedTJunctionFaces =
+			ResolveTJunctions(workingMesh, "5", meshInfoBeforeResolveTJunctions, meshInfoAfterResolveTJunctions);
 
 		// 6: PatchCoplanarHoles re-run
 		MeshWatertightInfo meshInfoBeforePatchCoplanarHoles2 = meshInfoAfterResolveTJunctions;
 		MeshWatertightInfo meshInfoAfterPatchCoplanarHoles2 = meshInfoAfterResolveTJunctions;
-		PatchCoplanarHoles(workingMesh, "6", meshInfoBeforePatchCoplanarHoles2, meshInfoAfterPatchCoplanarHoles2);
+		changeCounts.patchedHoleFacesPass2 =
+			PatchCoplanarHoles(workingMesh, "6", meshInfoBeforePatchCoplanarHoles2, meshInfoAfterPatchCoplanarHoles2);
 
 		auto meshInfoOnExit = meshInfoAfterPatchCoplanarHoles2;
-		if(meshInfoOnEntry.numOpenEdges > meshInfoOnExit.numOpenEdges){
+		const bool improvedOpenEdges = meshInfoOnEntry.numOpenEdges > meshInfoOnExit.numOpenEdges;
+		const bool removedAnyMembranes = changeCounts.removedMembraneFaces > 0;
+		if (improvedOpenEdges || removedAnyMembranes) {
 			input = std::move(workingMesh);
 			input.hasPlanes = false;
 
