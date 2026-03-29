@@ -757,10 +757,24 @@ namespace meshCleanup {
 			if (count == 1) {
 				++info.numOpenEdges;
 			}
+			else if (count > 2) {
+				++info.numNonManifoldEdges;
+			}
 		}
 
-		info.watertight = (info.numOpenEdges == 0);
+		info.watertight = (info.numOpenEdges == 0 && info.numNonManifoldEdges == 0);
 		return info;
+	}
+
+	static bool TopologyStrictlyImproved(const MeshWatertightInfo& before, const MeshWatertightInfo& after) {
+		return after.numNonManifoldEdges < before.numNonManifoldEdges ||
+			(after.numNonManifoldEdges == before.numNonManifoldEdges &&
+			 after.numOpenEdges < before.numOpenEdges);
+	}
+
+	static bool TopologyNotWorse(const MeshWatertightInfo& before, const MeshWatertightInfo& after) {
+		return after.numNonManifoldEdges <= before.numNonManifoldEdges &&
+			after.numOpenEdges <= before.numOpenEdges;
 	}
 
 	// ---------------------------------------------------------------
@@ -2062,7 +2076,7 @@ namespace meshCleanup {
 
 		// -- Step 2: spatial-hash vertex deduplication
 		// Mirror SharedPosition::AddPoint: grid cell = floor(coord/cellSize), 27-cell neighbourhood search, exact Euclidean distance check.
-		const double cellSize = toleranceVectorEquality * 1.0;          // 1e-4
+		const double cellSize = toleranceVectorEquality * 1.5;          // align with legacy membrane cleanup
 		const double cellSizeSq = cellSize * cellSize;
 
 		using GridKey = std::tuple<int64_t, int64_t, int64_t>;
@@ -2250,6 +2264,15 @@ namespace meshCleanup {
 					b2Marked[i] = true;
 					b2Count++;
 				}
+			}
+		}
+
+		// Keep B.2 marks separate for pass accounting, but also feed them into
+		// the thin-mask so B.3 erosion can grow bridge faces the same way the
+		// legacy cleanup did.
+		for (uint32_t i = 0; i < nFaces; i++) {
+			if (b2Marked[i]) {
+				thinMarked[i] = true;
 			}
 		}
 
@@ -2601,7 +2624,7 @@ namespace meshCleanup {
 			pass1.data = workingMesh.data;
 
 			auto infoPass1 = meshCleanup::isMeshWatertight(pass1);
-			if (infoPass1.numOpenEdges < currentInfo.numOpenEdges) {
+			if (TopologyStrictlyImproved(currentInfo, infoPass1)) {
 				workingMesh = std::move(pass1);
 				currentInfo = infoPass1;
 			}
@@ -2630,8 +2653,8 @@ namespace meshCleanup {
 			if (infoPass2Before.numOpenEdges > 0) {
 				PatchCoplanarHoles(pass2, step + "b", infoPass2Before, infoPass2);
 			}
-			if (infoPass2.numOpenEdges < currentInfo.numOpenEdges ||
-				(pass2RemovedMembraneFaces > 0 && infoPass2.numOpenEdges <= currentInfo.numOpenEdges)) {
+			if (TopologyStrictlyImproved(currentInfo, infoPass2) ||
+				(pass2RemovedMembraneFaces > 0 && TopologyNotWorse(currentInfo, infoPass2))) {
 				workingMesh = std::move(pass2);
 				currentInfo = infoPass2;
 				removedMembraneFaces = pass2RemovedMembraneFaces;
@@ -2660,8 +2683,8 @@ namespace meshCleanup {
 				PatchCoplanarHoles(pass3, step + "c", infoPass3Before, infoPass3);
 			}
 
-			// keep result only in case the number of open edges is not higher than before:
-			if (infoPass3.numOpenEdges <= currentInfo.numOpenEdges) {
+			if (TopologyStrictlyImproved(currentInfo, infoPass3) ||
+				(pass3RemovedMembraneFaces > 0 && TopologyNotWorse(currentInfo, infoPass3))) {
 				workingMesh = std::move(pass3);
 				currentInfo = infoPass3;
 				removedMembraneFaces = pass3RemovedMembraneFaces;
@@ -2753,23 +2776,22 @@ namespace meshCleanup {
 		changeCounts.removedDisconnectedFragmentFaces =
 			RemoveDisconnectedFragments(workingMesh, "2", meshInfoAfterRemoveDegeneratedTriangles, meshInfoAfterRemoveFragments);
 
-		// 3: patch coplanar holes
-		// remove thin membranes later, since a (closable) loop of open edges can cause false membrane detection,
-		// membrane removal increases open edges, result gets reverted, nothing gets fixed
-		MeshWatertightInfo meshInfoBeforePatchCoplanarHoles = meshInfoAfterRemoveFragments;
-		MeshWatertightInfo meshInfoAfterPatchCoplanarHoles = meshInfoAfterRemoveFragments;
-		changeCounts.patchedHoleFacesPass1 =
-			PatchCoplanarHoles(workingMesh, "3", meshInfoBeforePatchCoplanarHoles, meshInfoAfterPatchCoplanarHoles);
-
-		// 4: remove thin membranes
-		MeshWatertightInfo meshInfoBeforeRemoveThinMembranes = meshInfoAfterPatchCoplanarHoles;
-		MeshWatertightInfo meshInfoAfterRemoveThinMembranes = meshInfoAfterPatchCoplanarHoles;
+		// 3: remove thin membranes before generic hole patching so the membrane
+		// detector still sees the raw boolean scars around openings.
+		MeshWatertightInfo meshInfoBeforeRemoveThinMembranes = meshInfoAfterRemoveFragments;
+		MeshWatertightInfo meshInfoAfterRemoveThinMembranes = meshInfoAfterRemoveFragments;
 		changeCounts.removedMembraneFaces =
-			RemoveThinMembranes(workingMesh, "4", meshInfoBeforeRemoveThinMembranes, meshInfoAfterRemoveThinMembranes);
+			RemoveThinMembranes(workingMesh, "3", meshInfoBeforeRemoveThinMembranes, meshInfoAfterRemoveThinMembranes);
+
+		// 4: patch coplanar holes after membrane cleanup
+		MeshWatertightInfo meshInfoBeforePatchCoplanarHoles = meshInfoAfterRemoveThinMembranes;
+		MeshWatertightInfo meshInfoAfterPatchCoplanarHoles = meshInfoAfterRemoveThinMembranes;
+		changeCounts.patchedHoleFacesPass1 =
+			PatchCoplanarHoles(workingMesh, "4", meshInfoBeforePatchCoplanarHoles, meshInfoAfterPatchCoplanarHoles);
 
 		// 5: resolve T-junctions
-		MeshWatertightInfo meshInfoBeforeResolveTJunctions = meshInfoAfterRemoveThinMembranes;
-		MeshWatertightInfo meshInfoAfterResolveTJunctions = meshInfoAfterRemoveThinMembranes;
+		MeshWatertightInfo meshInfoBeforeResolveTJunctions = meshInfoAfterPatchCoplanarHoles;
+		MeshWatertightInfo meshInfoAfterResolveTJunctions = meshInfoAfterPatchCoplanarHoles;
 		changeCounts.resolvedTJunctionFaces =
 			ResolveTJunctions(workingMesh, "5", meshInfoBeforeResolveTJunctions, meshInfoAfterResolveTJunctions);
 
@@ -2780,9 +2802,9 @@ namespace meshCleanup {
 			PatchCoplanarHoles(workingMesh, "6", meshInfoBeforePatchCoplanarHoles2, meshInfoAfterPatchCoplanarHoles2);
 
 		auto meshInfoOnExit = meshInfoAfterPatchCoplanarHoles2;
-		const bool improvedOpenEdges = meshInfoOnEntry.numOpenEdges > meshInfoOnExit.numOpenEdges;
+		const bool improvedTopology = TopologyStrictlyImproved(meshInfoOnEntry, meshInfoOnExit);
 		const bool removedAnyMembranes = changeCounts.removedMembraneFaces > 0;
-		if (improvedOpenEdges || removedAnyMembranes) {
+		if (improvedTopology || removedAnyMembranes) {
 			input = std::move(workingMesh);
 			input.hasPlanes = false;
 
