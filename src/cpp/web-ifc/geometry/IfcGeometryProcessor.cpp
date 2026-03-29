@@ -293,8 +293,10 @@ namespace webifc::geometry
                 uint32_t firstOperandID = _loader.GetRefArgument();
                 uint32_t secondOperandID = _loader.GetRefArgument();
 
-                auto firstMesh = GetMesh(firstOperandID);
-                auto secondMesh = GetMesh(secondOperandID);
+                IfcComposedMesh firstMesh = GetMesh(firstOperandID);
+                IfcComposedMesh secondMesh = GetMesh(secondOperandID);
+                firstMesh.expressID = firstOperandID;
+                secondMesh.expressID = secondOperandID;
 
                 auto origin = GetOrigin(firstMesh, _expressIDToGeometry);
                 auto normalizeMat = glm::translate(-origin);
@@ -312,9 +314,15 @@ namespace webifc::geometry
                 size_t numFacesGeoms = 0;
                 for (auto& geom : flatFirstMeshes) {
                     numFacesGeoms += geom.numFaces;
+                    if (geom.entityID == UINT32_MAX) {
+                        geom.entityID = firstOperandID;
+                    }
                 }
                 for (auto& geom : flatSecondMeshes) {
                     numFacesGeoms += geom.numFaces;
+                    if (geom.entityID == UINT32_MAX) {
+                        geom.entityID = secondOperandID;
+                    }
                 }
 
                 if (numFacesGeoms > _settings._CSG_MAX_NUM_FACES) {
@@ -325,7 +333,7 @@ namespace webifc::geometry
                     for (const auto& g : flatFirstMeshes) {
                         resultMesh.MergeGeometry(g);
                     }
-
+                    resultMesh.entityID = expressID;
                     _expressIDToGeometry[expressID] = resultMesh;
                     mesh.hasGeometry = true;
                     mesh.transformation = glm::translate(origin);
@@ -340,7 +348,7 @@ namespace webifc::geometry
                 }
 
                 IfcGeometry resultMesh = BoolProcess(flatFirstMeshes, flatSecondMeshes, std::string(op), _settings);
-
+                resultMesh.entityID = expressID;
                 _expressIDToGeometry[expressID] = resultMesh;
                 mesh.hasGeometry = true;
                 mesh.transformation = glm::translate(origin);
@@ -391,6 +399,7 @@ namespace webifc::geometry
 
                 mesh.transformation = surface.transformation;
                 // TODO: this is getting problematic.....
+                geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
                 mesh.hasGeometry = true;
 
@@ -456,6 +465,7 @@ namespace webifc::geometry
 #endif
 
                 // TODO: this is getting problematic.....
+                geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
                 mesh.hasGeometry = true;
                 mesh.transformation = position;
@@ -507,6 +517,7 @@ namespace webifc::geometry
                 }
 
                 IfcGeometry newGeometry;
+                newGeometry.entityID = expressID;
                 if (unitaryFaces > 12)
                 {
                     for (auto &child : mesh.children)
@@ -605,7 +616,7 @@ namespace webifc::geometry
                 auto faces = _loader.GetSetArgument();
 
                 IfcGeometry geom;
-
+                geom.entityID = expressID;
                 std::vector<IfcBound3D> bounds;
                 for (auto &face : faces)
                 {
@@ -622,7 +633,7 @@ namespace webifc::geometry
                 {
                     spdlog::error("[GetMesh()] Unsupported IFCPOLYGONALFACESET with PnIndex {}", expressID);
                 }
-
+                geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
                 mesh.expressID = expressID;
                 mesh.hasGeometry = true;
@@ -670,7 +681,7 @@ namespace webifc::geometry
                 {
                     TriangulateBounds(geometry, bounds3D, expressID);
                 }
-
+                geometry.entityID = expressID;
                 _expressIDToGeometry[expressID] = geometry;
                 mesh.expressID = expressID;
                 mesh.hasGeometry = true;
@@ -714,7 +725,7 @@ namespace webifc::geometry
                 }
 
                 // DumpIfcGeometry(geom, "test.obj");
-
+                geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
                 mesh.expressID = expressID;
                 mesh.hasGeometry = true;
@@ -798,6 +809,7 @@ namespace webifc::geometry
                 IfcGeometry geom = Sweep(_cache.GetLinearScalingFactor(), closed, profile, directrix, surface.normal(), true);
 
                 mesh.transformation = placement;
+                geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
                 mesh.expressID = expressID;
                 mesh.hasGeometry = true;
@@ -837,6 +849,7 @@ namespace webifc::geometry
                 );
 
                 // Store the geometry and update mesh
+                geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
                 mesh.expressID = expressID;
                 mesh.hasGeometry = true;
@@ -887,7 +900,7 @@ namespace webifc::geometry
                 geom.sweptDiskSolid.axis = std::vector<IfcCurve>{directrix};
                 geom.sweptDiskSolid.profiles = std::vector<IfcProfile>{profile};
                 geom.sweptDiskSolid.profileRadius = radius;
-
+                geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
                 mesh.expressID = expressID;
                 mesh.hasGeometry = true;
@@ -935,6 +948,7 @@ namespace webifc::geometry
                 }
 
                 mesh.transformation = placement;
+                geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
                 mesh.expressID = expressID;
                 mesh.hasGeometry = true;
@@ -1026,7 +1040,7 @@ namespace webifc::geometry
 #ifdef CSG_DEBUG_OUTPUT
 //    io::DumpIfcGeometry(geom, "IFCEXTRUDEDAREASOLID_geom.obj");
 #endif
-
+                geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
                 mesh.expressID = expressID;
                 mesh.hasGeometry = true;
@@ -1058,7 +1072,7 @@ namespace webifc::geometry
 #ifdef CSG_DEBUG_OUTPUT
                 io::DumpIfcGeometry(geom, "IFCRIGHTCIRCULARCYLINDER_geom.obj");
 #endif
-
+                geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
                 mesh.expressID = expressID;
                 mesh.hasGeometry = true;
@@ -1098,6 +1112,7 @@ namespace webifc::geometry
                 geom.numPoints = 1;
                 geom.isPolygon = true;
                 mesh.hasGeometry = true;
+                geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
 
                 return mesh;
@@ -1123,6 +1138,7 @@ namespace webifc::geometry
                 geom.numPoints = edge.points.size();
                 geom.isPolygon = true;
                 mesh.hasGeometry = true;
+                geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
 
                 return mesh;
@@ -1226,7 +1242,7 @@ namespace webifc::geometry
                 geom.numPoints = static_cast<uint32_t>(vertices.size());
                 geom.isPolygon = false;
                 geom.buildPlanes();
-
+                geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
                 mesh.hasGeometry = true;
                 mesh.expressID = expressID;
@@ -1263,6 +1279,7 @@ namespace webifc::geometry
                     geom.numPoints = curve.points.size();
                     geom.isPolygon = true;
                     mesh.hasGeometry = true;
+                    geom.entityID = expressID;
                     _expressIDToGeometry[expressID] = geom;
                 }
 
@@ -1678,6 +1695,9 @@ namespace webifc::geometry
         flatMesh.expressID = expressID;
 
         IfcComposedMesh composedMesh = GetMesh(expressID);
+        if (composedMesh.expressID == UINT32_MAX) {
+            composedMesh.expressID = expressID;
+        }
 
         glm::dmat4 mat = glm::dmat4(1);
         if (applyLinearScalingFactor)
@@ -1736,11 +1756,14 @@ namespace webifc::geometry
             if (geometry.testReverse())
                 geom.ReverseFaces();
 
+            if (geom.entityID == UINT32_MAX) {
+                geom.entityID = composedMesh.expressID;
+            }
             auto translation = glm::dmat4(1.0);
 
             // #1462 Reports having problems with this line, not sure why this is needed
             translation = geom.Normalize();
-
+            geom.entityID = composedMesh.expressID;
             _expressIDToGeometry[composedMesh.expressID] = geom;
 
             if (!composedMesh.hasColor)
@@ -1923,7 +1946,7 @@ namespace webifc::geometry
                 uint32_t faceID = _loader.GetRefArgument(faceToken);
                 AddFaceToGeometry(faceID, geometry);
             }
-
+            geometry.entityID = expressID;
             return geometry;
         }
         default:
@@ -2052,6 +2075,7 @@ namespace webifc::geometry
         newGeom.planeData = geom.planeData;
         newGeom.numPoints = geom.numPoints;
         newGeom.numFaces = geom.numFaces;
+        newGeom.entityID = geom.entityID;
         uint32_t id = 0;
         for (auto plane : geom.planes)
         {

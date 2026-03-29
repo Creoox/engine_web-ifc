@@ -1,7 +1,9 @@
 ﻿#pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <web-ifc/geometry/operations/bim-geometry/geometry.h>
+#include <web-ifc/geometry/operations/boolean-utils/geometry.h>
 
 namespace meshCleanup
 {
@@ -15,6 +17,13 @@ namespace meshCleanup
 	};
 
 	MeshWatertightInfo isMeshWatertight(const fuzzybools::Geometry& geom);
+	void SetDebugDumpDirectory(const std::filesystem::path& dir);
+
+	uint32_t RemoveDegeneratedTriangles(fuzzybools::Geometry& input, std::string step, const MeshWatertightInfo& meshInfoInput, MeshWatertightInfo& meshInfoResult);
+	uint32_t RemoveDisconnectedFragments(fuzzybools::Geometry& input, std::string step, const MeshWatertightInfo& meshInfoInput, MeshWatertightInfo& meshInfoResult);
+	uint32_t ResolveTJunctions(fuzzybools::Geometry& input, std::string step, const MeshWatertightInfo& meshInfoInput, MeshWatertightInfo& meshInfoResult);
+	uint32_t PatchCoplanarHoles(fuzzybools::Geometry& input, std::string step, const MeshWatertightInfo& meshInfoInput, MeshWatertightInfo& meshInfoResult);
+	uint32_t RemoveTinyBoundaryBridgeFaces(fuzzybools::Geometry& input, std::string step, const MeshWatertightInfo& meshInfoInput, MeshWatertightInfo& meshInfoResult);
 
 	void PostBooleanOperationMeshCleanup(fuzzybools::Geometry& input);
 }

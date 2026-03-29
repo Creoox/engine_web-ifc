@@ -1483,7 +1483,7 @@ namespace fuzzybools
 
                 if (!inside2d)
                 {
-                    // posA/posB already tested triCenter above — skip redundant re-check
+                    // posA/posB already tested triCenter above - skip redundant re-check
                     // and go straight to the vertex-interpolated probe points.
 
                     auto ptt = glm::mix(triCenter, ptA, triangleEvaluationFactor);

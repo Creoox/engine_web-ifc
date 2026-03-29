@@ -41,6 +41,7 @@ namespace fuzzybools
 		uint32_t numPoints = 0;
 		uint32_t numFaces = 0;
 		uint32_t data = 0;
+		uint32_t entityID = UINT32_MAX;
 
 		void BuildFromVectors(std::vector<double> &d, std::vector<uint32_t> &i)
 		{

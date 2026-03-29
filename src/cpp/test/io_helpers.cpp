@@ -240,7 +240,7 @@ namespace webifc::io
         return obj.str();
     }
 
-    void DumpIfcGeometry(webifc::geometry::IfcGeometry &geom, std::string filename)
+    void DumpIfcGeometry(const webifc::geometry::IfcGeometry &geom, std::string filename)
     {
         size_t offset = 0;
         writeFile(filename, ToObj(geom, offset));

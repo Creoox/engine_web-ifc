@@ -830,9 +830,13 @@ namespace webifc::geometry
 			{
 
 				IfcGeometry newMeshGeom = sourceGeom.part[i];
+				if (newMeshGeom.entityID == UINT32_MAX) {
+					newMeshGeom.entityID = sourceGeom.entityID;
+				}
 				if (newMeshGeom.numFaces)
 				{
 					IfcGeometry newGeom;
+					newGeom.entityID = newMeshGeom.entityID;
 					newGeom.halfSpace = newMeshGeom.halfSpace;
 					if (newGeom.halfSpace)
 					{
@@ -868,6 +872,7 @@ namespace webifc::geometry
 			if (sourceGeom.numFaces)
 			{
 				IfcGeometry newGeom;
+				newGeom.entityID = sourceGeom.entityID;
 				newGeom.halfSpace = sourceGeom.halfSpace;
 				if (newGeom.halfSpace)
 				{
