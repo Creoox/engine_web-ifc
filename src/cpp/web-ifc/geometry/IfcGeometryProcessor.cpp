@@ -2176,16 +2176,6 @@ namespace webifc::geometry
                 // BOOLSTATUS++;
 
 #endif
-                {
-                    auto ba = firstOperator.GetAABB();
-                    auto bb = secondOperator.GetAABB();
-#ifdef _DEBUG_PRINT
-                    std::cout << "[BoolProcess] op=" << op << " A.faces=" << firstOperator.numFaces << " B.faces=" << secondOperator.numFaces
-                        << " A.bbox=[" << ba.min.x << "," << ba.min.y << "," << ba.min.z << "]-[" << ba.max.x << "," << ba.max.y << "," << ba.max.z << "]"
-                        << " B.bbox=[" << bb.min.x << "," << bb.min.y << "," << bb.min.z << "]-[" << bb.max.x << "," << bb.max.y << "," << bb.max.z << "]"
-                        << " intersects=" << ba.intersects(bb) << std::endl;
-#endif
-                }
                 firstOperator.buildPlanes();
                 secondOperator.buildPlanes();
 

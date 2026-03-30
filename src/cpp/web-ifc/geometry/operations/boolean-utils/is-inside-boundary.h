@@ -11,11 +11,12 @@
 namespace fuzzybools
 {
 
+    template<typename EdgeContainer>
     inline bool isInsideBoundary(
-        glm::dvec2 t1, 
-        glm::dvec2 t2, 
-        glm::dvec2 t3, 
-        const std::set<std::pair<size_t, size_t>>& edges, 
+        glm::dvec2 t1,
+        glm::dvec2 t2,
+        glm::dvec2 t3,
+        const EdgeContainer& edges,
         const std::vector<glm::dvec2>& projectedPoints)
     {
         // Compute the centroid of the triangle

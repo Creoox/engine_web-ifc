@@ -24,12 +24,13 @@
 #include "is-inside-mesh.h"
 #include "is-inside-boundary.h"
 
+#ifndef GLM_ENABLE_EXPERIMENTAL
 #define GLM_ENABLE_EXPERIMENTAL
+#endif
 #include <glm/gtx/norm.hpp>
 
 using Vec2 = glm::dvec2;
 using Vec3 = glm::dvec3;
-
 
 // Custom hash for std::tuple<int64_t, int64_t, int64_t>
 // Combine the three 64-bit integers in a reasonably collision-resistant way
@@ -188,17 +189,11 @@ namespace fuzzybools
                     return;
             }
 
-            // add new point
-            points.push_back(std::make_pair(dist, id));
-
-            // re-sort all
-            std::sort(
-                points.begin(),
-                points.end(),
-                [&](const std::pair<double, size_t> &left, const std::pair<double, size_t> &right)
-                {
-                    return left.first < right.first;
-                });
+            // binary-search insert to maintain sorted order (O(log N) search + O(N) shift)
+            // instead of push_back + full re-sort (O(N log N))
+            auto it = std::lower_bound(points.begin(), points.end(), dist,
+                [](const std::pair<double, size_t> &p, double val) { return p.first < val; });
+            points.insert(it, std::make_pair(dist, id));
         }
 
         auto GetSegments() const
@@ -1737,9 +1732,13 @@ namespace fuzzybools
         }
 
         // intersect planes
+        // Inner loop starts at planeAIndex+1: each unordered pair {A,B} is processed
+        // exactly once. AddSegments is called on both planes inside every iteration,
+        // so processing (B,A) after (A,B) was purely redundant. This halves the
+        // number of plane pairs from N*(N-1) to N*(N-1)/2.
         for (size_t planeAIndex = 0; planeAIndex < sp.planes.size(); planeAIndex++)
         {
-            for (size_t planeBIndex = 0; planeBIndex < sp.planes.size(); planeBIndex++)
+            for (size_t planeBIndex = planeAIndex + 1; planeBIndex < sp.planes.size(); planeBIndex++)
             {
                 auto &planeA = sp.planes[planeAIndex];
                 auto &planeB = sp.planes[planeBIndex];

@@ -102,8 +102,8 @@ namespace meshCleanup {
 		return inside;
 	}
 
-	MeshWatertightInfo isMeshWatertight(const fuzzybools::Geometry& geom) {
-		MeshWatertightInfo info;
+	MeshInfo isMeshWatertight(const fuzzybools::Geometry& geom) {
+		MeshInfo info;
 		info.numFaces = geom.numFaces;
 		if (geom.numFaces == 0) {
 			return info;
@@ -203,19 +203,19 @@ namespace meshCleanup {
 		return info;
 	}
 
-	static bool TopologyStrictlyImproved(const MeshWatertightInfo& before, const MeshWatertightInfo& after) {
+	static bool TopologyStrictlyImproved(const MeshInfo& before, const MeshInfo& after) {
 		return after.numNonManifoldEdges < before.numNonManifoldEdges ||
 			(after.numNonManifoldEdges == before.numNonManifoldEdges &&
 			 after.numOpenEdges < before.numOpenEdges);
 	}
 
-	static bool TopologyNotWorse(const MeshWatertightInfo& before, const MeshWatertightInfo& after) {
+	static bool TopologyNotWorse(const MeshInfo& before, const MeshInfo& after) {
 		return after.numNonManifoldEdges <= before.numNonManifoldEdges &&
 			after.numOpenEdges <= before.numOpenEdges;
 	}
 
-	static bool TopologyStrictlyImprovedWithoutRegression(const MeshWatertightInfo& before,
-		const MeshWatertightInfo& after) {
+	static bool TopologyStrictlyImprovedWithoutRegression(const MeshInfo& before,
+		const MeshInfo& after) {
 		return TopologyNotWorse(before, after) &&
 			(after.numNonManifoldEdges < before.numNonManifoldEdges ||
 			 after.numOpenEdges < before.numOpenEdges);
@@ -226,7 +226,7 @@ namespace meshCleanup {
 	// Safe to run at any point -- purely topological, no heuristics.
 	// ---------------------------------------------------------------
 	uint32_t RemoveDisconnectedFragments(Geometry& workingMesh, std::string step,
-		const MeshWatertightInfo& meshInfoInput, MeshWatertightInfo& meshInfoResult) {
+		const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult) {
 		const Geometry baseMesh = workingMesh;
 		const uint32_t nFaces = baseMesh.numFaces;
 		if (nFaces == 0) { meshInfoResult = meshInfoInput; return 0; }
@@ -398,7 +398,7 @@ namespace meshCleanup {
 		// (minAltitude < toleranceVectorEquality). For these, snap the tip vertex onto the opposite edge
 		// so that adjacent faces can later be split at the snap point (T-junction resolution).
 	uint32_t RemoveDegeneratedTriangles(Geometry& workingMesh, std::string step,
-		const MeshWatertightInfo& meshInfoInput, MeshWatertightInfo& meshInfoResult) {
+		const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult) {
 		constexpr double SLIVER_AREA_THRESHOLD = 1e-9;
 		const double SLIVER_ALTITUDE_THRESHOLD = toleranceVectorEquality; // 1e-4 m
 		const uint32_t n = workingMesh.numFaces;
@@ -545,7 +545,7 @@ namespace meshCleanup {
 	// edge lies on another face's surface without topological connection.
 	// ---------------------------------------------------------------
 	uint32_t ResolveTJunctions(Geometry& geom, std::string step, 
-		const MeshWatertightInfo& meshInfoInput, MeshWatertightInfo& meshInfoResult) {
+		const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult) {
 		const uint32_t nFaces = geom.numFaces;
 		if (nFaces == 0) {
 			meshInfoResult = meshInfoInput;
@@ -887,7 +887,7 @@ namespace meshCleanup {
 			}
 		}
 
-		MeshWatertightInfo infoRebuilt = meshCleanup::isMeshWatertight(rebuilt);
+		MeshInfo infoRebuilt = meshCleanup::isMeshWatertight(rebuilt);
 		if (infoRebuilt.numOpenEdges < meshInfoInput.numOpenEdges) {
 			geom = std::move(rebuilt);
 			meshInfoResult = infoRebuilt;
@@ -906,7 +906,7 @@ namespace meshCleanup {
 	}
 
 	uint32_t RemoveTinyBoundaryBridgeFaces(Geometry& geom, std::string step,
-		const MeshWatertightInfo& meshInfoInput, MeshWatertightInfo& meshInfoResult) {
+		const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult) {
 		(void)step;
 		meshInfoResult = meshInfoInput;
 
@@ -966,7 +966,7 @@ namespace meshCleanup {
 		};
 
 		Geometry current = geom;
-		MeshWatertightInfo currentInfo = meshInfoInput;
+		MeshInfo currentInfo = meshInfoInput;
 		uint32_t removedFaces = 0;
 
 		while (current.numFaces > 0 && currentInfo.numOpenEdges > 0) {
@@ -1099,7 +1099,7 @@ namespace meshCleanup {
 	// Patch coplanar holes: find boundary-edge loops and fill them with earcut triangulation 
 	// when all loop vertices are coplanar.
 	uint32_t PatchCoplanarHoles(Geometry& geom, std::string step, 
-		const MeshWatertightInfo& meshInfoInput, MeshWatertightInfo& meshInfoResult) {
+		const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult) {
 		if (meshInfoInput.numOpenEdges == 0) {
 			meshInfoResult = meshInfoInput;
 			return 0;
@@ -1982,7 +1982,7 @@ namespace meshCleanup {
 	}
 
 	static uint32_t RemoveThinMembranes(Geometry& workingMesh, std::string step, 
-		const MeshWatertightInfo& meshInfoInput, MeshWatertightInfo& meshInfoResult) {
+		const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult) {
 		meshInfoResult = meshInfoInput;
 
 		const Geometry baseMesh = workingMesh;
@@ -2354,26 +2354,26 @@ namespace meshCleanup {
 #endif
 
 		// 1: remove degenerated triangles
-		MeshWatertightInfo meshInfoBeforeRemoveDegeneratedTriangles = meshInfoOnEntry;
-		MeshWatertightInfo meshInfoAfterRemoveDegeneratedTriangles = meshInfoOnEntry;
+		MeshInfo meshInfoBeforeRemoveDegeneratedTriangles = meshInfoOnEntry;
+		MeshInfo meshInfoAfterRemoveDegeneratedTriangles = meshInfoOnEntry;
 		changeCounts.removedDegeneratedTriangleChanges =
 			RemoveDegeneratedTriangles(workingMesh, "1", meshInfoBeforeRemoveDegeneratedTriangles, meshInfoAfterRemoveDegeneratedTriangles);
 		
 		// 2: remove disconnected fragments (Phase C only -- safe before hole patching)
-		MeshWatertightInfo meshInfoAfterRemoveFragments = meshInfoAfterRemoveDegeneratedTriangles;
+		MeshInfo meshInfoAfterRemoveFragments = meshInfoAfterRemoveDegeneratedTriangles;
 		changeCounts.removedDisconnectedFragmentFaces =
 			RemoveDisconnectedFragments(workingMesh, "2", meshInfoAfterRemoveDegeneratedTriangles, meshInfoAfterRemoveFragments);
 
 		// 3: remove thin membranes before generic hole patching so the membrane
 		// detector still sees the raw boolean scars around openings.
-		MeshWatertightInfo meshInfoBeforeRemoveThinMembranes = meshInfoAfterRemoveFragments;
-		MeshWatertightInfo meshInfoAfterRemoveThinMembranes = meshInfoAfterRemoveFragments;
+		MeshInfo meshInfoBeforeRemoveThinMembranes = meshInfoAfterRemoveFragments;
+		MeshInfo meshInfoAfterRemoveThinMembranes = meshInfoAfterRemoveFragments;
 		changeCounts.removedMembraneFaces =
 			RemoveThinMembranes(workingMesh, "3", meshInfoBeforeRemoveThinMembranes, meshInfoAfterRemoveThinMembranes);
 
 		// 4: patch coplanar holes after membrane cleanup
-		MeshWatertightInfo meshInfoBeforePatchCoplanarHoles = meshInfoAfterRemoveThinMembranes;
-		MeshWatertightInfo meshInfoAfterPatchCoplanarHoles = meshInfoAfterRemoveThinMembranes;
+		MeshInfo meshInfoBeforePatchCoplanarHoles = meshInfoAfterRemoveThinMembranes;
+		MeshInfo meshInfoAfterPatchCoplanarHoles = meshInfoAfterRemoveThinMembranes;
 		changeCounts.patchedHoleFacesPass1 =
 			PatchCoplanarHoles(workingMesh, "4", meshInfoBeforePatchCoplanarHoles, meshInfoAfterPatchCoplanarHoles);
 #ifdef DUMP_CSG_MESHES
@@ -2383,14 +2383,14 @@ namespace meshCleanup {
 #endif
 
 		// 5: resolve T-junctions
-		MeshWatertightInfo meshInfoBeforeResolveTJunctions = meshInfoAfterPatchCoplanarHoles;
-		MeshWatertightInfo meshInfoAfterResolveTJunctions = meshInfoAfterPatchCoplanarHoles;
+		MeshInfo meshInfoBeforeResolveTJunctions = meshInfoAfterPatchCoplanarHoles;
+		MeshInfo meshInfoAfterResolveTJunctions = meshInfoAfterPatchCoplanarHoles;
 		changeCounts.resolvedTJunctionFaces =
 			ResolveTJunctions(workingMesh, "5", meshInfoBeforeResolveTJunctions, meshInfoAfterResolveTJunctions);
 
 		// 6: PatchCoplanarHoles re-run
-		MeshWatertightInfo meshInfoBeforePatchCoplanarHoles2 = meshInfoAfterResolveTJunctions;
-		MeshWatertightInfo meshInfoAfterPatchCoplanarHoles2 = meshInfoAfterResolveTJunctions;
+		MeshInfo meshInfoBeforePatchCoplanarHoles2 = meshInfoAfterResolveTJunctions;
+		MeshInfo meshInfoAfterPatchCoplanarHoles2 = meshInfoAfterResolveTJunctions;
 		changeCounts.patchedHoleFacesPass2 =
 			PatchCoplanarHoles(workingMesh, "6", meshInfoBeforePatchCoplanarHoles2, meshInfoAfterPatchCoplanarHoles2);
 #ifdef DUMP_CSG_MESHES
@@ -2401,8 +2401,8 @@ namespace meshCleanup {
 
 		// 7: final sliver cleanup for tiny crack-producing triangles that can
 		// survive or be created by the previous repair passes.
-		MeshWatertightInfo meshInfoBeforeRemoveDegeneratedTrianglesFinal = meshInfoAfterPatchCoplanarHoles2;
-		MeshWatertightInfo meshInfoAfterRemoveDegeneratedTrianglesFinal = meshInfoAfterPatchCoplanarHoles2;
+		MeshInfo meshInfoBeforeRemoveDegeneratedTrianglesFinal = meshInfoAfterPatchCoplanarHoles2;
+		MeshInfo meshInfoAfterRemoveDegeneratedTrianglesFinal = meshInfoAfterPatchCoplanarHoles2;
 		changeCounts.removedDegeneratedTriangleChangesFinal =
 			RemoveDegeneratedTriangles(workingMesh, "7", meshInfoBeforeRemoveDegeneratedTrianglesFinal, meshInfoAfterRemoveDegeneratedTrianglesFinal);
 #ifdef DUMP_CSG_MESHES
@@ -2412,8 +2412,8 @@ namespace meshCleanup {
 #endif
 
 		// 8: remove tiny boundary bridge faces that leave a single crack edge
-		MeshWatertightInfo meshInfoBeforeRemoveTinyBoundaryBridgeFaces = meshInfoAfterRemoveDegeneratedTrianglesFinal;
-		MeshWatertightInfo meshInfoAfterRemoveTinyBoundaryBridgeFaces = meshInfoAfterRemoveDegeneratedTrianglesFinal;
+		MeshInfo meshInfoBeforeRemoveTinyBoundaryBridgeFaces = meshInfoAfterRemoveDegeneratedTrianglesFinal;
+		MeshInfo meshInfoAfterRemoveTinyBoundaryBridgeFaces = meshInfoAfterRemoveDegeneratedTrianglesFinal;
 		changeCounts.removedTinyBoundaryBridgeFaces =
 			RemoveTinyBoundaryBridgeFaces(workingMesh, "8", meshInfoBeforeRemoveTinyBoundaryBridgeFaces, meshInfoAfterRemoveTinyBoundaryBridgeFaces);
 #ifdef DUMP_CSG_MESHES
