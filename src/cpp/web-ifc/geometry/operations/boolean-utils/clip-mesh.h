@@ -5,7 +5,6 @@
 #pragma once
 
 #include <glm/glm.hpp>
-#include <cstdint>
 
 #include "util.h"
 #include "is-inside-mesh.h"
@@ -20,43 +19,7 @@ namespace fuzzybools
             std::vector<std::vector<glm::dvec2>> edgesPrinted;
         #endif
 
-        // Hash-map based O(1) duplicate-triangle detection, replaces the O(N) linear scan.
-        //
-        // hashDouble: MurmurHash finalizer applied to the bit pattern of a double so that bitwise-identical 
-        // values always hash the same.
-        // canonicalTriHash: cyclic-rotation-invariant hash of (a,b,c) -
-        //   invariant under (a,b,c)->(b,c,a)->(c,a,b) but NOT reflection, matching the three cyclic equalities
-        // tested by the dedup check.
-        auto hashDouble = [](double x) -> std::size_t {
-            std::uint64_t bits = 0;
-            std::memcpy(&bits, &x, sizeof(bits));
-            bits ^= bits >> 33;
-            bits *= 0xff51afd7ed558ccdULL;
-            bits ^= bits >> 33;
-            return static_cast<std::size_t>(bits);
-        };
-        auto hashPt = [&](const glm::dvec3& v) -> std::size_t {
-            std::size_t h = hashDouble(v.x);
-            h ^= hashDouble(v.y) + 0x9e3779b9u + (h << 6) + (h >> 2);
-            h ^= hashDouble(v.z) + 0x9e3779b9u + (h << 6) + (h >> 2);
-            return h;
-        };
-        auto canonicalTriHash = [&](const glm::dvec3& pa,
-                                    const glm::dvec3& pb,
-                                    const glm::dvec3& pc) -> std::size_t {
-            const std::size_t ha = hashPt(pa), hb = hashPt(pb), hc = hashPt(pc);
-            std::size_t h0, h1, h2;
-            if      (ha <= hb && ha <= hc) { h0 = ha; h1 = hb; h2 = hc; }
-            else if (hb <= ha && hb <= hc) { h0 = hb; h1 = hc; h2 = ha; }
-            else                           { h0 = hc; h1 = ha; h2 = hb; }
-            std::size_t h = h0;
-            h ^= h1 + 0x9e3779b9u + (h << 6) + (h >> 2);
-            h ^= h2 + 0x9e3779b9u + (h << 6) + (h >> 2);
-            return h;
-        };
-        // canonical-triangle-hash -> face indices already accepted into result
-        std::unordered_map<std::size_t, std::vector<int>> triHashMap;
-        triHashMap.reserve(mesh.data / 4 + 16);
+        std::vector<std::pair<int, AABB>> boundingList;
 
         for(auto &plane: mesh.planes)
         {
@@ -90,36 +53,32 @@ namespace fuzzybools
 
             bool doNext = true;
 
-            // O(1) expected: hash-map lookup
+            for(auto pair: boundingList)
             {
-                const std::size_t triKey = canonicalTriHash(a, b, c);
-                auto it = triHashMap.find(triKey);
-                if (it != triHashMap.end())
+                if (aabb.intersects(pair.second))
                 {
-                    for (int prevIdx : it->second)
-                    {
-                        Face tri_temp = mesh.GetFace(prevIdx);
-                        glm::dvec3 at = mesh.GetPoint(tri_temp.i0);
-                        glm::dvec3 bt = mesh.GetPoint(tri_temp.i1);
-                        glm::dvec3 ct = mesh.GetPoint(tri_temp.i2);
+                    Face tri_temp = mesh.GetFace(pair.first);
 
-                        if((equals(at,a, EPS_MINISCULE) &&  equals(bt,b, EPS_MINISCULE) && equals(ct,c, EPS_MINISCULE))
-                        || (equals(at,b, EPS_MINISCULE) &&  equals(bt,c, EPS_MINISCULE) && equals(ct,a, EPS_MINISCULE))
-                        || (equals(at,c, EPS_MINISCULE) &&  equals(bt,a, EPS_MINISCULE) && equals(ct,b, EPS_MINISCULE)))
-                        {
-                            doNext = false;
-                            break;
-                        }
+                    glm::dvec3 at = mesh.GetPoint(tri_temp.i0);
+                    glm::dvec3 bt = mesh.GetPoint(tri_temp.i1);
+                    glm::dvec3 ct = mesh.GetPoint(tri_temp.i2);
+
+                    if((equals(at,a, EPS_MINISCULE) &&  equals(bt,b, EPS_MINISCULE) && equals(ct,c, EPS_MINISCULE))
+                    || (equals(at,b, EPS_MINISCULE) &&  equals(bt,c, EPS_MINISCULE) && equals(ct,a, EPS_MINISCULE))
+                    || (equals(at,c, EPS_MINISCULE) &&  equals(bt,a, EPS_MINISCULE) && equals(ct,b, EPS_MINISCULE)))
+                    {
+                        doNext = false;
+                        break;
                     }
                 }
-                if (doNext)
-                    triHashMap[triKey].push_back(static_cast<int>(i));
             }
 
             if(!doNext)
             {
                 continue;
             }
+
+            boundingList.push_back(std::make_pair(i, aabb));
 
             glm::dvec3 n = computeNormal(a, b, c);
 

@@ -69,8 +69,7 @@ namespace bimGeometry
     void Geometry::AddFace(glm::dvec3 a, glm::dvec3 b, glm::dvec3 c, uint32_t pId){
         glm::dvec3 normal;
         if (!computeSafeNormal(a, b, c, normal, toleranceAddFace)) {
-            if(bailoutOnZeroAreaFace2)
-                return;
+            return;
         }
 
         AddPoint(a, normal);

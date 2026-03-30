@@ -103,28 +103,22 @@ namespace fuzzybools
 		inline void AddFace(glm::dvec3 a, glm::dvec3 b, glm::dvec3 c, uint32_t pId)
 		{
 			glm::dvec3 normal;
-			computeSafeNormal(a, b, c, normal, toleranceAddFace);
 
-			// in AddFace(uint32_t a, uint32_t b, uint32_t c, uint32_t pId) we don't bail out
-			// -> test to remove the bailout here as well, it could be a t-junction triangle that is 
-			// necessary to make a mesh watertight, but area is zero
-			
-			if (bailoutOnZeroAreaFace) {
-				double area = areaOfTriangle(a, b, c);
-				if (area <= toleranceAddFace)
+			double area = areaOfTriangle(a, b, c);
+			if (!computeSafeNormal(a, b, c, normal, toleranceAddFace))
+			{
+				// bail out, zero area triangle
+				if (messages)
 				{
-					// bail out, zero area triangle
-					if (messages)
-					{
-						printf("zero triangle, AddFace(vec, vec, vec)\n");
-					}
-					return;
+					printf("zero triangle, AddFace(vec, vec, vec)\n");
 				}
+				return;
 			}
 
 			AddPoint(a, normal);
 			AddPoint(b, normal);
 			AddPoint(c, normal);
+
 			AddFace(numPoints - 3, numPoints - 2, numPoints - 1, pId);
 		}
 
@@ -145,22 +139,10 @@ namespace fuzzybools
 			//			if (!computeSafeNormal(GetPoint(a), GetPoint(b), GetPoint(c), normal, EPS_SMALL))
 			if (!computeSafeNormal(GetPoint(a), GetPoint(b), GetPoint(c), normal, toleranceAddFace))
 			{
-				// bail out, zero area triangle. Hmm, in web-ifc, there is this message to bail out, but we are NOT bailing out!!
-				// in AddFace(glm::dvec3 a, glm::dvec3 b, glm::dvec3 c, uint32_t pId) , see above,
-				// we ARE actually bailing out in the same situation!
-				// -> test to remove the bailout, it could be a t-junction triangle that is necessary to make a mesh watertight, 
-				// but area is zero
-
+				// bail out, zero area triangle
 				if (messages)
 				{
 					printf("zero triangle, AddFace(int, int, int)\n");
-				}
-				if (bailoutOnZeroAreaFace) {
-					indexData.pop_back();
-					indexData.pop_back();
-					indexData.pop_back();
-					planeData.pop_back();
-					return;
 				}
 			}
 
@@ -210,7 +192,7 @@ namespace fuzzybools
 		void GetCenterExtents(glm::dvec3 &center, glm::dvec3 &extents) const
 		{
 			glm::dvec3 min(DBL_MAX, DBL_MAX, DBL_MAX);
-			glm::dvec3 max(-DBL_MAX, -DBL_MAX, -DBL_MAX);
+			glm::dvec3 max(DBL_MIN, DBL_MIN, DBL_MIN);
 
 			for (size_t i = 0; i < numPoints; i++)
 			{

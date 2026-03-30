@@ -1,6 +1,5 @@
 #pragma once
 
-#include <stack>
 #include <vector>
 #include <glm/glm.hpp>
 
@@ -92,7 +91,7 @@ namespace fuzzybools
         template <typename T>
         bool IntersectRay(const glm::dvec3& origin, const glm::dvec3& dir, T callback)
         {
-            static std::vector<uint32_t> stack;  // when used in threads: change static -> thread_local
+            static std::vector<uint32_t> stack;
             stack.clear();
 
             if (nodes.empty())
@@ -144,38 +143,6 @@ namespace fuzzybools
             return false;
         }
 
-        // Find all leaf AABBs that overlap a query AABB.
-        // Callback receives the face index of each overlapping box.
-        template <typename T>
-        void QueryAABB(const AABB& query, T callback)
-        {
-            if (nodes.empty()) return;
-
-            static std::vector<uint32_t> stack;
-            stack.clear();
-            stack.emplace_back(0);
-
-            while (!stack.empty())
-            {
-                const auto& node = nodes[stack.back()];
-                stack.pop_back();
-
-                if (!node.box.intersects(query)) continue;
-
-                if (node.IsLeaf())
-                {
-                    for (uint32_t i = node.start; i < node.end; i++)
-                        if (boxes[i].intersects(query))
-                            callback(boxes[i].index);
-                }
-                else
-                {
-                    stack.emplace_back(node.left);
-                    stack.emplace_back(node.right);
-                }
-            }
-        }
-
     };
 
     static int MakeBVH(std::vector<AABB>& boxes, std::vector<BVHNode>& nodes, int start, int end, int axis, int depth, int& offset)
@@ -195,7 +162,7 @@ namespace fuzzybools
 
         nodes.reserve(nodeID + 1);
 
-        if (depth == 20)
+        if (depth == 6)
         {
             return nodeID;
         }
@@ -204,7 +171,7 @@ namespace fuzzybools
         int size = end - start;
 
         // ignore cubes
-        if (size <= 4)
+        if (size <= 12)
         {
             return nodeID;
         }

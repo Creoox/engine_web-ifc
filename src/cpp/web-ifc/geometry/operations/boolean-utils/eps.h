@@ -15,8 +15,7 @@ constexpr bool messages = false;
     Constants from the original eps.h.  However,
         EPS_TINY, EPS_SMALL, EPS_BIG, EPS_BIG2 and SCALED_EPS_BIG
     have been assigned a new, common value.  Use of these constants
-    needs to be rationalised and eliminated.  Prefer the dedicated
-    named tolerances below for new code.
+    needs to be rationalised and eliminated!
 */
 constexpr double EPS_NONZERO = 1.0E-20;
 constexpr double EPS_MINISCULE = 1.0E-12;
@@ -38,8 +37,6 @@ constexpr double toleranceVectorEquality = 1.0E-04;
 constexpr double TOLERANCE_SCALAR_EQUALITY = 1.0E-04;
 constexpr double toleranceCollinear = 1.0E-04;
 constexpr double triangleEvaluationFactor = 0.90;
-constexpr double toleranceParallelLineDenominator = 1.0E-08;
-constexpr double toleranceParallelPlaneDot = 1.0E-08;
 
 /*
     Constants used in shared-position
@@ -65,8 +62,6 @@ constexpr double toleranceThinTriangle = 1.0e-10;
     Constants used in function AddFace in geometry.h
 */
 constexpr double toleranceAddFace = 1.0E-10;
-constexpr bool bailoutOnZeroAreaFace = false;
-
 
 /*
         Round all coordinates when they are read to a specified number of decimal places.
