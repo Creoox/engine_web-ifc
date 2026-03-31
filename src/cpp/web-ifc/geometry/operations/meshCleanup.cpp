@@ -31,6 +31,20 @@ using namespace fuzzybools;
 
 static std::filesystem::path g_debugDumpDirectory;
 
+namespace {
+	static uint64_t MeshPenaltyScore(const meshCleanup::MeshInfo& info) {
+		return static_cast<uint64_t>(info.numNonManifoldEdges) * 8ull +
+			static_cast<uint64_t>(info.numOpenEdges) * 2ull;
+	}
+
+	static bool MeshPenaltyImprovedNoRegression(const meshCleanup::MeshInfo& before,
+		const meshCleanup::MeshInfo& after) {
+		return after.numNonManifoldEdges <= before.numNonManifoldEdges &&
+			after.numOpenEdges <= before.numOpenEdges &&
+			MeshPenaltyScore(after) < MeshPenaltyScore(before);
+	}
+}
+
 void meshCleanup::SetDebugDumpDirectory(const std::filesystem::path& dir) {
 	g_debugDumpDirectory = dir;
 }
@@ -293,14 +307,18 @@ uint32_t meshCleanup::RemoveDisconnectedFragments(Geometry& workingMesh, std::st
 			edgeFaces[{std::min(va, vb), std::max(va, vb)}].push_back(i);
 		}
 
-	// Face adjacency + BFS components
+	// Face adjacency + BFS components. Only traverse manifold connections so
+	// sheets that touch a solid through a non-manifold seam can still be
+	// identified and removed as separate zero-volume fragments.
 	std::vector<std::vector<uint32_t>> faceAdj(nFaces);
-	for (auto& [ek, fl] : edgeFaces)
+	for (auto& [ek, fl] : edgeFaces) {
+		if (fl.size() != 2) continue;
 		for (size_t a = 0; a < fl.size(); a++)
 			for (size_t b = a + 1; b < fl.size(); b++) {
 				faceAdj[fl[a]].push_back(fl[b]);
 				faceAdj[fl[b]].push_back(fl[a]);
 			}
+	}
 
 	std::vector<int> compId(nFaces, -1);
 	int numComp = 0;
@@ -334,9 +352,16 @@ uint32_t meshCleanup::RemoveDisconnectedFragments(Geometry& workingMesh, std::st
 		Vec vc = fv[i].c - comps[cid].centroid;
 		comps[cid].volume += glm::dot(va, glm::cross(vb, vc)) / 6.0;
 	}
-	for (auto& [ek, fl] : edgeFaces)
-		if (fl.size() != 2)
-			comps[compId[fl[0]]].boundaryEdges++;
+	for (auto& [ek, fl] : edgeFaces) {
+		if (fl.size() == 2) continue;
+		std::unordered_set<int> touchedComponents;
+		for (uint32_t faceIdx : fl) {
+			touchedComponents.insert(compId[faceIdx]);
+		}
+		for (int cid : touchedComponents) {
+			comps[cid].boundaryEdges++;
+		}
+	}
 
 	std::vector<bool> badComp(numComp, false);
 	uint32_t removedByComp = 0;
@@ -364,7 +389,7 @@ uint32_t meshCleanup::RemoveDisconnectedFragments(Geometry& workingMesh, std::st
 	cleaned.data = workingMesh.data;
 
 	auto infoCleaned = meshCleanup::isMeshWatertight(cleaned);
-	if (infoCleaned.numOpenEdges < meshInfoInput.numOpenEdges) {
+	if (MeshPenaltyImprovedNoRegression(meshInfoInput, infoCleaned)) {
 		workingMesh = std::move(cleaned);
 		meshInfoResult = infoCleaned;
 		return removedByComp;
@@ -872,7 +897,7 @@ uint32_t meshCleanup::ResolveTJunctions(Geometry& geom, std::string step,
 	}
 
 	MeshInfo infoRebuilt = meshCleanup::isMeshWatertight(rebuilt);
-	if (infoRebuilt.numOpenEdges < meshInfoInput.numOpenEdges) {
+	if (MeshPenaltyImprovedNoRegression(meshInfoInput, infoRebuilt)) {
 		geom = std::move(rebuilt);
 		meshInfoResult = infoRebuilt;
 		return retriangulatedFaces;
@@ -1822,38 +1847,41 @@ uint32_t meshCleanup::PatchCoplanarHoles(Geometry& geom, std::string step, const
 	};
 
 	std::vector<bool> skipProjectedLoop(projectedLoops.size(), false);
-	for (size_t i = 0; i < projectedLoops.size(); i++) {
-		const LoopInfo& loopA = validLoops[projectedLoops[i].loopIndex];
-		if (std::abs(axisComponent(loopA.planeNormal)) < 0.85) continue;
-		if (projectedLoops[i].dropAxis != dominantAxis) continue;
+	constexpr bool kSkipPairedOpeningMouths = false;
+	if (kSkipPairedOpeningMouths) {
+		for (size_t i = 0; i < projectedLoops.size(); i++) {
+			const LoopInfo& loopA = validLoops[projectedLoops[i].loopIndex];
+			if (std::abs(axisComponent(loopA.planeNormal)) < 0.85) continue;
+			if (projectedLoops[i].dropAxis != dominantAxis) continue;
 
-		for (size_t j = i + 1; j < projectedLoops.size(); j++) {
-			const LoopInfo& loopB = validLoops[projectedLoops[j].loopIndex];
-			if (std::abs(axisComponent(loopB.planeNormal)) < 0.85) continue;
-			if (projectedLoops[j].dropAxis != dominantAxis) continue;
-			if (std::abs(glm::dot(loopA.planeNormal, loopB.planeNormal)) < 0.95) continue;
+			for (size_t j = i + 1; j < projectedLoops.size(); j++) {
+				const LoopInfo& loopB = validLoops[projectedLoops[j].loopIndex];
+				if (std::abs(axisComponent(loopB.planeNormal)) < 0.85) continue;
+				if (projectedLoops[j].dropAxis != dominantAxis) continue;
+				if (std::abs(glm::dot(loopA.planeNormal, loopB.planeNormal)) < 0.95) continue;
 
-			double minX = std::max(projectedLoops[i].bboxMin[0], projectedLoops[j].bboxMin[0]);
-			double minY = std::max(projectedLoops[i].bboxMin[1], projectedLoops[j].bboxMin[1]);
-			double maxX = std::min(projectedLoops[i].bboxMax[0], projectedLoops[j].bboxMax[0]);
-			double maxY = std::min(projectedLoops[i].bboxMax[1], projectedLoops[j].bboxMax[1]);
-			double overlapWidth = std::max(0.0, maxX - minX);
-			double overlapHeight = std::max(0.0, maxY - minY);
-			double overlapArea = overlapWidth * overlapHeight;
-			double minLoopArea = std::min(projectedLoops[i].area, projectedLoops[j].area);
-			if (minLoopArea <= 1e-12 || overlapArea < minLoopArea * 0.8) continue;
+				double minX = std::max(projectedLoops[i].bboxMin[0], projectedLoops[j].bboxMin[0]);
+				double minY = std::max(projectedLoops[i].bboxMin[1], projectedLoops[j].bboxMin[1]);
+				double maxX = std::min(projectedLoops[i].bboxMax[0], projectedLoops[j].bboxMax[0]);
+				double maxY = std::min(projectedLoops[i].bboxMax[1], projectedLoops[j].bboxMax[1]);
+				double overlapWidth = std::max(0.0, maxX - minX);
+				double overlapHeight = std::max(0.0, maxY - minY);
+				double overlapArea = overlapWidth * overlapHeight;
+				double minLoopArea = std::min(projectedLoops[i].area, projectedLoops[j].area);
+				if (minLoopArea <= 1e-12 || overlapArea < minLoopArea * 0.8) continue;
 
-			double separation = std::abs(glm::dot(loopB.planePoint - loopA.planePoint, loopA.planeNormal));
-			double transverseSpan = std::max({ projectedLoops[i].bboxMax[0] - projectedLoops[i].bboxMin[0],
-												projectedLoops[i].bboxMax[1] - projectedLoops[i].bboxMin[1],
-												projectedLoops[j].bboxMax[0] - projectedLoops[j].bboxMin[0],
-												projectedLoops[j].bboxMax[1] - projectedLoops[j].bboxMin[1] });
-			if (separation <= toleranceVectorEquality * 2.0) continue;
-			if (transverseSpan <= 1e-12) continue;
-			if (separation >= transverseSpan * 0.25) continue;
+				double separation = std::abs(glm::dot(loopB.planePoint - loopA.planePoint, loopA.planeNormal));
+				double transverseSpan = std::max({ projectedLoops[i].bboxMax[0] - projectedLoops[i].bboxMin[0],
+													projectedLoops[i].bboxMax[1] - projectedLoops[i].bboxMin[1],
+													projectedLoops[j].bboxMax[0] - projectedLoops[j].bboxMin[0],
+													projectedLoops[j].bboxMax[1] - projectedLoops[j].bboxMin[1] });
+				if (separation <= toleranceVectorEquality * 2.0) continue;
+				if (transverseSpan <= 1e-12) continue;
+				if (separation >= transverseSpan * 0.25) continue;
 
-			skipProjectedLoop[i] = true;
-			skipProjectedLoop[j] = true;
+				skipProjectedLoop[i] = true;
+				skipProjectedLoop[j] = true;
+			}
 		}
 	}
 
@@ -1947,7 +1975,7 @@ uint32_t meshCleanup::PatchCoplanarHoles(Geometry& geom, std::string step, const
 		auto infoPatched = meshCleanup::isMeshWatertight(geom);
 		const uint32_t addedPatchFaces = geom.numFaces - nFaces;
 
-		if (infoPatched.numOpenEdges < meshInfoInput.numOpenEdges) {
+		if (MeshPenaltyImprovedNoRegression(meshInfoInput, infoPatched)) {
 			meshInfoResult = infoPatched;
 			return addedPatchFaces;
 		}
@@ -2080,7 +2108,7 @@ uint32_t meshCleanup::RemoveThinMembranes(Geometry& workingMesh, std::string ste
 		}
 	}
 
-	constexpr double THIN_THRESHOLD = 1e-3;
+	constexpr double THIN_THRESHOLD = 5e-3;
 	constexpr double VOLUME_THRESHOLD = 1e-6;
 	std::vector<bool> thinMarked(nFaces, false);
 
@@ -2210,13 +2238,8 @@ uint32_t meshCleanup::RemoveThinMembranes(Geometry& workingMesh, std::string ste
 		return 0;
 	}
 
-	const uint32_t maxRemovedFaces = std::max<uint32_t>(24u, nFaces / 12);
-	if (thinCount > maxRemovedFaces) {
-		return 0;
-	}
-
 	const double areaLossRatio = totalAreaBefore > 1e-9 ? removedArea / totalAreaBefore : 0.0;
-	if (areaLossRatio > 0.03) {
+	if (areaLossRatio > 0.20) {
 		return 0;
 	}
 
@@ -2239,9 +2262,10 @@ uint32_t meshCleanup::RemoveThinMembranes(Geometry& workingMesh, std::string ste
 	}
 
 	const bool improvesTopology = TopologyStrictlyImprovedWithoutRegression(meshInfoInput, cleanedInfo);
+	const bool improvesPenalty = MeshPenaltyImprovedNoRegression(meshInfoInput, cleanedInfo);
 	const bool reducesNonManifold =
 		cleanedInfo.numNonManifoldEdges < meshInfoInput.numNonManifoldEdges;
-	if (!(improvesTopology || reducesNonManifold)) {
+	if (!(improvesTopology || improvesPenalty || reducesNonManifold)) {
 		return 0;
 	}
 
@@ -2299,14 +2323,18 @@ void meshCleanup::PostBooleanOperationMeshCleanup(fuzzybools::Geometry& input) {
 	if (infoEntry.watertight) return;
 
 	fuzzybools::Geometry working = input;
-	MeshInfo cur = infoEntry, next = cur;
+	MeshInfo cur = infoEntry;
 
-	RemoveDegeneratedTriangles(working, "p1", cur, next); cur = next;
-	RemoveDisconnectedFragments(working, "p2", cur, next); cur = next;
-	RemoveTinyBoundaryBridgeFaces(working, "p3", cur, next);
-	auto infoExit = next;
+	for (int iter = 0; iter < 2 && !cur.watertight; ++iter) {
+		MeshInfo next = cur;
+		RemoveDegeneratedTriangles(working, "p1", cur, next); cur = next;
+		RemoveDisconnectedFragments(working, "p2", cur, next); cur = next;
+		RemoveThinMembranes(working, "p3", cur, next); cur = next;
+		RemoveTinyBoundaryBridgeFaces(working, "p4", cur, next); cur = next;
+	}
 
-	if (TopologyStrictlyImproved(infoEntry, infoExit)) {
+	auto infoExit = cur;
+	if (MeshPenaltyImprovedNoRegression(infoEntry, infoExit)) {
 		input = std::move(working);
 		input.hasPlanes = false;
 	}

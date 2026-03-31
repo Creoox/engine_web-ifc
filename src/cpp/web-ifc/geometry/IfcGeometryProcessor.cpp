@@ -15,6 +15,7 @@
 #include "operations/geometryutils.h"
 #include "operations/curve-utils.h"
 #include "operations/mesh_utils.h"
+#include "operations/meshCleanup.h"
 #include "operations/boolean-utils/fuzzy-bools.h"
 
 namespace webifc::geometry
@@ -2207,14 +2208,18 @@ namespace webifc::geometry
     {
         fuzzybools::Geometry firstEngGeom = convertToEngine(firstOperator);
         fuzzybools::Geometry secondEngGeom = convertToEngine(secondOperator);
-        return convertToWebIfc(fuzzybools::Union(firstEngGeom, secondEngGeom));
+        fuzzybools::Geometry result = fuzzybools::Union(firstEngGeom, secondEngGeom);
+        meshCleanup::PostBooleanOperationMeshCleanup(result);
+        return convertToWebIfc(std::move(result));
     }
 
     IfcGeometry booleanManager::Subtract(IfcGeometry firstOperator, IfcGeometry secondOperator)
     {
         fuzzybools::Geometry firstEngGeom = convertToEngine(firstOperator);
         fuzzybools::Geometry secondEngGeom = convertToEngine(secondOperator);
-        return convertToWebIfc(fuzzybools::Subtract(firstEngGeom, secondEngGeom));
+        fuzzybools::Geometry result = fuzzybools::Subtract(firstEngGeom, secondEngGeom);
+        meshCleanup::PostBooleanOperationMeshCleanup(result);
+        return convertToWebIfc(std::move(result));
     }
 
     IfcGeometryProcessor *IfcGeometryProcessor::Clone(const webifc::parsing::IfcLoader &newLoader) const
