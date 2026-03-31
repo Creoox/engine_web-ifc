@@ -523,6 +523,13 @@ namespace fuzzybools
 		result.dir = glm::cross(norm1, norm2);
 		double det = glm::length(result.dir);
 
+		if (det < EPS_SMALL)
+		{
+			result.pos = glm::dvec3(0);
+			result.dir = glm::dvec3(0);
+			return result;
+		}
+
 		double det2 = glm::determinant(glm::dmat3(norm1, norm2, result.dir));
 		det *= det;
 		result.pos = ((glm::cross(result.dir, norm2) * -d1 +

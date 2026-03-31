@@ -31,19 +31,10 @@ using namespace fuzzybools;
 
 static std::filesystem::path g_debugDumpDirectory;
 
-namespace {
-	static uint64_t MeshPenaltyScore(const meshCleanup::MeshInfo& info) {
-		return static_cast<uint64_t>(info.numNonManifoldEdges) * 8ull +
-			static_cast<uint64_t>(info.numOpenEdges) * 2ull;
-	}
-
-	static bool MeshPenaltyImprovedNoRegression(const meshCleanup::MeshInfo& before,
-		const meshCleanup::MeshInfo& after) {
-		return after.numNonManifoldEdges <= before.numNonManifoldEdges &&
-			after.numOpenEdges <= before.numOpenEdges &&
-			MeshPenaltyScore(after) < MeshPenaltyScore(before);
-	}
-}
+// MeshPenaltyScore and MeshPenaltyImprovedNoRegression are now
+// inline in meshCleanup.h so they can be used from other translation units.
+using meshCleanup::MeshPenaltyScore;
+using meshCleanup::MeshPenaltyImprovedNoRegression;
 
 void meshCleanup::SetDebugDumpDirectory(const std::filesystem::path& dir) {
 	g_debugDumpDirectory = dir;
@@ -2161,7 +2152,7 @@ uint32_t meshCleanup::PatchCoplanarHoles(Geometry& geom, std::string step, const
 	}
 }
 
-uint32_t meshCleanup::RemoveThinMembranes(Geometry& workingMesh, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult) {
+uint32_t meshCleanup::RemoveThinMembranes(Geometry& workingMesh, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult, double thinThresholdOverride) {
 	meshInfoResult = meshInfoInput;
 
 	const Geometry baseMesh = workingMesh;
@@ -2277,7 +2268,7 @@ uint32_t meshCleanup::RemoveThinMembranes(Geometry& workingMesh, std::string ste
 		}
 	}
 
-	constexpr double THIN_THRESHOLD = 5e-3;
+	const double THIN_THRESHOLD = thinThresholdOverride > 0 ? thinThresholdOverride : 5e-3;
 	constexpr double VOLUME_THRESHOLD = 1e-6;
 	std::vector<bool> thinMarked(nFaces, false);
 
@@ -3184,16 +3175,14 @@ void meshCleanup::PostBooleanOperationMeshCleanup(fuzzybools::Geometry& input) {
 	MeshInfo cur = infoEntry;
 	const uint32_t maxAllowedFaces = input.numFaces * 3 / 2;
 
-	for (int iter = 0; iter < 2 && !cur.watertight; ++iter) {
+	for (int iter = 0; iter < 3 && !cur.watertight; ++iter) {
 		MeshInfo next = cur;
 		RemoveDegeneratedTriangles(working, "p1", cur, next); cur = next;
 		RemoveDisconnectedFragments(working, "p2", cur, next); cur = next;
 		RemoveThinMembranes(working, "p3", cur, next); cur = next;
 		RemoveTinyBoundaryBridgeFaces(working, "p4", cur, next); cur = next;
 
-		if (!cur.watertight &&
-			(cur.numOpenEdges > 150 || working.numFaces > 430) &&
-			working.numFaces <= maxAllowedFaces) {
+		if (!cur.watertight && working.numFaces <= maxAllowedFaces) {
 			Geometry beforeAdditive = working;
 			MeshInfo beforeAdditiveInfo = cur;
 			PatchCoplanarHoles(working, "p5", cur, next);
@@ -3204,6 +3193,10 @@ void meshCleanup::PostBooleanOperationMeshCleanup(fuzzybools::Geometry& input) {
 			else {
 				cur = next;
 			}
+		}
+
+		if (!cur.watertight && cur.numNonManifoldEdges > 0) {
+			RemoveOpposedEdgeMembranes(working, "p6", cur, next); cur = next;
 		}
 	}
 

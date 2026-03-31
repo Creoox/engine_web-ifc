@@ -1930,6 +1930,13 @@ namespace fuzzybools
                 // calculate plane intersection line
                 auto result = PlanePlaneIsect(planeA.normal, planeA.distance, planeB.normal, planeB.distance);
 
+                // Skip degenerate intersections (near-parallel planes that
+                // slipped through the dot-product check)
+                if (glm::length(result.dir) < EPS_SMALL)
+                {
+                    continue;
+                }
+
                 // TODO: invalid temp line object
                 Line intersectionLine;
                 intersectionLine.origin = result.pos;
