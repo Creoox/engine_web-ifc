@@ -1241,9 +1241,9 @@ uint32_t meshCleanup::PatchCoplanarHoles(Geometry& geom, std::string step, const
 		}
 	}
 
-	const double PLANE_EPS = 1e-5;
-	const double EDGE_LOOP_PLANE_EPS = std::max(PLANE_EPS * 4.0, toleranceVectorEquality * 2.0);
-	const double EDGE_LOOP_PLANE_DOT = 0.995;
+	const double PLANE_EPS = 5e-5;
+	const double EDGE_LOOP_PLANE_EPS = std::max(PLANE_EPS * 4.0, toleranceVectorEquality * 3.0);
+	const double EDGE_LOOP_PLANE_DOT = 0.985;
 
 	std::vector<std::vector<uint32_t>> loops;
 	std::vector<uint32_t> loopAdjacentFace;
@@ -1886,8 +1886,8 @@ uint32_t meshCleanup::PatchCoplanarHoles(Geometry& geom, std::string step, const
 		int depth = 0;
 	};
 
-	const double LOOP_PLANE_GROUP_EPS = std::max(PLANE_EPS * 4.0, toleranceVectorEquality * 2.0);
-	const double LOOP_PLANE_GROUP_DOT = 0.995;
+	const double LOOP_PLANE_GROUP_EPS = std::max(PLANE_EPS * 4.0, toleranceVectorEquality * 3.0);
+	const double LOOP_PLANE_GROUP_DOT = 0.985;
 
 	auto loopsArePlaneCompatible = [&](const LoopInfo& a, const LoopInfo& b) -> bool {
 		if (SelectProjectionAxis(a.planeNormal) != SelectProjectionAxis(b.planeNormal)) return false;
@@ -3173,7 +3173,7 @@ void meshCleanup::PostBooleanOperationMeshCleanup(fuzzybools::Geometry& input) {
 
 	fuzzybools::Geometry working = input;
 	MeshInfo cur = infoEntry;
-	const uint32_t maxAllowedFaces = input.numFaces * 3 / 2;
+	const uint32_t maxAllowedFaces = input.numFaces * 2;
 
 	for (int iter = 0; iter < 3 && !cur.watertight; ++iter) {
 		MeshInfo next = cur;
