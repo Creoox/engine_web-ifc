@@ -1155,7 +1155,6 @@ namespace fuzzybools
 
         void TriangulatePlane(Geometry &geom, Plane &p)
         {
-
             // grab all points on the plane
             auto pointsOnPlane = GetPointsOnPlane(p);
 
@@ -1590,10 +1589,8 @@ namespace fuzzybools
         {
             for (auto segB : lineB.GetSegments())
             {
-                // check isect A vs B
                 if (!p.HasOverlap(segA, segB))
                 {
-                    // no overlap, possibility of intersection
                     auto result = LineLineIntersection(
                         sp.points[segA.first].location3D,
                         sp.points[segA.second].location3D,
@@ -1602,35 +1599,25 @@ namespace fuzzybools
 
                     if (result.distance < SCALED_EPS_BIG)
                     {
-                        // intersection! Take center and insert
                         if (!p.aabb.contains(result.point1))
                         {
                             if (messages)
-                            {
                                 printf("bad points in AddLineLineIntersections\n");
-                            }
                             continue;
                         }
 
                         size_t point = sp.AddPoint((result.point1));
-
                         lineA.AddPointToLine(lineA.GetPosOnLine(sp.points[point].location3D), point);
                         lineB.AddPointToLine(lineB.GetPosOnLine(sp.points[point].location3D), point);
 
-                        // point falls on intersection of two lines, so is part of those lines and all planes of those lines
                         {
                             ReferenceLine ref;
                             ref.pointID = point;
                             ref.lineID = lineA.id;
                             ref.location = lineA.GetPosOnLine(result.point1);
                             sp.points[point].lines.push_back(ref);
-
-                            // TODO: FIX THIS POINT MIGHT NOT BE ON THE PLANE ACTUALLY
-
                             for (auto &plane : lineA.planes)
-                            {
                                 sp.AddRefPlaneToPoint(point, plane.planeID);
-                            }
                         }
                         {
                             ReferenceLine ref;
@@ -1638,11 +1625,8 @@ namespace fuzzybools
                             ref.lineID = lineB.id;
                             ref.location = lineB.GetPosOnLine(result.point2);
                             sp.points[point].lines.push_back(ref);
-
                             for (auto &plane : lineB.planes)
-                            {
                                 sp.AddRefPlaneToPoint(point, plane.planeID);
-                            }
                         }
                     }
                 }
@@ -1652,10 +1636,25 @@ namespace fuzzybools
 
     inline void AddLineLineIsects(Plane &p, SharedPosition &sp)
     {
-        for (size_t lineAIndex = 0; lineAIndex < p.lines.size(); lineAIndex++)
+        const size_t total = p.lines.size();
+
+        // Pre-compute line bounding boxes for spatial pre-filter.
+        // Lines whose AABBs don't overlap cannot have intersecting segments.
+        std::vector<AABB> lineAABBs(total);
+        for (size_t i = 0; i < total; i++) {
+            auto &line = p.lines[i];
+            if (line.points.size() >= 2) {
+                Vec3 dir = glm::normalize(line.direction);
+                lineAABBs[i].merge(line.origin + line.points.front().first * dir);
+                lineAABBs[i].merge(line.origin + line.points.back().first * dir);
+            }
+        }
+
+        for (size_t lineAIndex = 0; lineAIndex < total; lineAIndex++)
         {
-            for (size_t lineBIndex = lineAIndex + 1; lineBIndex < p.lines.size(); lineBIndex++)
+            for (size_t lineBIndex = lineAIndex + 1; lineBIndex < total; lineBIndex++)
             {
+                if (!lineAABBs[lineAIndex].intersects(lineAABBs[lineBIndex])) continue;
                 AddLineLineIntersections(p, sp, p.lines[lineAIndex], p.lines[lineBIndex]);
             }
         }

@@ -26,4 +26,7 @@ namespace meshCleanup
 	uint32_t RemoveTinyBoundaryBridgeFaces(fuzzybools::Geometry& input, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult);
 
 	void PostBooleanOperationMeshCleanup(fuzzybools::Geometry& input);
+	void FullMeshCleanup(fuzzybools::Geometry& input);
+	void DumpDebugGeometry(const fuzzybools::Geometry& geom, const std::string& filename);
+	void removeTempFiles();
 }

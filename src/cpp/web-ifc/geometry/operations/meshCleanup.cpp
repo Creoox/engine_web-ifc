@@ -19,10 +19,10 @@
 #include <web-ifc/geometry/operations/boolean-utils/shared-position.h>
 #include <web-ifc/geometry/operations/meshCleanup.h>
 #include <web-ifc/geometry/IfcGeometryProcessor.h>
+#include "../../test/io_helpers.h"
 
 #if defined(_DEBUG)
 #define DUMP_CSG_MESHES
-#include "../../test/io_helpers.h"
 #include "../../test/dumpToThree.h"
 #endif
 
@@ -35,7 +35,6 @@ namespace meshCleanup {
 		g_debugDumpDirectory = dir;
 	}
 
-#ifdef DUMP_CSG_MESHES
 	static std::filesystem::path BuildDebugDumpPath(const std::string& filename) {
 		if (g_debugDumpDirectory.empty()) {
 			return std::filesystem::path(filename);
@@ -43,6 +42,16 @@ namespace meshCleanup {
 		return g_debugDumpDirectory / filename;
 	}
 
+	void DumpDebugGeometry(const fuzzybools::Geometry& geom, const std::string& filename) {
+		if (g_debugDumpDirectory.empty()) return;
+		std::error_code ec;
+		std::filesystem::create_directories(g_debugDumpDirectory, ec);
+		webifc::geometry::IfcGeometry webifcGeom = webifc::geometry::booleanManager::convertToWebIfc(geom);
+		std::string filenameWithPath = BuildDebugDumpPath(filename).string();
+		webifc::io::DumpIfcGeometry(webifcGeom, filenameWithPath);
+	}
+
+#ifdef DUMP_CSG_MESHES
 	static void DumpDebugGeometry(const webifc::geometry::IfcGeometry& geom, const std::string& filename) {
 		if (!g_debugDumpDirectory.empty()) {
 			std::error_code ec;
@@ -50,11 +59,6 @@ namespace meshCleanup {
 		}
 		std::string filenameWithPath = BuildDebugDumpPath(filename).string();
 		webifc::io::DumpIfcGeometry(geom, filenameWithPath);
-	}
-
-	static void DumpDebugGeometry(const fuzzybools::Geometry& geom, const std::string& filename) {
-		webifc::geometry::IfcGeometry inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(geom);
-		DumpDebugGeometry(inputWebIfc, filename);
 	}
 #endif
 
@@ -2310,11 +2314,34 @@ namespace meshCleanup {
 	}
 
 	size_t cleanUpCallCount = 0;
-	constexpr uint32_t kMaxCleanupFaces = 1000;
-	// Post-boolean cleanup
+	constexpr uint32_t kMaxCleanupFaces = 2000;
+	// Post-boolean cleanup -- lightweight, subtractive only.
+	// Called after each Subtract/Union. Only removes bad faces, never adds.
 	void PostBooleanOperationMeshCleanup(fuzzybools::Geometry& input) {
+		if (input.numFaces == 0 || input.numFaces > kMaxCleanupFaces) return;
+		auto infoEntry = isMeshWatertight(input);
+		if (infoEntry.watertight) return;
 
-		//return;  // test
+		fuzzybools::Geometry working = input;
+		MeshInfo cur = infoEntry, next = cur;
+
+		RemoveDegeneratedTriangles(working, "p1", cur, next); cur = next;
+		RemoveDisconnectedFragments(working, "p2", cur, next); cur = next;
+		RemoveTinyBoundaryBridgeFaces(working, "p3", cur, next);
+		auto infoExit = next;
+
+		if (TopologyStrictlyImproved(infoEntry, infoExit)) {
+			input = std::move(working);
+			input.hasPlanes = false;
+		}
+	}
+
+	// Full cleanup pipeline -- called once per element before export.
+	// Includes additive operations (T-junctions, hole patching).
+	// Has face growth guard: if any step causes face count to exceed
+	// 1.5x the original, the cleanup is reverted.
+	void FullMeshCleanup(fuzzybools::Geometry& input) {
+		const uint32_t maxAllowedFaces = input.numFaces * 3 / 2; // 1.5x guard
 
 
 		struct CleanupMeshCounts {
@@ -2371,33 +2398,35 @@ namespace meshCleanup {
 		changeCounts.removedMembraneFaces =
 			RemoveThinMembranes(workingMesh, "3", meshInfoBeforeRemoveThinMembranes, meshInfoAfterRemoveThinMembranes);
 
-		// 4: patch coplanar holes after membrane cleanup
-		MeshInfo meshInfoBeforePatchCoplanarHoles = meshInfoAfterRemoveThinMembranes;
-		MeshInfo meshInfoAfterPatchCoplanarHoles = meshInfoAfterRemoveThinMembranes;
-		changeCounts.patchedHoleFacesPass1 =
-			PatchCoplanarHoles(workingMesh, "4", meshInfoBeforePatchCoplanarHoles, meshInfoAfterPatchCoplanarHoles);
-#ifdef DUMP_CSG_MESHES
-		if (changeCounts.patchedHoleFacesPass1 > 0) {
-			DumpDebugGeometry(workingMesh, "meshCleanup4-patched.obj");
-		}
-#endif
+		// Additive steps (4-6) with face-growth rollback.
+		// If any step causes faces to exceed 1.5x original, revert ALL additive work.
+		{
+			const fuzzybools::Geometry meshBeforeAdditive = workingMesh;
 
-		// 5: resolve T-junctions
-		MeshInfo meshInfoBeforeResolveTJunctions = meshInfoAfterPatchCoplanarHoles;
-		MeshInfo meshInfoAfterResolveTJunctions = meshInfoAfterPatchCoplanarHoles;
-		changeCounts.resolvedTJunctionFaces =
-			ResolveTJunctions(workingMesh, "5", meshInfoBeforeResolveTJunctions, meshInfoAfterResolveTJunctions);
+			// 4: patch coplanar holes
+			MeshInfo info4 = meshInfoAfterRemoveThinMembranes;
+			PatchCoplanarHoles(workingMesh, "4", meshInfoAfterRemoveThinMembranes, info4);
 
-		// 6: PatchCoplanarHoles re-run
-		MeshInfo meshInfoBeforePatchCoplanarHoles2 = meshInfoAfterResolveTJunctions;
-		MeshInfo meshInfoAfterPatchCoplanarHoles2 = meshInfoAfterResolveTJunctions;
-		changeCounts.patchedHoleFacesPass2 =
-			PatchCoplanarHoles(workingMesh, "6", meshInfoBeforePatchCoplanarHoles2, meshInfoAfterPatchCoplanarHoles2);
-#ifdef DUMP_CSG_MESHES
-		if (changeCounts.patchedHoleFacesPass2 > 0) {
-			DumpDebugGeometry(workingMesh, "meshCleanup6-patched.obj");
+			if (workingMesh.numFaces <= maxAllowedFaces) {
+				// 5: resolve T-junctions
+				MeshInfo info5 = info4;
+				ResolveTJunctions(workingMesh, "5", info4, info5);
+
+				if (workingMesh.numFaces <= maxAllowedFaces) {
+					// 6: PatchCoplanarHoles re-run
+					MeshInfo info6 = info5;
+					PatchCoplanarHoles(workingMesh, "6", info5, info6);
+				}
+			}
+
+			// Rollback if faces exploded
+			if (workingMesh.numFaces > maxAllowedFaces) {
+				workingMesh = meshBeforeAdditive;
+			}
 		}
-#endif
+
+		// Update info for steps 7-8
+		MeshInfo meshInfoAfterPatchCoplanarHoles2 = isMeshWatertight(workingMesh);
 
 		// 7: final sliver cleanup for tiny crack-producing triangles that can
 		// survive or be created by the previous repair passes.

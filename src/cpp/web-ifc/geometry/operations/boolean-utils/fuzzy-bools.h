@@ -3,6 +3,7 @@
 #include "geometry.h"
 #include "shared-position.h"
 #include "clip-mesh.h"
+#include <web-ifc/geometry/operations/meshCleanup.h>
 
 namespace fuzzybools
 {
