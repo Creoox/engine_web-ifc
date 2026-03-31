@@ -16,6 +16,21 @@ namespace meshCleanup
 		uint32_t numFaces = 0;
 	};
 
+	static inline bool TopologyStrictlyImproved(const MeshInfo& before, const MeshInfo& after) {  // keep this here!
+		return after.numNonManifoldEdges < before.numNonManifoldEdges ||
+			(after.numNonManifoldEdges == before.numNonManifoldEdges &&
+				after.numOpenEdges < before.numOpenEdges);
+	}
+	static inline bool TopologyNotWorse(const MeshInfo& before, const MeshInfo& after) {  // keep this here!
+		return after.numNonManifoldEdges <= before.numNonManifoldEdges &&
+			after.numOpenEdges <= before.numOpenEdges;
+	}
+	static inline bool TopologyStrictlyImprovedWithoutRegression(const MeshInfo& before, const MeshInfo& after) {  // keep this here!
+		return TopologyNotWorse(before, after) &&
+			(after.numNonManifoldEdges < before.numNonManifoldEdges ||
+				after.numOpenEdges < before.numOpenEdges);
+	}
+
 	MeshInfo isMeshWatertight(const fuzzybools::Geometry& geom);
 	void SetDebugDumpDirectory(const std::filesystem::path& dir);
 
@@ -24,9 +39,9 @@ namespace meshCleanup
 	uint32_t ResolveTJunctions(fuzzybools::Geometry& input, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult);
 	uint32_t PatchCoplanarHoles(fuzzybools::Geometry& input, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult);
 	uint32_t RemoveTinyBoundaryBridgeFaces(fuzzybools::Geometry& input, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult);
+	uint32_t RemoveThinMembranes(fuzzybools::Geometry& input, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult);
 
 	void PostBooleanOperationMeshCleanup(fuzzybools::Geometry& input);
-	void FullMeshCleanup(fuzzybools::Geometry& input);
 	void DumpDebugGeometry(const fuzzybools::Geometry& geom, const std::string& filename);
 	void removeTempFiles();
 }
