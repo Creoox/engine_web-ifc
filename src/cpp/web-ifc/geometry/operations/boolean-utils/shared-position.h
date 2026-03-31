@@ -180,6 +180,10 @@ namespace fuzzybools
             return true;
         }
 
+        /*
+            Insert a point (identified by id) at the given distance along the line,
+            maintaining sorted order by distance. Duplicate point ids are ignored.
+        */
         void AddPointToLine(double dist, size_t id)
         {
             // check existing
@@ -196,6 +200,11 @@ namespace fuzzybools
             points.insert(it, std::make_pair(dist, id));
         }
 
+        /*
+            Return a lazy view of consecutive point-pair segments along the line.
+            Each segment is a pair (pointId_i, pointId_{i+1}) derived from the
+            sorted points list.
+        */
         auto GetSegments() const
         {
             const auto makeSegments = [&](int i)
@@ -279,6 +288,13 @@ namespace fuzzybools
             return glm::normalize(dir);
         }
 
+        /*
+            Add a line defined by two Points to this plane. If an equivalent line
+            already exists (same direction and coincident), it is reused. Both
+            points are registered on the line at their projected distances.
+            Returns the line's index and whether a new line was created (true)
+            or an existing one was reused (false).
+        */
         std::pair<size_t, bool> AddLine(const Point &a, const Point &b)
         {
             Vec3 pos = a.location3D;
@@ -322,6 +338,12 @@ namespace fuzzybools
             return lineId;
         }
 
+        /*
+            Add a line defined by a position and direction vector to this plane.
+            If an equivalent line already exists, returns its index with false.
+            Otherwise creates a new line (normalizing the direction) and returns
+            its index with true.
+        */
         std::pair<size_t, bool> AddLine(const Vec3 &pos, const Vec3 &dir)
         {
             for (auto &line : lines)
@@ -364,6 +386,11 @@ namespace fuzzybools
             return (A.first == B.first || A.first == B.second || A.second == B.first || A.second == B.second);
         }
 
+        /*
+            Associate point p with every line on this plane that it lies on.
+            For each matching line, a ReferenceLine entry is added to the point,
+            recording the line id and the point's projected distance along it.
+        */
         void PutPointOnLines(Point &p)
         {
             for (auto &l : lines)
@@ -390,6 +417,13 @@ namespace fuzzybools
             return equals(distance, d, toleranceVectorEquality);
         }
 
+        /*
+            Construct an orthonormal 2D coordinate basis on the plane surface.
+            The origin is the closest point on the plane to the world origin.
+            The 'left' and 'right' axes span the plane and are perpendicular
+            to the plane normal. Used for projecting 3D points onto the plane
+            for 2D triangulation.
+        */
         PlaneBasis MakeBasis()
         {
             glm::dvec3 origin = normal * distance;
@@ -473,6 +507,12 @@ namespace fuzzybools
         std::map<size_t, std::vector<std::pair<size_t, size_t>>> planeSegments;
         std::map<size_t, std::map<std::pair<size_t, size_t>, size_t>> planeSegmentCounts;
 
+        /*
+            Register an edge segment (a, b) associated with the given plane.
+            The segment is stored in canonical order (smaller id first) and its
+            occurrence count is incremented -- used later to distinguish boundary
+            edges (count == 1) from interior edges (count == 2).
+        */
         void AddSegment(size_t planeId, size_t a, size_t b)
         {
             if (a == b)
@@ -493,6 +533,10 @@ namespace fuzzybools
             planeSegmentCounts[planeId][seg]++;
         }
 
+        /*
+            Register a triangle face (a, b, c) by adding its three edges as
+            segments and storing the triangle in the triangles list.
+        */
         void AddFace(size_t planeId, size_t a, size_t b, size_t c)
         {
             AddSegment(planeId, a, b);
@@ -558,6 +602,11 @@ namespace fuzzybools
             return returnTriangles;
         }
 
+        /*
+            Check whether the mesh is manifold: every edge must be shared by
+            exactly 2 triangles. Returns true if no boundary or non-manifold
+            edges exist.
+        */
         bool IsManifold()
         {
             std::vector<std::pair<size_t, size_t>> contours;
@@ -573,6 +622,12 @@ namespace fuzzybools
             return contours.empty();
         }
 
+        /*
+            Return the boundary (contour) edges grouped by plane id.
+            A contour edge is one that appears exactly once in a given plane's
+            segment set -- i.e. it borders only one triangle and thus lies on
+            the mesh boundary.
+        */
         std::map<size_t, std::vector<std::pair<size_t, size_t>>> GetContourSegments()
         {
             std::map<size_t, std::vector<std::pair<size_t, size_t>>> contours;
@@ -612,7 +667,13 @@ namespace fuzzybools
 
         std::unordered_map<std::tuple<int64_t, int64_t, int64_t>, std::vector<size_t>> pointGrid;
 
-        //      assumes all triangleIds are connected to base with an edge and are flipped correctly
+        /*
+            Given a base triangle and a set of candidate triangle ids (all sharing
+            an edge with the base and correctly oriented), select the triangle whose
+            surface normal is most "upward" relative to the base. This is used during
+            winding-order propagation to pick the best neighbour to orient next.
+            Returns the id of the selected triangle.
+        */
         size_t FindUppermostTriangleId(Triangle &base, const std::vector<size_t> &triangleIds)
         {
             if (triangleIds.size() == 1)
@@ -681,6 +742,12 @@ namespace fuzzybools
             ON
         };
 
+        /*
+            Classify the position of a point relative to a triangle's plane.
+            Returns ABOVE if the point is on the positive-normal side, BELOW if
+            on the negative side, or ON if the point lies (within tolerance)
+            on the triangle's plane.
+        */
         TriangleVsPoint CalcTriPt(Triangle &T, size_t point)
         {
             auto norm = GetNormal(T);
@@ -695,7 +762,13 @@ namespace fuzzybools
             return TriangleVsPoint::BELOW;
         }
 
-        // simplify, see FindUppermostTriangleId
+        /*
+            Determine whether a neighbouring triangle's winding order must be
+            flipped to be consistent with triangle T. Uses the relative positions
+            of the non-shared vertices: if E (neighbour's unique vertex) is above T,
+            then A (T's unique vertex) should be above the neighbour, and vice versa.
+            Returns true if the neighbour needs to be flipped.
+        */
         bool ShouldFlip(Triangle &T, Triangle &neighbour)
         {
             /*
@@ -743,6 +816,10 @@ namespace fuzzybools
             }
         }
 
+        /*
+            Compute the unit normal of a triangle using its three vertex positions.
+            Falls back to a default direction if the triangle is degenerate.
+        */
         Vec3 GetNormal(Triangle &tri)
         {
             Vec3 temp(-1.0, -1.0, -1.0);
@@ -756,6 +833,13 @@ namespace fuzzybools
             return A;
         }
 
+        /*
+            Add a 3D point to the shared point set with spatial-hash deduplication.
+            A uniform grid (cell size = toleranceVectorEquality) is used so that
+            only the 27 neighbouring cells need to be checked for existing matches.
+            If an existing point within tolerance is found, its id is returned;
+            otherwise a new point is created and inserted into the grid.
+        */
         size_t AddPoint(const Vec3& newPoint)
         {
             // 1. Compute the grid cell for the query point
@@ -806,6 +890,12 @@ namespace fuzzybools
             return p.id;
         }
 
+        /*
+            Add a plane (defined by its normal and signed distance from the origin)
+            to the shared plane set. If a plane with the same reference id or
+            equivalent (normal, distance) already exists, its id is returned.
+            Otherwise a new plane is created with the normal normalized.
+        */
         size_t AddPlane(const Vec3 &normal, double d, uint32_t refId)
         {
             for (auto &plane : planes)
@@ -826,6 +916,12 @@ namespace fuzzybools
             return p.id;
         }
 
+        /*
+            Main entry point: populate the SharedPosition from two input geometries.
+            Each geometry's faces are filtered by AABB overlap with the other and
+            their planes, points, and segments are inserted into the shared set.
+            isUnion controls how irrelevant (non-overlapping) faces are handled later.
+        */
         void Construct(const Geometry &A, const Geometry &B, bool isUnion)
         {
             auto boxA = A.GetAABB();
@@ -838,6 +934,15 @@ namespace fuzzybools
             _linkedB = &B;
         }
 
+        /*
+            Process one input geometry's faces into the shared position.
+            For each face, check AABB overlap with the other geometry's bounding
+            box and individual face boxes. Faces that don't overlap are classified
+            as "irrelevant" (fully outside) or "irrelevant_toTest" (no face-face
+            contact but within the other's bounds). Overlapping faces have their
+            planes, points, and segments added to the shared set, and a BVH is
+            built over the relevant faces for later inside/outside queries.
+        */
         void AddGeometry(const Geometry &geom, const Geometry &secondGeom, const AABB &relevantBounds, bool isA, bool isUnion, uint32_t offsetPlane)
         {
 #ifdef CSG_DEBUG_OUTPUT
@@ -1025,7 +1130,14 @@ namespace fuzzybools
             return cp;
         }
 
-        // pair of lineID, distance
+        /*
+            Given two sorted lists of intersection distances along a shared line
+            (one per plane), compute the overlapping segments. The overlap region
+            is [max(a_first, b_first), min(a_last, b_last)]. All distances from
+            both lists that fall in this range are merged and sorted, then
+            consecutive pairs form the output segments.
+            Returns a list of (start_distance, end_distance) pairs.
+        */
         std::vector<std::pair<double, double>> BuildSegments(const std::vector<double> &a, const std::vector<double> &b) const
         {
             if (a.size() == 0 || b.size() == 0)
@@ -1079,6 +1191,13 @@ namespace fuzzybools
             return result;
         }
 
+        /*
+            Merge a line's segments into a sorted, non-overlapping chain of
+            point-id pairs. All segment endpoints are collected, sorted by their
+            distance along the line, and then consecutive distinct points form
+            the output segments. This fills gaps between segments -- those gaps
+            are removed later during inside/outside classification.
+        */
         std::vector<std::pair<size_t, size_t>> GetNonIntersectingSegments(Line &l)
         {
             std::vector<std::pair<size_t, double>> pointsInOrder;
@@ -1153,6 +1272,15 @@ namespace fuzzybools
             return segmentsWithoutIntersections;
         }
 
+        /*
+            Re-triangulate a plane using Constrained Delaunay Triangulation (CDT).
+            All points on the plane are projected onto its 2D basis, and line
+            segments become constrained edges. After triangulation, each candidate
+            triangle is tested against both meshes' BVHs (isInsideMesh) and the
+            projected boundary (isInsideBoundary) to determine whether it belongs
+            to the intersection region. Only triangles that lie on the boundary
+            of at least one mesh are added to the output geometry.
+        */
         void TriangulatePlane(Geometry &geom, Plane &p)
         {
             // grab all points on the plane
@@ -1427,6 +1555,13 @@ namespace fuzzybools
         }
     };
 
+    /*
+        Insert intersection segments into a plane's line structure.
+        For each (start, end) distance pair on templine, the corresponding 3D
+        points are added to the shared position and registered on the plane's
+        matching (or newly created) line. Note: templine and the plane's line
+        may differ because AddLine can return an equivalent but non-identical line.
+    */
     inline void AddSegments(Plane &p, SharedPosition &sp, Line &templine, const std::vector<std::pair<double, double>> &segments)
     {
         // NOTE: this is a design flaw, the addline may return a line that is
@@ -1501,6 +1636,13 @@ namespace fuzzybools
         }
     }
 
+    /*
+        Compute all intersection distances of a candidate line (lineA) with the
+        existing segments on a plane. A very long ray along lineA is tested against
+        every non-collinear segment on the plane. The resulting intersection
+        distances (projected onto lineA) are sorted and deduplicated.
+        Returns a sorted vector of distances along lineA.
+    */
     inline std::vector<double> ComputeInitialIntersections(Plane &p, SharedPosition &sp, const Line &lineA)
     {
         double size = 1.0E+08; // TODO: this is bad
@@ -1583,6 +1725,13 @@ namespace fuzzybools
         return distances;
     }
 
+    /*
+        Find intersection points between all segment pairs of two lines on a plane.
+        For each pair of non-overlapping segments (one from lineA, one from lineB),
+        compute their closest-approach point. If the distance is below tolerance,
+        the intersection point is added to the shared position and registered on
+        both lines and their associated planes.
+    */
     inline void AddLineLineIntersections(Plane &p, SharedPosition &sp, Line &lineA, Line &lineB)
     {
         for (auto segA : lineA.GetSegments())
@@ -1634,6 +1783,12 @@ namespace fuzzybools
         }
     }
 
+    /*
+        Compute all pairwise line-line intersections on a plane.
+        An AABB is pre-computed for each line's extent so that pairs whose
+        bounding boxes don't overlap are skipped, avoiding unnecessary
+        segment-vs-segment tests.
+    */
     inline void AddLineLineIsects(Plane &p, SharedPosition &sp)
     {
         const size_t total = p.lines.size();
@@ -1660,6 +1815,21 @@ namespace fuzzybools
         }
     }
 
+    /*
+        Top-level CSG merging algorithm. Given two input geometries already loaded
+        into a SharedPosition (via Construct), this function:
+          1. Extracts boundary contour edges from both meshes and adds them as
+             lines on their respective planes.
+          2. Associates all points with the planes and lines they lie on.
+          3. Computes all line-line intersections within each plane.
+          4. Intersects every pair of non-parallel, overlapping planes to produce
+             new intersection lines and shared segments.
+          5. Recomputes line-line intersections after the new lines are added.
+          6. Re-triangulates each plane via Constrained Delaunay Triangulation,
+             keeping only triangles that lie on a mesh boundary.
+          7. Re-adds irrelevant (non-overlapping) faces from both inputs.
+        Returns the merged Geometry ready for inside/outside classification.
+    */
     inline Geometry Normalize(const Geometry &A, const Geometry &B, SharedPosition &sp, bool UNION)
     {
 
