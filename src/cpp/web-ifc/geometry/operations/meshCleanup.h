@@ -40,6 +40,7 @@ namespace meshCleanup
 	uint32_t PatchCoplanarHoles(fuzzybools::Geometry& input, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult);
 	uint32_t RemoveTinyBoundaryBridgeFaces(fuzzybools::Geometry& input, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult);
 	uint32_t RemoveThinMembranes(fuzzybools::Geometry& input, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult);
+	uint32_t RemoveOpposedEdgeMembranes(fuzzybools::Geometry& input, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult);
 
 	void PostBooleanOperationMeshCleanup(fuzzybools::Geometry& input);
 	void DumpDebugGeometry(const fuzzybools::Geometry& geom, const std::string& filename);

@@ -1229,6 +1229,7 @@ uint32_t meshCleanup::PatchCoplanarHoles(Geometry& geom, std::string step, const
 	struct BoundaryEdge { uint32_t v0, v1; uint32_t faceIdx; };
 	std::vector<BoundaryEdge> boundaryEdges;
 	std::unordered_map<uint32_t, std::vector<uint32_t>> boundaryAdj;
+	std::unordered_map<uint32_t, std::vector<size_t>> boundaryVertEdges;
 	auto dirEdgeKey = [](uint32_t from, uint32_t to) -> uint64_t {
 		return (static_cast<uint64_t>(from) << 32) | static_cast<uint64_t>(to);
 	};
@@ -1240,13 +1241,18 @@ uint32_t meshCleanup::PatchCoplanarHoles(Geometry& geom, std::string step, const
 	for (auto& [ek, fl] : edgeFaces) {
 		if (fl.size() == 1) {
 			boundaryEdges.push_back({ ek.v0, ek.v1, fl[0] });
+			size_t boundaryEdgeIdx = boundaryEdges.size() - 1;
 			boundaryAdj[ek.v0].push_back(ek.v1);
 			boundaryAdj[ek.v1].push_back(ek.v0);
+			boundaryVertEdges[ek.v0].push_back(boundaryEdgeIdx);
+			boundaryVertEdges[ek.v1].push_back(boundaryEdgeIdx);
 			boundaryEdgeFace[undirectedEdgeKey(ek.v0, ek.v1)] = fl[0];
 		}
 	}
 
 	const double PLANE_EPS = 1e-5;
+	const double EDGE_LOOP_PLANE_EPS = std::max(PLANE_EPS * 4.0, toleranceVectorEquality * 2.0);
+	const double EDGE_LOOP_PLANE_DOT = 0.995;
 
 	std::vector<std::vector<uint32_t>> loops;
 	std::vector<uint32_t> loopAdjacentFace;
@@ -1314,6 +1320,168 @@ uint32_t meshCleanup::PatchCoplanarHoles(Geometry& geom, std::string step, const
 		std::vector<uint32_t> reversed(cycle.rbegin(), cycle.rend());
 		consider(reversed);
 		return best;
+	};
+
+	auto facesArePlaneCompatible = [&](uint32_t faceAIdx, uint32_t faceBIdx) -> bool {
+		const FaceInfo& faceA = faces[faceAIdx];
+		const FaceInfo& faceB = faces[faceBIdx];
+		if (std::abs(glm::dot(faceA.normal, faceB.normal)) < EDGE_LOOP_PLANE_DOT) {
+			return false;
+		}
+		double planeDist = std::abs(glm::dot(
+			canonPos[faceB.vid[0]] - canonPos[faceA.vid[0]],
+			faceA.normal));
+		return planeDist <= EDGE_LOOP_PLANE_EPS;
+	};
+
+	auto extractPlaneLocalLoops = [&](const std::unordered_set<uint32_t>& subSet) {
+		std::unordered_set<size_t> eligibleEdges;
+		for (size_t edgeIdx = 0; edgeIdx < boundaryEdges.size(); ++edgeIdx) {
+			const BoundaryEdge& be = boundaryEdges[edgeIdx];
+			if (!subSet.count(be.v0) || !subSet.count(be.v1)) continue;
+			eligibleEdges.insert(edgeIdx);
+		}
+		if (eligibleEdges.empty()) {
+			return;
+		}
+
+		std::unordered_set<size_t> visitedPlaneEdges;
+		for (size_t seedEdgeIdx : eligibleEdges) {
+			if (visitedPlaneEdges.count(seedEdgeIdx)) continue;
+
+			std::vector<size_t> groupedEdges;
+			std::queue<size_t> edgeQueue;
+			edgeQueue.push(seedEdgeIdx);
+			visitedPlaneEdges.insert(seedEdgeIdx);
+
+			while (!edgeQueue.empty()) {
+				size_t edgeIdx = edgeQueue.front();
+				edgeQueue.pop();
+				groupedEdges.push_back(edgeIdx);
+
+				const BoundaryEdge& edge = boundaryEdges[edgeIdx];
+				for (uint32_t vid : { edge.v0, edge.v1 }) {
+					auto itTouching = boundaryVertEdges.find(vid);
+					if (itTouching == boundaryVertEdges.end()) continue;
+					for (size_t nbEdgeIdx : itTouching->second) {
+						if (!eligibleEdges.count(nbEdgeIdx) || visitedPlaneEdges.count(nbEdgeIdx)) continue;
+						if (!facesArePlaneCompatible(edge.faceIdx, boundaryEdges[nbEdgeIdx].faceIdx)) continue;
+						visitedPlaneEdges.insert(nbEdgeIdx);
+						edgeQueue.push(nbEdgeIdx);
+					}
+				}
+			}
+
+			if (groupedEdges.size() < 3) continue;
+
+			std::unordered_map<uint32_t, std::vector<uint32_t>> localAdj;
+			std::unordered_set<uint32_t> localVerts;
+			for (size_t edgeIdx : groupedEdges) {
+				const BoundaryEdge& edge = boundaryEdges[edgeIdx];
+				localAdj[edge.v0].push_back(edge.v1);
+				localAdj[edge.v1].push_back(edge.v0);
+				localVerts.insert(edge.v0);
+				localVerts.insert(edge.v1);
+			}
+
+			std::unordered_map<uint32_t, int> localDegree;
+			std::queue<uint32_t> pruneQueue;
+			std::unordered_set<uint32_t> prunedVerts;
+			for (uint32_t vid : localVerts) {
+				int deg = static_cast<int>(localAdj[vid].size());
+				localDegree[vid] = deg;
+				if (deg < 2) {
+					pruneQueue.push(vid);
+				}
+			}
+
+			while (!pruneQueue.empty()) {
+				uint32_t vid = pruneQueue.front();
+				pruneQueue.pop();
+				if (!prunedVerts.insert(vid).second) continue;
+				for (uint32_t nb : localAdj[vid]) {
+					if (prunedVerts.count(nb)) continue;
+					int& deg = localDegree[nb];
+					if (--deg < 2) {
+						pruneQueue.push(nb);
+					}
+				}
+			}
+
+			std::unordered_set<uint32_t> coreVisited;
+			for (uint32_t startVid : localVerts) {
+				if (prunedVerts.count(startVid) || coreVisited.count(startVid)) continue;
+
+				std::vector<uint32_t> coreVerts;
+				std::queue<uint32_t> coreQueue;
+				coreQueue.push(startVid);
+				coreVisited.insert(startVid);
+				bool allDegreeTwo = true;
+
+				while (!coreQueue.empty()) {
+					uint32_t vid = coreQueue.front();
+					coreQueue.pop();
+					coreVerts.push_back(vid);
+
+					int liveDegree = 0;
+					for (uint32_t nb : localAdj[vid]) {
+						if (prunedVerts.count(nb)) continue;
+						++liveDegree;
+						if (coreVisited.insert(nb).second) {
+							coreQueue.push(nb);
+						}
+					}
+					if (liveDegree != 2) {
+						allDegreeTwo = false;
+					}
+				}
+
+				if (!allDegreeTwo || coreVerts.size() < 3) continue;
+
+				uint32_t loopStart = *std::min_element(coreVerts.begin(), coreVerts.end());
+				std::vector<uint32_t> neighbors;
+				for (uint32_t nb : localAdj[loopStart]) {
+					if (prunedVerts.count(nb)) continue;
+					neighbors.push_back(nb);
+				}
+				if (neighbors.size() != 2) continue;
+
+				std::vector<uint32_t> orderedLoop;
+				bool foundLoop = false;
+				for (uint32_t firstNext : neighbors) {
+					orderedLoop.clear();
+					orderedLoop.push_back(loopStart);
+					uint32_t prev = loopStart;
+					uint32_t cur = firstNext;
+
+					for (size_t safety = 0; safety <= coreVerts.size(); ++safety) {
+						orderedLoop.push_back(cur);
+						if (cur == loopStart) break;
+
+						std::vector<uint32_t> nextCandidates;
+						for (uint32_t nb : localAdj[cur]) {
+							if (prunedVerts.count(nb) || nb == prev) continue;
+							nextCandidates.push_back(nb);
+						}
+						if (nextCandidates.size() != 1) break;
+
+						prev = cur;
+						cur = nextCandidates.front();
+					}
+
+					if (orderedLoop.size() == coreVerts.size() + 1 && orderedLoop.back() == loopStart) {
+						orderedLoop.pop_back();
+						foundLoop = true;
+						break;
+					}
+				}
+
+				if (!foundLoop) continue;
+
+				loops.push_back(std::move(orderedLoop));
+				loopAdjacentFace.push_back(boundaryEdges[groupedEdges.front()].faceIdx);
+			}
+		}
 	};
 
 	std::unordered_set<uint32_t> visitedBoundaryVerts;
@@ -1551,6 +1719,7 @@ uint32_t meshCleanup::PatchCoplanarHoles(Geometry& geom, std::string step, const
 				subEdgeCount /= 2;
 
 				if (subVerts.size() > MAX_ENUM_VERTS || subEdgeCount > MAX_ENUM_EDGES) {
+					extractPlaneLocalLoops(subSet);
 					continue;
 				}
 
@@ -2282,6 +2451,695 @@ uint32_t meshCleanup::RemoveThinMembranes(Geometry& workingMesh, std::string ste
 	return thinCount;
 }
 
+uint32_t meshCleanup::RemoveOpposedEdgeMembranes(Geometry& workingMesh, std::string step,
+	const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult) {
+	meshInfoResult = meshInfoInput;
+	if (workingMesh.numFaces == 0 || meshInfoInput.numNonManifoldEdges == 0) {
+		return 0;
+	}
+
+	const double cellSize = toleranceVectorEquality;
+	const double cellSizeSq = cellSize * cellSize;
+	const double maxMembraneThickness = 1e-2;
+	const double maxMembraneThicknessSq = maxMembraneThickness * maxMembraneThickness;
+	const double maxAltitude = 0.1;
+	const double oppositeNormalDot = -0.8;
+	const double coplanarNormalDot = 0.999;
+	const double coplanarPlaneTol = cellSize * 4.0;
+
+	struct FaceInfo {
+		std::array<uint32_t, 3> vid;
+		Vec verts[3];
+		Vec normal{ 0.0 };
+		uint32_t pId = 0;
+		double area = 0.0;
+		double maxEdge = 0.0;
+		double minAltitude = 0.0;
+	};
+
+	struct EKey {
+		uint32_t v0, v1;
+		bool operator==(const EKey& o) const { return v0 == o.v0 && v1 == o.v1; }
+	};
+	struct EKeyHash {
+		size_t operator()(const EKey& k) const {
+			size_t h = std::hash<uint32_t>()(k.v0);
+			h ^= std::hash<uint32_t>()(k.v1) + 0x9e3779b9 + (h << 6) + (h >> 2);
+			return h;
+		}
+	};
+
+	auto makeEKey = [](uint32_t a, uint32_t b) -> EKey {
+		return { std::min(a, b), std::max(a, b) };
+	};
+
+	using GridKey = std::tuple<int64_t, int64_t, int64_t>;
+	struct GridKeyHash {
+		size_t operator()(const GridKey& k) const {
+			size_t h = std::hash<int64_t>()(std::get<0>(k));
+			h ^= std::hash<int64_t>()(std::get<1>(k)) + 0x9e3779b9 + (h << 6) + (h >> 2);
+			h ^= std::hash<int64_t>()(std::get<2>(k)) + 0x9e3779b9 + (h << 6) + (h >> 2);
+			return h;
+		}
+	};
+
+	struct CandidatePair {
+		uint32_t faceA = UINT32_MAX;
+		uint32_t faceB = UINT32_MAX;
+		double thicknessSq = 0.0;
+		double pairArea = 0.0;
+	};
+	struct CandidateFaceRemoval {
+		uint32_t face = UINT32_MAX;
+		double area = 0.0;
+		double minAltitude = 0.0;
+		uint32_t coplanarCrowdedHits = 0;
+	};
+
+	Geometry current = workingMesh;
+	MeshInfo currentInfo = meshInfoInput;
+	uint32_t removedFacesTotal = 0;
+
+	auto getCell = [&](const Vec& p) -> GridKey {
+		return { static_cast<int64_t>(std::floor(p.x / cellSize)),
+				static_cast<int64_t>(std::floor(p.y / cellSize)),
+				static_cast<int64_t>(std::floor(p.z / cellSize)) };
+	};
+
+	while (current.numFaces > 0 && currentInfo.numNonManifoldEdges > 0) {
+		const uint32_t nFaces = current.numFaces;
+		std::unordered_map<GridKey, std::vector<std::pair<uint32_t, Vec>>, GridKeyHash> vtxGrid;
+		std::vector<Vec> canonicalPos;
+		uint32_t nextVid = 0;
+
+		auto findOrAdd = [&](const Vec& p) -> uint32_t {
+			auto center = getCell(p);
+			for (int dx = -1; dx <= 1; ++dx)
+				for (int dy = -1; dy <= 1; ++dy)
+					for (int dz = -1; dz <= 1; ++dz) {
+						GridKey nk = { std::get<0>(center) + dx,
+										std::get<1>(center) + dy,
+										std::get<2>(center) + dz };
+						auto it = vtxGrid.find(nk);
+						if (it == vtxGrid.end()) continue;
+						for (auto& [id, pos] : it->second) {
+							Vec d = p - pos;
+							if (glm::dot(d, d) < cellSizeSq) {
+								return id;
+							}
+						}
+					}
+			uint32_t id = nextVid++;
+			vtxGrid[center].emplace_back(id, p);
+			canonicalPos.push_back(p);
+			return id;
+		};
+
+		std::vector<FaceInfo> faces(nFaces);
+		for (uint32_t i = 0; i < nFaces; ++i) {
+			Face f = current.GetFace(i);
+			Vec a = current.GetPoint(f.i0);
+			Vec b = current.GetPoint(f.i1);
+			Vec c = current.GetPoint(f.i2);
+			Vec crossP = glm::cross(b - a, c - a);
+			double crossLen = glm::length(crossP);
+			double e0 = glm::length(b - a);
+			double e1 = glm::length(c - b);
+			double e2 = glm::length(a - c);
+			double maxEdge = std::max(e0, std::max(e1, e2));
+			faces[i].vid = { findOrAdd(a), findOrAdd(b), findOrAdd(c) };
+			faces[i].verts[0] = a;
+			faces[i].verts[1] = b;
+			faces[i].verts[2] = c;
+			faces[i].normal = crossLen > 1e-15 ? crossP / crossLen : Vec(0.0);
+			faces[i].pId = static_cast<uint32_t>(f.pId);
+			faces[i].area = crossLen * 0.5;
+			faces[i].maxEdge = maxEdge;
+			faces[i].minAltitude = maxEdge > 1e-15 ? (crossLen / maxEdge) : 0.0;
+		}
+
+		std::unordered_map<EKey, std::vector<uint32_t>, EKeyHash> edgeFaces;
+		for (uint32_t i = 0; i < nFaces; ++i) {
+			for (int e = 0; e < 3; ++e) {
+				edgeFaces[makeEKey(faces[i].vid[e], faces[i].vid[(e + 1) % 3])].push_back(i);
+			}
+		}
+
+		std::vector<uint32_t> faceCoplanarCrowdedHits(nFaces, 0);
+		for (const auto& [edge, owners] : edgeFaces) {
+			if (owners.size() < 3 || owners.size() > 4) continue;
+			for (uint32_t faceIdx : owners) {
+				const FaceInfo& face = faces[faceIdx];
+				bool hasCoplanarPartner = false;
+				for (uint32_t otherIdx : owners) {
+					if (otherIdx == faceIdx) continue;
+					const FaceInfo& other = faces[otherIdx];
+					if (std::abs(glm::dot(face.normal, other.normal)) < coplanarNormalDot) continue;
+					double planeDist = std::abs(glm::dot(other.verts[0] - face.verts[0], face.normal));
+					if (planeDist > coplanarPlaneTol) continue;
+					hasCoplanarPartner = true;
+					break;
+				}
+				if (hasCoplanarPartner) {
+					faceCoplanarCrowdedHits[faceIdx]++;
+				}
+			}
+		}
+
+		auto tryClosedNeighborhoodRepair = [&]() -> bool {
+			if (currentInfo.numOpenEdges != 0 || currentInfo.numNonManifoldEdges == 0) {
+				return false;
+			}
+
+			struct PlaneGroup {
+				Vec normal{ 0.0 };
+				Vec point{ 0.0 };
+				uint32_t pId = 0;
+				double representativeArea = 0.0;
+				std::vector<uint32_t> faceIndices;
+				std::unordered_set<uint32_t> vertexSet;
+			};
+			struct TriKey {
+				uint32_t a = 0, b = 0, c = 0;
+				bool operator==(const TriKey& o) const { return a == o.a && b == o.b && c == o.c; }
+			};
+			struct TriKeyHash {
+				size_t operator()(const TriKey& k) const {
+					size_t h = std::hash<uint32_t>()(k.a);
+					h ^= std::hash<uint32_t>()(k.b) + 0x9e3779b9 + (h << 6) + (h >> 2);
+					h ^= std::hash<uint32_t>()(k.c) + 0x9e3779b9 + (h << 6) + (h >> 2);
+					return h;
+				}
+			};
+			struct CandidateTri {
+				std::array<uint32_t, 3> vid{ 0, 0, 0 };
+				std::array<Vec, 3> verts{ Vec(0.0), Vec(0.0), Vec(0.0) };
+				std::array<uint64_t, 3> edges{ 0, 0, 0 };
+				Vec normal{ 0.0 };
+				uint32_t pId = 0;
+			};
+
+			auto edgeKey64 = [](uint32_t a, uint32_t b) -> uint64_t {
+				if (a > b) std::swap(a, b);
+				return (static_cast<uint64_t>(a) << 32) | static_cast<uint64_t>(b);
+			};
+
+			for (const auto& [crowdedEdge, owners] : edgeFaces) {
+				if (owners.size() != 4) continue;
+
+				std::unordered_set<uint32_t> neighborhoodFaces(owners.begin(), owners.end());
+				std::unordered_set<uint32_t> neighborhoodVerts;
+				for (uint32_t ownerIdx : owners) {
+					for (uint32_t vid : faces[ownerIdx].vid) {
+						neighborhoodVerts.insert(vid);
+					}
+				}
+
+				for (int pass = 0; pass < 2; ++pass) {
+					bool addedAny = false;
+					for (uint32_t fi = 0; fi < nFaces; ++fi) {
+						if (neighborhoodFaces.count(fi)) continue;
+						int sharedVerts = 0;
+						for (uint32_t vid : faces[fi].vid) {
+							if (neighborhoodVerts.count(vid)) {
+								sharedVerts++;
+							}
+						}
+						if (sharedVerts < 2) continue;
+						neighborhoodFaces.insert(fi);
+						for (uint32_t vid : faces[fi].vid) {
+							neighborhoodVerts.insert(vid);
+						}
+						addedAny = true;
+						if (neighborhoodFaces.size() > 24) {
+							break;
+						}
+					}
+					if (!addedAny || neighborhoodFaces.size() > 24) {
+						break;
+					}
+				}
+
+				if (neighborhoodFaces.size() < 8 || neighborhoodFaces.size() > 24) {
+					continue;
+				}
+
+				std::vector<PlaneGroup> planeGroups;
+				for (uint32_t fi : neighborhoodFaces) {
+					const FaceInfo& face = faces[fi];
+					if (face.area < 1e-12 || glm::length(face.normal) < 1e-12) continue;
+
+					int matchedGroup = -1;
+					for (size_t gi = 0; gi < planeGroups.size(); ++gi) {
+						double ndot = std::abs(glm::dot(face.normal, planeGroups[gi].normal));
+						if (ndot < coplanarNormalDot) continue;
+						double planeDist = std::abs(glm::dot(face.verts[0] - planeGroups[gi].point, planeGroups[gi].normal));
+						if (planeDist > coplanarPlaneTol) continue;
+						matchedGroup = static_cast<int>(gi);
+						break;
+					}
+
+					if (matchedGroup < 0) {
+						PlaneGroup group;
+						group.normal = face.normal;
+						group.point = face.verts[0];
+						group.pId = face.pId;
+						group.representativeArea = face.area;
+						group.faceIndices.push_back(fi);
+						for (uint32_t vid : face.vid) {
+							group.vertexSet.insert(vid);
+						}
+						planeGroups.push_back(std::move(group));
+					}
+					else {
+						PlaneGroup& group = planeGroups[matchedGroup];
+						group.faceIndices.push_back(fi);
+						for (uint32_t vid : face.vid) {
+							group.vertexSet.insert(vid);
+						}
+						if (face.area > group.representativeArea) {
+							group.point = face.verts[0];
+							group.normal = face.normal;
+							group.pId = face.pId;
+							group.representativeArea = face.area;
+						}
+					}
+				}
+
+				if (planeGroups.empty()) {
+					continue;
+				}
+
+				std::unordered_map<TriKey, CandidateTri, TriKeyHash> candidateMap;
+				auto addCandidate = [&](std::array<uint32_t, 3> vid, const Vec& planeNormal, uint32_t pId) {
+					std::array<uint32_t, 3> sortedVid = vid;
+					std::sort(sortedVid.begin(), sortedVid.end());
+					if (sortedVid[0] == sortedVid[1] || sortedVid[1] == sortedVid[2]) {
+						return;
+					}
+
+					const Vec& a = canonicalPos[sortedVid[0]];
+					const Vec& b = canonicalPos[sortedVid[1]];
+					const Vec& c = canonicalPos[sortedVid[2]];
+					double triArea = fuzzybools::areaOfTriangle(a, b, c);
+					if (triArea <= 1e-10) {
+						return;
+					}
+
+					TriKey key{ sortedVid[0], sortedVid[1], sortedVid[2] };
+					if (candidateMap.count(key)) {
+						return;
+					}
+
+					CandidateTri candidate;
+					candidate.vid = sortedVid;
+					candidate.verts = { a, b, c };
+					candidate.edges = {
+						edgeKey64(sortedVid[0], sortedVid[1]),
+						edgeKey64(sortedVid[1], sortedVid[2]),
+						edgeKey64(sortedVid[0], sortedVid[2])
+					};
+					candidate.normal = planeNormal;
+					candidate.pId = pId;
+					candidateMap.emplace(key, std::move(candidate));
+				};
+
+				for (uint32_t fi : neighborhoodFaces) {
+					addCandidate(faces[fi].vid, faces[fi].normal, faces[fi].pId);
+				}
+
+				for (const PlaneGroup& group : planeGroups) {
+					std::vector<uint32_t> groupVerts(group.vertexSet.begin(), group.vertexSet.end());
+					if (groupVerts.size() > 12) {
+						continue;
+					}
+
+					for (size_t ia = 0; ia < groupVerts.size(); ++ia) {
+						for (size_t ib = ia + 1; ib < groupVerts.size(); ++ib) {
+							for (size_t ic = ib + 1; ic < groupVerts.size(); ++ic) {
+								uint32_t va = groupVerts[ia];
+								uint32_t vb = groupVerts[ib];
+								uint32_t vc = groupVerts[ic];
+								if (std::abs(glm::dot(canonicalPos[va] - group.point, group.normal)) > coplanarPlaneTol) continue;
+								if (std::abs(glm::dot(canonicalPos[vb] - group.point, group.normal)) > coplanarPlaneTol) continue;
+								if (std::abs(glm::dot(canonicalPos[vc] - group.point, group.normal)) > coplanarPlaneTol) continue;
+								addCandidate({ va, vb, vc }, group.normal, group.pId);
+							}
+						}
+					}
+				}
+
+				if (candidateMap.empty() || candidateMap.size() > 220) {
+					continue;
+				}
+
+				std::vector<CandidateTri> candidates;
+				candidates.reserve(candidateMap.size());
+				for (auto& [key, candidate] : candidateMap) {
+					candidates.push_back(candidate);
+				}
+
+				std::unordered_map<uint64_t, std::vector<uint32_t>> edgeToCandidates;
+				std::unordered_set<uint64_t> relevantEdgeSet;
+				for (const CandidateTri& candidate : candidates) {
+					for (uint64_t edgeKey : candidate.edges) {
+						relevantEdgeSet.insert(edgeKey);
+					}
+				}
+				for (uint32_t fi : neighborhoodFaces) {
+					const auto& vid = faces[fi].vid;
+					relevantEdgeSet.insert(edgeKey64(vid[0], vid[1]));
+					relevantEdgeSet.insert(edgeKey64(vid[1], vid[2]));
+					relevantEdgeSet.insert(edgeKey64(vid[2], vid[0]));
+				}
+
+				std::unordered_map<uint64_t, int> outsideCount;
+				for (uint32_t fi = 0; fi < nFaces; ++fi) {
+					if (neighborhoodFaces.count(fi)) continue;
+					const auto& vid = faces[fi].vid;
+					uint64_t e0 = edgeKey64(vid[0], vid[1]);
+					uint64_t e1 = edgeKey64(vid[1], vid[2]);
+					uint64_t e2 = edgeKey64(vid[2], vid[0]);
+					if (relevantEdgeSet.count(e0)) outsideCount[e0]++;
+					if (relevantEdgeSet.count(e1)) outsideCount[e1]++;
+					if (relevantEdgeSet.count(e2)) outsideCount[e2]++;
+				}
+
+				bool outsideInvalid = false;
+				for (uint64_t edgeKey : relevantEdgeSet) {
+					if (outsideCount[edgeKey] > 2) {
+						outsideInvalid = true;
+						break;
+					}
+				}
+				if (outsideInvalid) {
+					continue;
+				}
+
+				for (uint32_t ci = 0; ci < candidates.size(); ++ci) {
+					for (uint64_t edgeKey : candidates[ci].edges) {
+						edgeToCandidates[edgeKey].push_back(ci);
+					}
+				}
+
+				std::vector<uint64_t> relevantEdges(relevantEdgeSet.begin(), relevantEdgeSet.end());
+				std::vector<uint8_t> selected(candidates.size(), 0);
+				std::unordered_map<uint64_t, int> localCount;
+				int selectedCount = 0;
+				int bestCount = std::numeric_limits<int>::max();
+				std::vector<uint32_t> bestSelection;
+				int searchSteps = 0;
+				const int kMaxSearchSteps = 20000;
+
+				auto edgeStatus = [&](uint64_t edgeKey) -> int {
+					int outside = outsideCount[edgeKey];
+					int local = localCount[edgeKey];
+					if (outside == 2) {
+						return local == 0 ? 0 : -1;
+					}
+					if (outside == 1) {
+						if (local == 1) return 0;
+						if (local > 1) return -1;
+						return 1;
+					}
+					if (local == 0 || local == 2) return 0;
+					if (local > 2) return -1;
+					return 2;
+				};
+
+				std::function<void()> dfs;
+				dfs = [&]() {
+					if (++searchSteps > kMaxSearchSteps) {
+						return;
+					}
+					if (selectedCount >= bestCount) {
+						return;
+					}
+
+					uint64_t chosenEdge = 0;
+					std::vector<uint32_t> chosenOptions;
+					bool haveChosenEdge = false;
+
+					for (uint64_t edgeKey : relevantEdges) {
+						int status = edgeStatus(edgeKey);
+						if (status < 0) {
+							return;
+						}
+						if (status == 0) {
+							continue;
+						}
+
+						std::vector<uint32_t> options;
+						const auto itCand = edgeToCandidates.find(edgeKey);
+						if (itCand != edgeToCandidates.end()) {
+							for (uint32_t candidateIdx : itCand->second) {
+								if (selected[candidateIdx]) continue;
+								bool canUse = true;
+								for (uint64_t candidateEdge : candidates[candidateIdx].edges) {
+									if (outsideCount[candidateEdge] + localCount[candidateEdge] + 1 > 2) {
+										canUse = false;
+										break;
+									}
+								}
+								if (canUse) {
+									options.push_back(candidateIdx);
+								}
+							}
+						}
+
+						if (!haveChosenEdge || options.size() < chosenOptions.size()) {
+							haveChosenEdge = true;
+							chosenEdge = edgeKey;
+							chosenOptions = std::move(options);
+							if (chosenOptions.size() <= 1) {
+								break;
+							}
+						}
+					}
+
+					if (!haveChosenEdge) {
+						bestCount = selectedCount;
+						bestSelection.clear();
+						for (uint32_t candidateIdx = 0; candidateIdx < candidates.size(); ++candidateIdx) {
+							if (selected[candidateIdx]) {
+								bestSelection.push_back(candidateIdx);
+							}
+						}
+						return;
+					}
+
+					if (chosenOptions.empty()) {
+						return;
+					}
+
+					for (uint32_t candidateIdx : chosenOptions) {
+						selected[candidateIdx] = 1;
+						selectedCount++;
+						for (uint64_t candidateEdge : candidates[candidateIdx].edges) {
+							localCount[candidateEdge]++;
+						}
+						dfs();
+						for (uint64_t candidateEdge : candidates[candidateIdx].edges) {
+							localCount[candidateEdge]--;
+						}
+						selectedCount--;
+						selected[candidateIdx] = 0;
+					}
+				};
+
+				dfs();
+
+				if (bestSelection.empty() || bestCount > static_cast<int>(neighborhoodFaces.size())) {
+					continue;
+				}
+
+				Geometry rebuilt;
+				rebuilt.planes = current.planes;
+				rebuilt.hasPlanes = current.hasPlanes;
+				rebuilt.data = current.data;
+				for (uint32_t fi = 0; fi < nFaces; ++fi) {
+					if (neighborhoodFaces.count(fi)) continue;
+					rebuilt.AddFace(faces[fi].verts[0], faces[fi].verts[1], faces[fi].verts[2], faces[fi].pId);
+				}
+				for (uint32_t candidateIdx : bestSelection) {
+					const CandidateTri& candidate = candidates[candidateIdx];
+					Vec a = candidate.verts[0];
+					Vec b = candidate.verts[1];
+					Vec c = candidate.verts[2];
+					Vec triNormal = glm::cross(b - a, c - a);
+					if (glm::length(triNormal) <= 1e-12) {
+						continue;
+					}
+					if (glm::dot(triNormal, candidate.normal) < 0.0) {
+						std::swap(b, c);
+					}
+					rebuilt.AddFace(a, b, c, candidate.pId);
+				}
+
+				if (rebuilt.numFaces == 0) {
+					continue;
+				}
+
+				MeshInfo infoRebuilt = meshCleanup::isMeshWatertight(rebuilt);
+				if (!TopologyStrictlyImprovedWithoutRegression(currentInfo, infoRebuilt) &&
+					!MeshPenaltyImprovedNoRegression(currentInfo, infoRebuilt)) {
+					continue;
+				}
+
+				current = std::move(rebuilt);
+				current.hasPlanes = false;
+				currentInfo = infoRebuilt;
+				removedFacesTotal += std::max<int>(0, static_cast<int>(neighborhoodFaces.size()) - bestCount);
+				return true;
+			}
+
+			return false;
+		};
+
+		if (tryClosedNeighborhoodRepair()) {
+			continue;
+		}
+
+		std::vector<CandidateFaceRemoval> singleFaceCandidates;
+		std::unordered_set<uint32_t> seenSingleFaces;
+		std::vector<CandidatePair> pairCandidates;
+		for (const auto& [edge, owners] : edgeFaces) {
+			if (owners.size() < 3 || owners.size() > 4) continue;
+
+			double edgeLen = glm::length(canonicalPos[edge.v1] - canonicalPos[edge.v0]);
+			double allowedThicknessSq = std::max(maxMembraneThicknessSq, edgeLen * edgeLen * 1e-4);
+			double maxOwnerArea = 0.0;
+			for (uint32_t faceIdx : owners) {
+				maxOwnerArea = std::max(maxOwnerArea, faces[faceIdx].area);
+			}
+
+			if (maxOwnerArea > 1e-12) {
+				for (uint32_t faceIdx : owners) {
+					const FaceInfo& face = faces[faceIdx];
+					if (face.area < 1e-12) continue;
+					const bool isCoplanarOverlapFace = faceCoplanarCrowdedHits[faceIdx] >= 2;
+					const bool isTinySliverFace =
+						face.minAltitude <= maxAltitude &&
+						face.area <= maxOwnerArea * 0.25;
+					if (!(isCoplanarOverlapFace || isTinySliverFace)) continue;
+					if (!seenSingleFaces.insert(faceIdx).second) continue;
+					singleFaceCandidates.push_back({ faceIdx, face.area, face.minAltitude, faceCoplanarCrowdedHits[faceIdx] });
+				}
+			}
+
+			for (size_t ia = 0; ia < owners.size(); ++ia) {
+				for (size_t ib = ia + 1; ib < owners.size(); ++ib) {
+					uint32_t faceA = owners[ia];
+					uint32_t faceB = owners[ib];
+					const FaceInfo& a = faces[faceA];
+					const FaceInfo& b = faces[faceB];
+					if (a.area < 1e-12 || b.area < 1e-12) continue;
+					if (glm::dot(a.normal, b.normal) > oppositeNormalDot) continue;
+					if (a.minAltitude > maxAltitude || b.minAltitude > maxAltitude) continue;
+
+					uint32_t offA = UINT32_MAX;
+					uint32_t offB = UINT32_MAX;
+					for (uint32_t vid : a.vid) {
+						if (vid != edge.v0 && vid != edge.v1) {
+							offA = vid;
+							break;
+						}
+					}
+					for (uint32_t vid : b.vid) {
+						if (vid != edge.v0 && vid != edge.v1) {
+							offB = vid;
+							break;
+						}
+					}
+					if (offA == UINT32_MAX || offB == UINT32_MAX) continue;
+
+					Vec d = canonicalPos[offA] - canonicalPos[offB];
+					double thicknessSq = glm::dot(d, d);
+					if (thicknessSq > allowedThicknessSq) continue;
+
+					pairCandidates.push_back({ faceA, faceB, thicknessSq, a.area + b.area });
+				}
+			}
+		}
+
+		if (singleFaceCandidates.empty() && pairCandidates.empty()) {
+			break;
+		}
+
+		std::sort(singleFaceCandidates.begin(), singleFaceCandidates.end(), [](const CandidateFaceRemoval& a, const CandidateFaceRemoval& b) {
+			if (a.coplanarCrowdedHits != b.coplanarCrowdedHits) return a.coplanarCrowdedHits > b.coplanarCrowdedHits;
+			if (a.area != b.area) return a.area < b.area;
+			if (a.minAltitude != b.minAltitude) return a.minAltitude < b.minAltitude;
+			return a.face < b.face;
+		});
+
+		std::sort(pairCandidates.begin(), pairCandidates.end(), [](const CandidatePair& a, const CandidatePair& b) {
+			if (a.thicknessSq != b.thicknessSq) return a.thicknessSq < b.thicknessSq;
+			if (a.pairArea != b.pairArea) return a.pairArea < b.pairArea;
+			if (a.faceA != b.faceA) return a.faceA < b.faceA;
+			return a.faceB < b.faceB;
+		});
+
+		bool acceptedCandidate = false;
+		auto tryRemoval = [&](const std::unordered_set<uint32_t>& removeFaces, uint32_t removedFacesCount) -> bool {
+			Geometry rebuilt;
+			rebuilt.planes = current.planes;
+			rebuilt.hasPlanes = current.hasPlanes;
+			rebuilt.data = current.data;
+			for (uint32_t i = 0; i < nFaces; ++i) {
+				if (removeFaces.count(i)) continue;
+				rebuilt.AddFace(faces[i].verts[0], faces[i].verts[1], faces[i].verts[2], faces[i].pId);
+			}
+			if (rebuilt.numFaces == 0) return false;
+
+			MeshInfo infoRebuilt = meshCleanup::isMeshWatertight(rebuilt);
+			const bool improvesStrictly = MeshPenaltyImprovedNoRegression(currentInfo, infoRebuilt);
+			const bool reducesNonManifoldWithBoundedCrack =
+				currentInfo.numOpenEdges > 0 &&
+				infoRebuilt.numNonManifoldEdges < currentInfo.numNonManifoldEdges &&
+				infoRebuilt.numOpenEdges <= currentInfo.numOpenEdges + 4;
+			if (!(improvesStrictly || reducesNonManifoldWithBoundedCrack)) {
+				return false;
+			}
+
+			current = std::move(rebuilt);
+			current.hasPlanes = false;
+			currentInfo = infoRebuilt;
+			removedFacesTotal += removedFacesCount;
+			return true;
+		};
+
+		for (const auto& candidate : singleFaceCandidates) {
+			if (tryRemoval({ candidate.face }, 1)) {
+				acceptedCandidate = true;
+				break;
+			}
+		}
+
+		if (!acceptedCandidate) {
+			for (const auto& candidate : pairCandidates) {
+				if (tryRemoval({ candidate.faceA, candidate.faceB }, 2)) {
+					acceptedCandidate = true;
+					break;
+				}
+			}
+		}
+
+		if (!acceptedCandidate) {
+			break;
+		}
+	}
+
+	if (removedFacesTotal == 0) {
+		return 0;
+	}
+
+	workingMesh = std::move(current);
+	workingMesh.hasPlanes = false;
+	meshInfoResult = currentInfo;
+	return removedFacesTotal;
+}
+
 void meshCleanup::removeTempFiles() {
 	if (g_debugDumpDirectory.empty()) {
 		return;
@@ -2324,6 +3182,7 @@ void meshCleanup::PostBooleanOperationMeshCleanup(fuzzybools::Geometry& input) {
 
 	fuzzybools::Geometry working = input;
 	MeshInfo cur = infoEntry;
+	const uint32_t maxAllowedFaces = input.numFaces * 3 / 2;
 
 	for (int iter = 0; iter < 2 && !cur.watertight; ++iter) {
 		MeshInfo next = cur;
@@ -2331,6 +3190,21 @@ void meshCleanup::PostBooleanOperationMeshCleanup(fuzzybools::Geometry& input) {
 		RemoveDisconnectedFragments(working, "p2", cur, next); cur = next;
 		RemoveThinMembranes(working, "p3", cur, next); cur = next;
 		RemoveTinyBoundaryBridgeFaces(working, "p4", cur, next); cur = next;
+
+		if (!cur.watertight &&
+			(cur.numOpenEdges > 150 || working.numFaces > 430) &&
+			working.numFaces <= maxAllowedFaces) {
+			Geometry beforeAdditive = working;
+			MeshInfo beforeAdditiveInfo = cur;
+			PatchCoplanarHoles(working, "p5", cur, next);
+			if (working.numFaces > maxAllowedFaces) {
+				working = std::move(beforeAdditive);
+				cur = beforeAdditiveInfo;
+			}
+			else {
+				cur = next;
+			}
+		}
 	}
 
 	auto infoExit = cur;
