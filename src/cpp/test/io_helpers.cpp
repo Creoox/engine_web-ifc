@@ -146,20 +146,20 @@ namespace webifc::io
         return svg.str();
     }
 
-    std::string ToObj(const webifc::geometry::IfcGeometry &geom, size_t &offset, glm::dmat4 transform, double inputScale)
-    {
+    std::string ToObj(const webifc::geometry::IfcGeometry &geom, size_t &offset, glm::dmat4 transform, double inputScale) {
+        if (geom.numPoints > 10000) {
+            return "";
+        }
         std::stringstream obj;
 
         double scale = inputScale;
 
-        for (uint32_t i = 0; i < geom.numPoints; i++)
-        {
+        for (uint32_t i = 0; i < geom.numPoints; i++) {
             glm::dvec4 t = transform * glm::dvec4(geom.GetPoint(i), 1);
             obj << "v " << t.x * scale << " " << t.y * scale << " " << t.z * scale << "\n";
         }
 
-        for (uint32_t i = 0; i < geom.numFaces; i++)
-        {
+        for (uint32_t i = 0; i < geom.numFaces; i++) {
             bimGeometry::Face f = geom.GetFace(i);
             obj << "f " << (f.i0 + 1 + offset) << "// " << (f.i1 + 1 + offset) << "// " << (f.i2 + 1 + offset) << "//\n";
         }
@@ -169,8 +169,7 @@ namespace webifc::io
         return obj.str();
     }
 
-    std::string ToObj(webifc::geometry::IfcComposedMesh &mesh, webifc::geometry::IfcGeometryProcessor &processor, size_t &offset, glm::dmat4 mat)
-    {
+    std::string ToObj(webifc::geometry::IfcComposedMesh &mesh, webifc::geometry::IfcGeometryProcessor &processor, size_t &offset, glm::dmat4 mat) {
         std::string complete;
 
         glm::dmat4 trans = mat * mesh.transformation;
@@ -179,8 +178,7 @@ namespace webifc::io
 
         complete += ToObj(geom, offset, trans);
 
-        for (auto c : mesh.children)
-        {
+        for (auto c : mesh.children) {
             complete += ToObj(c, processor, offset, trans);
         }
 

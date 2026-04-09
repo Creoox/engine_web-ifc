@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <web-ifc/geometry/operations/bim-geometry/geometry.h>
 #include <web-ifc/geometry/operations/boolean-utils/geometry.h>
+#include <web-ifc/geometry/representation/IfcGeometry.h>
 
 namespace meshCleanup
 {
@@ -52,6 +53,7 @@ namespace meshCleanup
 	uint32_t RemoveOpposedEdgeMembranes(fuzzybools::Geometry& input, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult);
 
 	void PostBooleanOperationMeshCleanup(fuzzybools::Geometry& input);
+	void DumpDebugGeometry(const webifc::geometry::IfcGeometry& webifcGeom, const std::string& filename);
 	void DumpDebugGeometry(const fuzzybools::Geometry& geom, const std::string& filename);
 	void removeTempFiles();
 }

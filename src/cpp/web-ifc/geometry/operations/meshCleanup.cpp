@@ -56,8 +56,7 @@ void meshCleanup::DumpDebugGeometry(const fuzzybools::Geometry& geom, const std:
 	webifc::io::DumpIfcGeometry(webifcGeom, filenameWithPath);
 }
 
-#ifdef DUMP_CSG_MESHES
-static void DumpDebugGeometry(const webifc::geometry::IfcGeometry& geom, const std::string& filename) {
+static void meshCleanup::DumpDebugGeometry(const webifc::geometry::IfcGeometry& geom, const std::string& filename) {
 	if (!g_debugDumpDirectory.empty()) {
 		std::error_code ec;
 		std::filesystem::create_directories(g_debugDumpDirectory, ec);
@@ -65,7 +64,6 @@ static void DumpDebugGeometry(const webifc::geometry::IfcGeometry& geom, const s
 	std::string filenameWithPath = BuildDebugDumpPath(filename).string();
 	webifc::io::DumpIfcGeometry(geom, filenameWithPath);
 }
-#endif
 
 static int SelectProjectionAxis(const Vec& normal) {
 	double ax = std::abs(normal.x);
@@ -531,7 +529,7 @@ uint32_t meshCleanup::RemoveDegeneratedTriangles(Geometry& workingMesh, std::str
 	else {
 		meshInfoResult = meshInfoInput;
 #ifdef DUMP_CSG_MESHES
-		webifc::geometry::IfcGeometry inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(workingMesh);
+		webifc::geometry::IfcGeometry  inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(workingMesh);
 		DumpDebugGeometry(inputWebIfc, "meshCleanup"+step+"-fail.obj");
 #endif
 		return 0;

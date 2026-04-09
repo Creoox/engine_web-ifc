@@ -2101,7 +2101,7 @@ namespace webifc::geometry
 
         for (auto &firstGeom : firstGeoms)
         {
-            IfcGeometry firstOperator = firstGeom;
+            IfcGeometry firstOperand = firstGeom;
             for (auto &secondGeom : secondGeoms)
             {
                 if (secondGeom.numFaces == 0)
@@ -2113,7 +2113,7 @@ namespace webifc::geometry
                     continue;
                 }
 
-                if (firstOperator.numFaces == 0 && op != "UNION")
+                if (firstOperand.numFaces == 0 && op != "UNION")
                 {
                     spdlog::error("[BoolProcess()] bool aborted due to empty source or target");
 
@@ -2122,7 +2122,7 @@ namespace webifc::geometry
                     break;
                 }
 
-                IfcGeometry secondOperator;
+                IfcGeometry secondOperand;
 
                 if (secondGeom.halfSpace)
                 {
@@ -2140,9 +2140,9 @@ namespace webifc::geometry
                     double scaleY = 1;
                     double scaleZ = 1;
 
-                    for (uint32_t i = 0; i < firstOperator.numPoints; i++)
+                    for (uint32_t i = 0; i < firstOperand.numPoints; i++)
                     {
-                        glm::dvec3 p = firstOperator.GetPoint(i);
+                        glm::dvec3 p = firstOperand.GetPoint(i);
                         glm::dvec3 vec = (p - origin);
                         double dx = glm::dot(vec, x);
                         double dy = glm::dot(vec, y);
@@ -2160,63 +2160,105 @@ namespace webifc::geometry
                             scaleZ = glm::abs(dz);
                         }
                     }
-                    secondOperator.AddGeometry(secondGeom, trans, scaleX * 2, scaleY * 2, scaleZ * 2, secondGeom.halfSpaceOrigin);
+                    secondOperand.AddGeometry(secondGeom, trans, scaleX * 2, scaleY * 2, scaleZ * 2, secondGeom.halfSpaceOrigin);
                 }
                 else
                 {
-                    secondOperator = secondGeom;
+                    secondOperand = secondGeom;
+                }
+
+                // Scale second operand 0.1% up if numFaces < 100, to remove membrane artifacts.
+                // If the bbox is smaller in one dimension (typical for window opening), scale only in that dimension.
+                if (secondOperand.numFaces > 0 && secondOperand.numFaces < 100 && false)
+                {
+                    bimGeometry::AABB bbox = secondOperand.GetAABB();
+                    glm::dvec3 center = (bbox.min + bbox.max) * 0.5;
+                    glm::dvec3 extents = bbox.max - bbox.min;
+
+                    double maxExtent = glm::max(extents.x, glm::max(extents.y, extents.z));
+                    double threshold = maxExtent * 0.1;
+
+                    double scaleFactorX = 1.0;
+                    double scaleFactorY = 1.0;
+                    double scaleFactorZ = 1.0;
+
+                    bool hasSmallDim = (extents.x < threshold) || (extents.y < threshold) || (extents.z < threshold);
+
+                    if (hasSmallDim)
+                    {
+                        // Scale only the small dimension(s)
+                        if (extents.x < threshold) scaleFactorX = 1.001;
+                        if (extents.y < threshold) scaleFactorY = 1.001;
+                        if (extents.z < threshold) scaleFactorZ = 1.001;
+                    }
+                    else
+                    {
+                        // Scale uniformly
+                        scaleFactorX = 1.001;
+                        scaleFactorY = 1.001;
+                        scaleFactorZ = 1.001;
+                    }
+
+                    for (uint32_t i = 0; i < secondOperand.numPoints; i++)
+                    {
+                        glm::dvec3 pt = secondOperand.GetPoint(i);
+                        pt.x = center.x + (pt.x - center.x) * scaleFactorX;
+                        pt.y = center.y + (pt.y - center.y) * scaleFactorY;
+                        pt.z = center.z + (pt.z - center.z) * scaleFactorZ;
+                        secondOperand.SetPoint(pt.x, pt.y, pt.z, i);
+                    }
                 }
 
 #ifdef CSG_DEBUG_OUTPUT
-                // io::DumpIfcGeometry(secondOperator, "second.obj");
+                // io::DumpIfcGeometry(secondOperand, "second.obj");
 #endif
 
 #ifdef CSG_DEBUG_OUTPUT
-                // io::DumpIfcGeometry(firstOperator, "first.obj");
+                // io::DumpIfcGeometry(firstOperand, "first.obj");
 
                 // BOOLSTATUS++;
 
 #endif
-                firstOperator.buildPlanes();
-                secondOperator.buildPlanes();
+                firstOperand.buildPlanes();
+                secondOperand.buildPlanes();
 
                 fuzzybools::SetEpsilons(_settings.TOLERANCE_PLANE_INTERSECTION, _settings.TOLERANCE_PLANE_DEVIATION, _settings.TOLERANCE_BACK_DEVIATION_DISTANCE, _settings.TOLERANCE_INSIDE_OUTSIDE_PERIMETER, _settings.TOLERANCE_BOUNDING_BOX, BOOLSTATUS);
 
                 if (op == "DIFFERENCE")
                 {
-                    firstOperator = Subtract(firstOperator, secondOperator);
+                    firstOperand = Subtract(firstOperand, secondOperand);
                 }
                 else if (op == "UNION")
                 {
-                    firstOperator = Union(firstOperator, secondOperator);
+                    firstOperand = Union(firstOperand, secondOperand);
                 }
 #ifdef _DEBUG_PRINT
-                std::cout << "[BoolProcess] result.faces=" << firstOperator.numFaces << std::endl;
+                std::cout << "[BoolProcess] result.faces=" << firstOperand.numFaces << std::endl;
 #endif
 
 #ifdef CSG_DEBUG_OUTPUT
-                io::DumpIfcGeometry(firstOperator, "result.obj");
+                io::DumpIfcGeometry(firstOperand, "result.obj");
 #endif
             }
-            finalResult.AddGeometry(firstOperator);
+            finalResult.AddGeometry(firstOperand);
         }
 
         return finalResult;
     }
 
-    IfcGeometry booleanManager::Union(IfcGeometry firstOperator, IfcGeometry secondOperator)
+    IfcGeometry booleanManager::Union(IfcGeometry firstOperand, IfcGeometry secondOperand)
     {
-        fuzzybools::Geometry firstEngGeom = convertToEngine(firstOperator);
-        fuzzybools::Geometry secondEngGeom = convertToEngine(secondOperator);
+        fuzzybools::Geometry firstEngGeom = convertToEngine(firstOperand);
+        fuzzybools::Geometry secondEngGeom = convertToEngine(secondOperand);
         fuzzybools::Geometry result = fuzzybools::Union(firstEngGeom, secondEngGeom);
         meshCleanup::PostBooleanOperationMeshCleanup(result);
         return convertToWebIfc(std::move(result));
     }
 
-    IfcGeometry booleanManager::Subtract(IfcGeometry firstOperator, IfcGeometry secondOperator)
+    IfcGeometry booleanManager::Subtract(IfcGeometry firstOperand, IfcGeometry secondOperand)
     {
-        fuzzybools::Geometry firstEngGeom = convertToEngine(firstOperator);
-        fuzzybools::Geometry secondEngGeom = convertToEngine(secondOperator);
+        fuzzybools::Geometry firstEngGeom = convertToEngine(firstOperand);
+        fuzzybools::Geometry secondEngGeom = convertToEngine(secondOperand);
         fuzzybools::Geometry result = fuzzybools::Subtract(firstEngGeom, secondEngGeom);
         meshCleanup::PostBooleanOperationMeshCleanup(result);
         return convertToWebIfc(std::move(result));

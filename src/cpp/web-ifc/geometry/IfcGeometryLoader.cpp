@@ -2101,6 +2101,34 @@ namespace webifc::geometry
                     return;
                 }
             }
+            else if (params.trimStart.trimType == TRIM_BY_LENGTH && params.trimEnd.trimType == TRIM_BY_PARAMETER)
+            {
+                // Mixed types: start is arc length, end is parameter (angle)
+                if (radius1 > 0)
+                {
+                    startRad = params.trimStart.value / radius1;
+                    endRad = params.trimEnd.value * _cache.GetAngularScalingFactor();
+                }
+                else
+                {
+                    spdlog::error("IFCCIRCLE (ID: {}) has zero radius1, cannot compute angles from length.", expressID);
+                    return;
+                }
+            }
+            else if (params.trimStart.trimType == TRIM_BY_PARAMETER && params.trimEnd.trimType == TRIM_BY_LENGTH)
+            {
+                // Mixed types: start is parameter (angle), end is arc length
+                if (radius1 > 0)
+                {
+                    startRad = params.trimStart.value * _cache.GetAngularScalingFactor();
+                    endRad = params.trimEnd.value / radius1;
+                }
+                else
+                {
+                    spdlog::error("IFCCIRCLE (ID: {}) has zero radius1, cannot compute angles from length.", expressID);
+                    return;
+                }
+            }
             else if (params.trimStart.trimType == TRIM_BY_POSITION && params.trimEnd.trimType == TRIM_BY_POSITION)
             {
                 byPos = true;
@@ -2522,7 +2550,69 @@ namespace webifc::geometry
       segmentParams.trimSense = trimSense;
 
       ComputeCurve(ParentCurveID, curve, segmentParams);
-      
+
+      // The parent curve is evaluated with ignorePlacement=true, so its
+      // points are in the parent curve's local coordinate system.  Per IFC
+      // spec the CurveSegment Placement defines a coordinate system where
+      // the origin is at the segment's start point and the X-axis is the
+      // tangent direction at the start.  We must therefore:
+      //   1. Translate so the first point sits at the local origin (0,0,0)
+      //   2. Rotate so the start tangent aligns with the local X-axis (1,0,0)
+      // Then the Placement correctly maps local coords to world coords.
+      if (curve.points.size() > curvePointsOffset)
+      {
+          // 1. Translate start point to origin
+          glm::dvec3 startOffset = curve.points[curvePointsOffset];
+          for (size_t i = curvePointsOffset; i < curve.points.size(); ++i)
+          {
+              curve.points[i] -= startOffset;
+          }
+
+          // 2. Rotate so start tangent aligns with X-axis (1,0,0)
+          glm::dvec3 localStartTangent(1, 0, 0);
+          if (!curve.segmentStartTangents.empty())
+          {
+              localStartTangent = curve.segmentStartTangents.back();
+          }
+          else if (curve.points.size() > curvePointsOffset + 1)
+          {
+              localStartTangent = glm::normalize(
+                  curve.points[curvePointsOffset + 1] - curve.points[curvePointsOffset]);
+          }
+
+          double tangentAngle = std::atan2(localStartTangent.y, localStartTangent.x);
+          if (std::abs(tangentAngle) > 1e-10)
+          {
+              double cosA = std::cos(-tangentAngle);
+              double sinA = std::sin(-tangentAngle);
+              for (size_t i = curvePointsOffset; i < curve.points.size(); ++i)
+              {
+                  double x = curve.points[i].x;
+                  double y = curve.points[i].y;
+                  curve.points[i].x = x * cosA - y * sinA;
+                  curve.points[i].y = x * sinA + y * cosA;
+              }
+
+              // Also rotate the end tangent to match
+              double ex = curve.endTangent.x;
+              double ey = curve.endTangent.y;
+              curve.endTangent.x = ex * cosA - ey * sinA;
+              curve.endTangent.y = ex * sinA + ey * cosA;
+              curve.endTangent.z = 0.0;
+
+              // Rotate start tangent (should become (1,0,0) or close to it)
+              if (!curve.segmentStartTangents.empty())
+              {
+                  auto& st = curve.segmentStartTangents.back();
+                  double sx = st.x;
+                  double sy = st.y;
+                  st.x = sx * cosA - sy * sinA;
+                  st.y = sx * sinA + sy * cosA;
+                  st.z = 0.0;
+              }
+          }
+      }
+
       bool applyOwnPlacement = true;
       if (params.ignorePlacement) {
           applyOwnPlacement = false;
