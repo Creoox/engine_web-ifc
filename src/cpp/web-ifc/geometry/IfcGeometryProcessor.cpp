@@ -584,13 +584,26 @@ namespace webifc::geometry
             case schema::IFCSHAPEREPRESENTATION:
             {
                 // IFCTOPOLOGYREPRESENTATION and IFCSHAPEREPRESENTATION are identical in attributes layout
+                // attributes: 0=ContextOfItems, 1=RepresentationIdentifier, 2=RepresentationType, 3=Items
+                // RepresentationIdentifier is OPTIONAL in the schema, so seek explicitly
+                // and token-type check before reading.
+                std::string identifierStr;
                 _loader.MoveToArgumentOffset(expressID, 1);
-                auto type = _loader.GetStringArgument();
+                if (_loader.GetTokenType() == parsing::IfcTokenType::STRING) {
+                    _loader.StepBack();
+                    identifierStr = std::string(_loader.GetStringArgument());
+                }
+
+                if (!_settings._representationTypesEnabled.empty()) {
+                    if (_settings._representationTypesEnabled.find(identifierStr) == _settings._representationTypesEnabled.end()) {
+                        return mesh;
+                    }
+                }
 
                 _loader.MoveToArgumentOffset(expressID, 3);
                 auto repItems = _loader.GetSetArgument();
 
-                for (auto &repToken : repItems)
+                for (auto& repToken : repItems)
                 {
                     uint32_t repID = _loader.GetRefArgument(repToken);
                     uint32_t repType = _loader.GetLineType(repID);

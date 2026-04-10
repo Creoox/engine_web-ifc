@@ -6,6 +6,7 @@
 
 #include <glm/glm.hpp>
 #include <string>
+#include <set>
 #include <cstdint>
 #include "representation/geometry.h"
 #include "../parsing/IfcLoader.h"
@@ -35,6 +36,7 @@ namespace webifc::geometry
     double TOLERANCE_INSIDE_OUTSIDE_PERIMETER = 1.0E-10;
     double TOLERANCE_BOUNDING_BOX = 1.0E-02;
     uint16_t _CSG_MAX_NUM_FACES = 20000;
+    std::set<std::string> _representationTypesEnabled; // empty = load all
   };
 
   class booleanManager
