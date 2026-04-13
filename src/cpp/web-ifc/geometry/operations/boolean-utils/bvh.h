@@ -195,7 +195,7 @@ namespace fuzzybools
 
         nodes.reserve(nodeID + 1);
 
-        if (depth == 20)
+        if (depth == 6)
         {
             return nodeID;
         }
@@ -204,7 +204,7 @@ namespace fuzzybools
         int size = end - start;
 
         // ignore cubes
-        if (size <= 4)
+        if (size <= 12)
         {
             return nodeID;
         }

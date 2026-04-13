@@ -37,6 +37,13 @@ namespace webifc::geometry
     double TOLERANCE_BOUNDING_BOX = 1.0E-02;
     uint16_t _CSG_MAX_NUM_FACES = 20000;
     std::set<std::string> _representationTypesEnabled; // empty = load all
+
+    // CSG debug dump: when _csgDumpExpressID is non-zero, every IfcBooleanResult
+    // whose express ID matches (or whose ancestor matched) will dump its operand
+    // and result geometries as .obj files into _csgDumpDir. Intended for targeted
+    // investigation only -- leave zero in production builds.
+    uint32_t _csgDumpExpressID = 0;
+    std::string _csgDumpDir;
   };
 
   class booleanManager
@@ -44,8 +51,52 @@ namespace webifc::geometry
   public:
     IfcGeometry BoolProcess(const std::vector<IfcGeometry> &firstGeoms, std::vector<IfcGeometry> &secondGeoms, std::string op, IfcGeometrySettings _settings);
 
-    static fuzzybools::Geometry convertToEngine(Geometry geom);
-    static IfcGeometry convertToWebIfc(fuzzybools::Geometry geom);
+    static fuzzybools::Geometry convertToEngine(Geometry geom)
+    {
+        fuzzybools::Geometry newGeom;
+        newGeom.fvertexData = geom.fvertexData;
+        newGeom.vertexData = geom.vertexData;
+        newGeom.indexData = geom.indexData;
+        newGeom.planeData = geom.planeData;
+        newGeom.numPoints = geom.numPoints;
+        newGeom.numFaces = geom.numFaces;
+        for (auto plane : geom.planes)
+        {
+            fuzzybools::SimplePlane newPlane;
+            newPlane.distance = plane.distance;
+            newPlane.normal = plane.normal;
+            newGeom.planes.push_back(newPlane);
+        }
+        newGeom.hasPlanes = geom.hasPlanes;
+        return newGeom;
+    }
+
+    static IfcGeometry convertToWebIfc(fuzzybools::Geometry geom)
+    {
+        IfcGeometry newGeom;
+        newGeom.fvertexData = geom.fvertexData;
+        newGeom.vertexData = geom.vertexData;
+        newGeom.indexData = geom.indexData;
+        newGeom.planeData = geom.planeData;
+        newGeom.numPoints = geom.numPoints;
+        newGeom.numFaces = geom.numFaces;
+        newGeom.entityID = geom.entityID;
+        uint32_t id = 0;
+        for (auto plane : geom.planes)
+        {
+            webifc::geometry::Plane newPlane;
+            newPlane.id = id;
+            newPlane.distance = plane.distance;
+            newPlane.normal = plane.normal;
+            newGeom.planes.push_back(newPlane);
+            id++;
+        }
+        newGeom.hasPlanes = geom.hasPlanes;
+        return newGeom;
+    }
+
+    //static fuzzybools::Geometry convertToEngine(Geometry geom);
+    //static IfcGeometry convertToWebIfc(fuzzybools::Geometry geom);
     IfcGeometry Union(IfcGeometry firstOperator, IfcGeometry secondOperator);
     IfcGeometry Subtract(IfcGeometry firstOperator, IfcGeometry secondOperator);
   };

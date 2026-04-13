@@ -123,7 +123,16 @@ meshCleanup::MeshInfo meshCleanup::isMeshWatertight(const fuzzybools::Geometry& 
 	// cause. Then count how many triangles share each edge by position.
 
 	constexpr int STRIDE = fuzzybools::VERTEX_FORMAT_SIZE_FLOATS;
-	const double cellSize = toleranceVectorEquality;
+
+	// Dedup tolerance only for watertightness accounting. Must be *smaller*
+	// than the shortest legitimate edge in typical IFC input; the general
+	// geometry tolerance (toleranceVectorEquality = 1e-4) is too loose here,
+	// it merges sub-0.1mm distinct vertices in real files (e.g.
+	// IfcClosedShell #1165466 in test67.ifc has adjacent polyloop vertices
+	// at 2.8e-5 / 3.4e-5 spacing that must NOT be merged or the mesh is
+	// wrongly flagged as non-manifold).
+	constexpr double watertightDedupTolerance = 1.0E-07;
+	const double cellSize = watertightDedupTolerance;
 	const double cellSizeSq = cellSize * cellSize;
 
 	using GridKey = std::tuple<int64_t, int64_t, int64_t>;

@@ -3,11 +3,18 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include <spdlog/spdlog.h>
+#include <cstdio>
+#include <filesystem>
+#include <limits>
 
 #if defined(DEBUG_DUMP_SVG) || defined(DUMP_CSG_MESHES)
 #include "../../test/io_helpers.h"
 #include "../../test/dumpToThree.h"
 #endif
+
+// CSG investigation dump (targeted): reuse DumpIfcGeometry from the test
+// helpers. Always included, gated at runtime by IfcGeometrySettings::_csgDumpExpressID.
+#include "../../test/io_helpers.h"
 
 #include "IfcGeometryProcessor.h"
 #include <glm/gtx/transform.hpp>
@@ -20,8 +27,68 @@
 
 namespace webifc::geometry
 {
-    
+
     double BOOLSTATUS = 0;
+
+    // CSG investigation dump state.
+    // When IfcGeometryProcessor processes an IFCBOOLEANRESULT whose express ID
+    // matches IfcGeometrySettings::_csgDumpExpressID, g_csgDumpActive is set
+    // true for the duration of that sub-tree. While active, BoolProcess writes
+    // operand and result geometries as .obj files. g_csgOpCounter gives each
+    // dump a unique, monotonically-increasing filename prefix so multiple
+    // operations in the same tree can be distinguished.
+#ifdef _DEBUG
+    thread_local static bool g_csgDumpActive = true;
+#else
+	thread_local static bool g_csgDumpActive = false;
+#endif
+    thread_local static uint32_t g_csgOpCounter = 0;
+    thread_local static uint32_t g_csgDumpRootExpressID = 0;
+    thread_local static std::string g_csgDumpDir;
+    thread_local static uint32_t g_csgDumpCurrentExpressID = 0;
+
+    // RAII guard that activates CSG dump mode for a single sub-tree and
+    // guarantees it's turned off on every return path.
+    struct CsgDumpActivation
+    {
+        bool owner = false;
+        CsgDumpActivation(uint32_t expressID, const IfcGeometrySettings& settings)
+        {
+            if (settings._csgDumpExpressID != 0
+                && !g_csgDumpActive
+                && expressID == settings._csgDumpExpressID)
+            {
+                g_csgDumpActive = true;
+                g_csgDumpRootExpressID = expressID;
+                g_csgDumpDir = settings._csgDumpDir;
+                g_csgOpCounter = 0;
+                owner = true;
+                if (!g_csgDumpDir.empty())
+                {
+                    try {
+                        std::filesystem::create_directories(g_csgDumpDir);
+                    } catch (const std::exception& e) {
+                        spdlog::error("[CSG DUMP] failed to create dir '{}': {}",
+                                      g_csgDumpDir, e.what());
+                    }
+                }
+                spdlog::info("[CSG DUMP] activated for expressID={} dir={}",
+                             expressID, g_csgDumpDir);
+            }
+        }
+        ~CsgDumpActivation()
+        {
+            if (owner)
+            {
+                spdlog::info("[CSG DUMP] finished rootExpressID={} totalOps={}",
+                             g_csgDumpRootExpressID, g_csgOpCounter);
+                g_csgDumpActive = false;
+                g_csgDumpRootExpressID = 0;
+                g_csgDumpDir.clear();
+                g_csgOpCounter = 0;
+            }
+        }
+    };
 
     IfcGeometryProcessor::IfcGeometryProcessor(webifc::parsing::IfcLoader &loader, const webifc::schema::IfcSchemaManager &schemaManager, uint16_t circleSegments, bool coordinateToOrigin, double TOLERANCE_PLANE_INTERSECTION, double TOLERANCE_PLANE_DEVIATION, double TOLERANCE_BACK_DEVIATION_DISTANCE, double TOLERANCE_INSIDE_OUTSIDE_PERIMETER, double TOLERANCE_SCALAR_EQUALITY, double PLANE_REFIT_ITERATIONS)
         : _loader(loader), _cache(loader), _schemaManager(schemaManager), _geometryLoader(loader, _cache, circleSegments)
@@ -282,6 +349,11 @@ namespace webifc::geometry
             }
             case schema::IFCBOOLEANRESULT:
             {
+                // CSG investigation: activates dump mode if expressID matches
+                // the target in _settings._csgDumpExpressID. The guard auto-deactivates
+                // on scope exit, covering every return path below.
+                CsgDumpActivation csgDumpGuard(expressID, _settings);
+
                 _loader.MoveToArgumentOffset(expressID, 0);
                 std::string_view op = _loader.GetStringArgument();
 
@@ -348,7 +420,15 @@ namespace webifc::geometry
                     return mesh;
                 }
 
+                // Record the current IFCBOOLEANRESULT express ID so BoolProcess's
+                // dump code can embed it in the output filenames / log lines.
+                const uint32_t savedCurrentExpressID = g_csgDumpCurrentExpressID;
+                g_csgDumpCurrentExpressID = expressID;
+
                 IfcGeometry resultMesh = BoolProcess(flatFirstMeshes, flatSecondMeshes, std::string(op), _settings);
+
+                g_csgDumpCurrentExpressID = savedCurrentExpressID;
+
                 resultMesh.entityID = expressID;
                 _expressIDToGeometry[expressID] = resultMesh;
                 mesh.hasGeometry = true;
@@ -1964,6 +2044,19 @@ namespace webifc::geometry
                 AddFaceToGeometry(faceID, geometry);
             }
             geometry.entityID = expressID;
+#ifdef _DEBUG
+            if( lineType == schema::IFCCLOSEDSHELL )
+            {
+                fuzzybools::Geometry fuzzyGeom = booleanManager::convertToEngine(geometry);
+                auto meshInfo = meshCleanup::isMeshWatertight(fuzzyGeom);
+                if (!meshInfo.watertight) {
+                    webifc::io::DumpIfcGeometry(geometry, "IFCCLOSEDSHELL-notWaterTight.obj");
+
+                    spdlog::warn("[GetBrep()] geometry with expressID {} is not watertight after triangulation", expressID);
+                }
+			}
+            
+#endif
             return geometry;
         }
         default:
@@ -2063,58 +2156,47 @@ namespace webifc::geometry
         }
     }
 
-    fuzzybools::Geometry booleanManager::convertToEngine(Geometry geom)
-    {
-        fuzzybools::Geometry newGeom;
-        newGeom.fvertexData = geom.fvertexData;
-        newGeom.vertexData = geom.vertexData;
-        newGeom.indexData = geom.indexData;
-        newGeom.planeData = geom.planeData;
-        newGeom.numPoints = geom.numPoints;
-        newGeom.numFaces = geom.numFaces;
-        for (auto plane : geom.planes)
-        {
-            fuzzybools::SimplePlane newPlane;
-            newPlane.distance = plane.distance;
-            newPlane.normal = plane.normal;
-            newGeom.planes.push_back(newPlane);
-        }
-        newGeom.hasPlanes = geom.hasPlanes;
-        return newGeom;
-    }
-
-    IfcGeometry booleanManager::convertToWebIfc(fuzzybools::Geometry geom)
-    {
-        IfcGeometry newGeom;
-        newGeom.fvertexData = geom.fvertexData;
-        newGeom.vertexData = geom.vertexData;
-        newGeom.indexData = geom.indexData;
-        newGeom.planeData = geom.planeData;
-        newGeom.numPoints = geom.numPoints;
-        newGeom.numFaces = geom.numFaces;
-        newGeom.entityID = geom.entityID;
-        uint32_t id = 0;
-        for (auto plane : geom.planes)
-        {
-            webifc::geometry::Plane newPlane;
-            newPlane.id = id;
-            newPlane.distance = plane.distance;
-            newPlane.normal = plane.normal;
-            newGeom.planes.push_back(newPlane);
-            id++;
-        }
-        newGeom.hasPlanes = geom.hasPlanes;
-        return newGeom;
-    }
-
     IfcGeometry booleanManager::BoolProcess(const std::vector<IfcGeometry> &firstGeoms, std::vector<IfcGeometry> &secondGeoms, std::string op, IfcGeometrySettings _settings)
     {
         spdlog::debug("[BoolProcess({})]");
         IfcGeometry finalResult;
 
+        // CSG investigation helpers (only active when g_csgDumpActive is true).
+        auto csgBBoxSize = [](const IfcGeometry& g) -> glm::dvec3 {
+            if (g.numPoints == 0) return glm::dvec3(0.0);
+            glm::dvec3 mn(std::numeric_limits<double>::max());
+            glm::dvec3 mx(std::numeric_limits<double>::lowest());
+            for (uint32_t i = 0; i < g.numPoints; ++i) {
+                glm::dvec3 p = g.GetPoint(i);
+                mn = glm::min(mn, p);
+                mx = glm::max(mx, p);
+            }
+            return mx - mn;
+        };
+        auto csgDumpPath = [](const std::string& basename) -> std::string {
+            if (g_csgDumpDir.empty()) return basename;
+            return g_csgDumpDir + "/" + basename;
+        };
+
         for (auto &firstGeom : firstGeoms)
         {
             IfcGeometry firstOperand = firstGeom;
+
+            // Dump the pristine firstOperand before the inner loop mutates it.
+            if (g_csgDumpActive)
+            {
+                char buf[256];
+                std::snprintf(buf, sizeof(buf),
+                              "csg_%04u_%u_initial_first.obj",
+                              g_csgOpCounter, g_csgDumpCurrentExpressID);
+                IfcGeometry copyFirst = firstOperand; // DumpIfcGeometry takes non-const ref
+                webifc::io::DumpIfcGeometry(copyFirst, csgDumpPath(buf));
+                glm::dvec3 s0 = csgBBoxSize(firstOperand);
+                spdlog::info("[CSG #{:04}] expressID={} initial_first faces={} bbox=[{:.4g},{:.4g},{:.4g}]",
+                             g_csgOpCounter, g_csgDumpCurrentExpressID,
+                             firstOperand.numFaces, s0.x, s0.y, s0.z);
+            }
+
             for (auto &secondGeom : secondGeoms)
             {
                 if (secondGeom.numFaces == 0)
@@ -2222,20 +2304,31 @@ namespace webifc::geometry
                     }
                 }
 
-#ifdef CSG_DEBUG_OUTPUT
-                // io::DumpIfcGeometry(secondOperand, "second.obj");
-#endif
+                // CSG investigation: dump operands before the boolean op.
+                uint32_t dumpCounterForThisOp = 0;
+                if (g_csgDumpActive)
+                {
+                    dumpCounterForThisOp = g_csgOpCounter;
+                    char bufFirst[256], bufSecond[256];
+                    std::snprintf(bufFirst, sizeof(bufFirst),
+                                  "csg_%04u_%u_first.obj",
+                                  dumpCounterForThisOp, g_csgDumpCurrentExpressID);
+                    std::snprintf(bufSecond, sizeof(bufSecond),
+                                  "csg_%04u_%u_second.obj",
+                                  dumpCounterForThisOp, g_csgDumpCurrentExpressID);
+                    IfcGeometry copyFirst = firstOperand;
+                    IfcGeometry copySecond = secondOperand;
+                    webifc::io::DumpIfcGeometry(copyFirst, csgDumpPath(bufFirst));
+                    webifc::io::DumpIfcGeometry(copySecond, csgDumpPath(bufSecond));
+                }
 
-#ifdef CSG_DEBUG_OUTPUT
-                // io::DumpIfcGeometry(firstOperand, "first.obj");
-
-                // BOOLSTATUS++;
-
-#endif
                 firstOperand.buildPlanes();
                 secondOperand.buildPlanes();
 
                 fuzzybools::SetEpsilons(_settings.TOLERANCE_PLANE_INTERSECTION, _settings.TOLERANCE_PLANE_DEVIATION, _settings.TOLERANCE_BACK_DEVIATION_DISTANCE, _settings.TOLERANCE_INSIDE_OUTSIDE_PERIMETER, _settings.TOLERANCE_BOUNDING_BOX, BOOLSTATUS);
+
+                const uint32_t firstFacesBefore = firstOperand.numFaces;
+                const uint32_t secondFacesBefore = secondOperand.numFaces;
 
                 if (op == "DIFFERENCE")
                 {
@@ -2249,9 +2342,25 @@ namespace webifc::geometry
                 std::cout << "[BoolProcess] result.faces=" << firstOperand.numFaces << std::endl;
 #endif
 
-#ifdef CSG_DEBUG_OUTPUT
-                io::DumpIfcGeometry(firstOperand, "result.obj");
-#endif
+                // CSG investigation: dump result and log a one-line summary.
+                if (g_csgDumpActive)
+                {
+                    char bufResult[256];
+                    std::snprintf(bufResult, sizeof(bufResult),
+                                  "csg_%04u_%u_result.obj",
+                                  dumpCounterForThisOp, g_csgDumpCurrentExpressID);
+                    IfcGeometry copyResult = firstOperand;
+                    webifc::io::DumpIfcGeometry(copyResult, csgDumpPath(bufResult));
+
+                    glm::dvec3 sz = csgBBoxSize(firstOperand);
+                    spdlog::info(
+                        "[CSG #{:04}] op={} expressID={} firstFaces={} secondFaces={} resultFaces={} resultBBox=[{:.4g},{:.4g},{:.4g}]",
+                        dumpCounterForThisOp, op, g_csgDumpCurrentExpressID,
+                        firstFacesBefore, secondFacesBefore,
+                        firstOperand.numFaces, sz.x, sz.y, sz.z);
+
+                    g_csgOpCounter++;
+                }
             }
             finalResult.AddGeometry(firstOperand);
         }
@@ -2273,6 +2382,27 @@ namespace webifc::geometry
         fuzzybools::Geometry firstEngGeom = convertToEngine(firstOperand);
         fuzzybools::Geometry secondEngGeom = convertToEngine(secondOperand);
         fuzzybools::Geometry result = fuzzybools::Subtract(firstEngGeom, secondEngGeom);
+
+        // CSG investigation: dump the raw fuzzybools::Subtract result before any
+        // post-processing. This tells us whether the leak originates in fuzzybools
+        // itself or in meshCleanup::PostBooleanOperationMeshCleanup.
+        if (g_csgDumpActive)
+        {
+            char bufPre[256];
+            std::snprintf(bufPre, sizeof(bufPre),
+                          "csg_%04u_%u_raw_before_cleanup.obj",
+                          g_csgOpCounter, g_csgDumpCurrentExpressID);
+            std::string path = g_csgDumpDir.empty()
+                ? std::string(bufPre)
+                : (g_csgDumpDir + "/" + bufPre);
+            // convert to IfcGeometry for DumpIfcGeometry and write
+            IfcGeometry preCleanup = convertToWebIfc(result);
+            webifc::io::DumpIfcGeometry(preCleanup, path);
+            spdlog::info("[CSG #{:04}] expressID={} raw_before_cleanup faces={} numPoints={}",
+                         g_csgOpCounter, g_csgDumpCurrentExpressID,
+                         result.numFaces, result.numPoints);
+        }
+
         meshCleanup::PostBooleanOperationMeshCleanup(result);
         return convertToWebIfc(std::move(result));
     }
