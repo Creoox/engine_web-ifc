@@ -37,13 +37,6 @@ namespace webifc::geometry
     double TOLERANCE_BOUNDING_BOX = 1.0E-02;
     uint16_t _CSG_MAX_NUM_FACES = 20000;
     std::set<std::string> _representationTypesEnabled; // empty = load all
-
-    // CSG debug dump: when _csgDumpExpressID is non-zero, every IfcBooleanResult
-    // whose express ID matches (or whose ancestor matched) will dump its operand
-    // and result geometries as .obj files into _csgDumpDir. Intended for targeted
-    // investigation only -- leave zero in production builds.
-    uint32_t _csgDumpExpressID = 0;
-    std::string _csgDumpDir;
   };
 
   class booleanManager
