@@ -18947,7 +18947,7 @@ super(GlobalId, OwnerHistory, Name, Description, ObjectType, ObjectPlacement, Re
 }
 }
 }
-SchemaNames[3]=['IFC4X3','IFC4X1','IFC4X2','IFC4X3_RC3','IFC4X3_RC4','IFC4X3_RC1','IFC4X3_RC2','IFC4X3_ADD2','IFC4X3_ADD1'];
+SchemaNames[3]=['IFC4X3','IFC4X1','IFC4X2','IFC4X3_RC3','IFC4X3_RC4','IFC4X3_RC1','IFC4X3_RC2','IFC4X3_ADD2','IFC4X3_ADD1','IFC4X2SCGL'];
 FromRawLineData[3]={
 3630933823:(v:any[])=>new IFC4X3.IfcActorRole(v[0], (((v[1] ?? undefined) === undefined) || v[1] === '') ? null :new IFC4X3.IfcLabel((((v[1] ?? undefined) === undefined) || v[1] === '') ? null :v[1].value), (((v[2] ?? undefined) === undefined) || v[2] === '') ? null :new IFC4X3.IfcText((((v[2] ?? undefined) === undefined) || v[2] === '') ? null :v[2].value)),
 618182010:(v:any[])=>new IFC4X3.IfcAddress(v[0], (((v[1] ?? undefined) === undefined) || v[1] === '') ? null :new IFC4X3.IfcText((((v[1] ?? undefined) === undefined) || v[1] === '') ? null :v[1].value), (((v[2] ?? undefined) === undefined) || v[2] === '') ? null :new IFC4X3.IfcLabel((((v[2] ?? undefined) === undefined) || v[2] === '') ? null :v[2].value)),
