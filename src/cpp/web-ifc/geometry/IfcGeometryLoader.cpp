@@ -3222,8 +3222,10 @@ namespace webifc::geometry
     }
 
     default:
-      std::string lineTypeString = _loader.GetSchemaManager().IfcTypeCodeToType(lineType);
-      spdlog::error("[ComputeCurve()] Unsupported curve type {}: {}", expressID, lineTypeString);
+        if (lineType != 0) {
+            std::string lineTypeString = _loader.GetSchemaManager().IfcTypeCodeToType(lineType);
+            spdlog::error("[ComputeCurve()] Unsupported curve type {}: {}", expressID, lineTypeString);
+        }
       break;
     }
     // DEBUG

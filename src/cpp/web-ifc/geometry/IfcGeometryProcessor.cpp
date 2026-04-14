@@ -1305,8 +1305,10 @@ namespace webifc::geometry
                 // TODO: save string of the text literal in IfcComposedMesh
                 return mesh;
             default:
-                std::string lineTypeString = _schemaManager.IfcTypeCodeToType(lineType);
-                spdlog::error("[GetMesh()] unexpected mesh type {} for entity ID {}", lineTypeString, expressID );
+                if (lineType != 0) {
+                    std::string lineTypeString = _schemaManager.IfcTypeCodeToType(lineType);
+                    spdlog::error("[GetMesh()] unexpected mesh type {} for entity ID {}", lineTypeString, expressID);
+                }
                 break;
             }
         }
