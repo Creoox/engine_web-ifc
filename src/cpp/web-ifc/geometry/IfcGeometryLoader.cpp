@@ -3944,6 +3944,287 @@ namespace webifc::geometry
       profile.curve = GetTrapeziumCurve(bottomXDim, topXDim, yDim, topXOffset, placement);
       return profile;
     }
+    case schema::IFCASYMMETRICISHAPEPROFILEDEF:
+    {
+      // IfcAsymmetricIShapeProfileDef: I-shape with different top and bottom flanges
+      // IFC4: ProfileType(0), ProfileName(1), Position(2), BottomFlangeWidth(3), OverallDepth(4),
+      //   WebThickness(5), BottomFlangeThickness(6), BottomFlangeFilletRadius(7, opt),
+      //   TopFlangeWidth(8), TopFlangeThickness(9, opt), TopFlangeFilletRadius(10, opt)
+      IfcProfile profile;
+
+      _loader.MoveToArgumentOffset(expressID, 0);
+      profile.type = _loader.GetStringArgument();
+      profile.isConvex = true;
+
+      _loader.MoveToArgumentOffset(expressID, 2);
+      glm::dmat3 placement(1);
+      if (_loader.GetTokenType() == parsing::IfcTokenType::REF)
+      {
+        _loader.StepBack();
+        uint32_t placementID = _loader.GetRefArgument();
+        placement = GetAxis2Placement2D(placementID);
+      }
+
+      _loader.MoveToArgumentOffset(expressID, 3);
+      double bottomFlangeWidth = _loader.GetDoubleArgument();
+      double depth = _loader.GetDoubleArgument();
+      double webThickness = _loader.GetDoubleArgument();
+      double bottomFlangeThickness = _loader.GetDoubleArgument();
+      double bottomFilletRadius = _loader.GetOptionalDoubleParam(0);
+      double topFlangeWidth = _loader.GetDoubleArgument();
+      double topFlangeThickness = _loader.GetOptionalDoubleParam(bottomFlangeThickness);
+      double topFilletRadius = _loader.GetOptionalDoubleParam(0);
+
+      bool hasBottomFillet = bottomFilletRadius > 0;
+      bool hasTopFillet = topFilletRadius > 0;
+
+      double hd = depth / 2;
+      double hbw = bottomFlangeWidth / 2;
+      double htw = topFlangeWidth / 2;
+      double hweb = webThickness / 2;
+
+      // Build curve clockwise from top-left
+      glm::dmat4 pl = glm::dmat4(
+        glm::dvec4(placement[0], 0),
+        glm::dvec4(placement[1], 0),
+        glm::dvec4(0, 0, 1, 0),
+        glm::dvec4(placement[2], 1));
+
+      IfcCurve c;
+      c.points.push_back(pl * glm::dvec4(-htw, +hd, 0, 1));                              // TL
+      c.points.push_back(pl * glm::dvec4(+htw, +hd, 0, 1));                              // TR
+      c.points.push_back(pl * glm::dvec4(+htw, +hd - topFlangeThickness, 0, 1));         // TR knee
+
+      if (hasTopFillet)
+      {
+        c.points.push_back(pl * glm::dvec4(+hweb + topFilletRadius, +hd - topFlangeThickness, 0, 1));
+        c.points.push_back(pl * glm::dvec4(+hweb, +hd - topFlangeThickness - topFilletRadius, 0, 1));
+      }
+      else
+      {
+        c.points.push_back(pl * glm::dvec4(+hweb, +hd - topFlangeThickness, 0, 1));
+      }
+
+      if (hasBottomFillet)
+      {
+        c.points.push_back(pl * glm::dvec4(+hweb, -hd + bottomFlangeThickness + bottomFilletRadius, 0, 1));
+        c.points.push_back(pl * glm::dvec4(+hweb + bottomFilletRadius, -hd + bottomFlangeThickness, 0, 1));
+      }
+      else
+      {
+        c.points.push_back(pl * glm::dvec4(+hweb, -hd + bottomFlangeThickness, 0, 1));
+      }
+
+      c.points.push_back(pl * glm::dvec4(+hbw, -hd + bottomFlangeThickness, 0, 1));     // BR knee
+      c.points.push_back(pl * glm::dvec4(+hbw, -hd, 0, 1));                              // BR
+      c.points.push_back(pl * glm::dvec4(-hbw, -hd, 0, 1));                              // BL
+      c.points.push_back(pl * glm::dvec4(-hbw, -hd + bottomFlangeThickness, 0, 1));      // BL knee
+
+      if (hasBottomFillet)
+      {
+        c.points.push_back(pl * glm::dvec4(-hweb - bottomFilletRadius, -hd + bottomFlangeThickness, 0, 1));
+        c.points.push_back(pl * glm::dvec4(-hweb, -hd + bottomFlangeThickness + bottomFilletRadius, 0, 1));
+      }
+      else
+      {
+        c.points.push_back(pl * glm::dvec4(-hweb, -hd + bottomFlangeThickness, 0, 1));
+      }
+
+      if (hasTopFillet)
+      {
+        c.points.push_back(pl * glm::dvec4(-hweb, +hd - topFlangeThickness - topFilletRadius, 0, 1));
+        c.points.push_back(pl * glm::dvec4(-hweb - topFilletRadius, +hd - topFlangeThickness, 0, 1));
+      }
+      else
+      {
+        c.points.push_back(pl * glm::dvec4(-hweb, +hd - topFlangeThickness, 0, 1));
+      }
+
+      c.points.push_back(pl * glm::dvec4(-htw, +hd - topFlangeThickness, 0, 1));         // TL knee
+      c.points.push_back(pl * glm::dvec4(-htw, +hd, 0, 1));                              // TL (close)
+
+      profile.curve = c;
+      return profile;
+    }
+    case schema::IFCMIRROREDPROFILEDEF:
+    {
+      // IfcMirroredProfileDef: mirrors the parent profile about the Y axis (negate X)
+      // Subtype of IfcDerivedProfileDef. Operator is derived, not stored.
+      // Arg 2: ParentProfile, Arg 3: Operator (DERIVE -- not in file)
+      _loader.MoveToArgumentOffset(expressID, 2);
+      uint32_t profileID = _loader.GetRefArgument();
+      IfcProfile profile = GetProfileByLine(profileID);
+
+      // Mirror about Y axis: negate X coordinates
+      glm::dmat3 mirror = glm::dmat3(
+        glm::dvec3(-1, 0, 0),
+        glm::dvec3(0, 1, 0),
+        glm::dvec3(0, 0, 1));
+
+      if (!profile.isComposite)
+      {
+        for (uint32_t i = 0; i < profile.curve.points.size(); i++)
+        {
+          profile.curve.points[i] = mirror * glm::dvec3(profile.curve.points[i].x, profile.curve.points[i].y, 1);
+          profile.curve.points[i].z = 0;
+        }
+        for (auto &hole : profile.holes)
+        {
+          for (uint32_t i = 0; i < hole.points.size(); i++)
+          {
+            hole.points[i] = mirror * glm::dvec3(hole.points[i].x, hole.points[i].y, 1);
+            hole.points[i].z = 0;
+          }
+        }
+      }
+      else
+      {
+        for (uint32_t j = 0; j < profile.profiles.size(); j++)
+        {
+          for (uint32_t i = 0; i < profile.profiles[j].curve.points.size(); i++)
+          {
+            profile.profiles[j].curve.points[i] = mirror * glm::dvec3(profile.profiles[j].curve.points[i].x, profile.profiles[j].curve.points[i].y, 1);
+            profile.profiles[j].curve.points[i].z = 0;
+          }
+        }
+      }
+
+      return profile;
+    }
+    case schema::IFCCRANERAILASHAPEPROFILEDEF:
+    {
+      // IfcCraneRailAShapeProfileDef (IFC2X3 only)
+      // Position(2), OverallHeight(3), BaseWidth2(4), Radius(5,opt), HeadWidth(6),
+      // HeadDepth2(7), HeadDepth3(8), WebThickness(9), BaseWidth4(10),
+      // BaseDepth1(11), BaseDepth2(12), BaseDepth3(13)
+      IfcProfile profile;
+
+      _loader.MoveToArgumentOffset(expressID, 0);
+      profile.type = _loader.GetStringArgument();
+      profile.isConvex = false;
+
+      _loader.MoveToArgumentOffset(expressID, 2);
+      glm::dmat3 placement(1);
+      if (_loader.GetTokenType() == parsing::IfcTokenType::REF)
+      {
+        _loader.StepBack();
+        uint32_t placementID = _loader.GetRefArgument();
+        placement = GetAxis2Placement2D(placementID);
+      }
+
+      _loader.MoveToArgumentOffset(expressID, 3);
+      double overallHeight = _loader.GetDoubleArgument();
+      double baseWidth2 = _loader.GetDoubleArgument();
+      double radius = _loader.GetOptionalDoubleParam(0);
+      double headWidth = _loader.GetDoubleArgument();
+      double headDepth2 = _loader.GetDoubleArgument();
+      double headDepth3 = _loader.GetDoubleArgument();
+      double webThickness = _loader.GetDoubleArgument();
+      double baseWidth4 = _loader.GetDoubleArgument();
+      double baseDepth1 = _loader.GetDoubleArgument();
+      double baseDepth2 = _loader.GetDoubleArgument();
+      double baseDepth3 = _loader.GetDoubleArgument();
+
+      // A-shape rail profile, centered at origin, symmetric about Y axis
+      // Build from bottom-left, clockwise
+      double hh = overallHeight / 2;
+      double hhw = headWidth / 2;
+      double hbw2 = baseWidth2 / 2;
+      double hbw4 = baseWidth4 / 2;
+      double hweb = webThickness / 2;
+
+      glm::dmat4 pl = glm::dmat4(
+        glm::dvec4(placement[0], 0),
+        glm::dvec4(placement[1], 0),
+        glm::dvec4(0, 0, 1, 0),
+        glm::dvec4(placement[2], 1));
+
+      IfcCurve c;
+      // Base
+      c.points.push_back(pl * glm::dvec4(-hbw2, -hh, 0, 1));
+      c.points.push_back(pl * glm::dvec4(+hbw2, -hh, 0, 1));
+      c.points.push_back(pl * glm::dvec4(+hbw2, -hh + baseDepth1, 0, 1));
+      c.points.push_back(pl * glm::dvec4(+hbw4, -hh + baseDepth1 + baseDepth2, 0, 1));
+      // Web right
+      c.points.push_back(pl * glm::dvec4(+hweb, -hh + baseDepth1 + baseDepth2 + baseDepth3, 0, 1));
+      // Head right
+      c.points.push_back(pl * glm::dvec4(+hweb, +hh - headDepth2 - headDepth3, 0, 1));
+      c.points.push_back(pl * glm::dvec4(+hhw, +hh - headDepth2, 0, 1));
+      c.points.push_back(pl * glm::dvec4(+hhw, +hh, 0, 1));
+      // Head left
+      c.points.push_back(pl * glm::dvec4(-hhw, +hh, 0, 1));
+      c.points.push_back(pl * glm::dvec4(-hhw, +hh - headDepth2, 0, 1));
+      // Web left
+      c.points.push_back(pl * glm::dvec4(-hweb, +hh - headDepth2 - headDepth3, 0, 1));
+      c.points.push_back(pl * glm::dvec4(-hweb, -hh + baseDepth1 + baseDepth2 + baseDepth3, 0, 1));
+      // Base left
+      c.points.push_back(pl * glm::dvec4(-hbw4, -hh + baseDepth1 + baseDepth2, 0, 1));
+      c.points.push_back(pl * glm::dvec4(-hbw2, -hh + baseDepth1, 0, 1));
+      c.points.push_back(pl * glm::dvec4(-hbw2, -hh, 0, 1));  // close
+
+      profile.curve = c;
+      return profile;
+    }
+    case schema::IFCCRANERAILFSHAPEPROFILEDEF:
+    {
+      // IfcCraneRailFShapeProfileDef (IFC2X3 only)
+      // Position(2), OverallHeight(3), HeadWidth(4), Radius(5,opt),
+      // HeadDepth2(6), HeadDepth3(7), WebThickness(8),
+      // BaseDepth1(9), BaseDepth2(10)
+      IfcProfile profile;
+
+      _loader.MoveToArgumentOffset(expressID, 0);
+      profile.type = _loader.GetStringArgument();
+      profile.isConvex = false;
+
+      _loader.MoveToArgumentOffset(expressID, 2);
+      glm::dmat3 placement(1);
+      if (_loader.GetTokenType() == parsing::IfcTokenType::REF)
+      {
+        _loader.StepBack();
+        uint32_t placementID = _loader.GetRefArgument();
+        placement = GetAxis2Placement2D(placementID);
+      }
+
+      _loader.MoveToArgumentOffset(expressID, 3);
+      double overallHeight = _loader.GetDoubleArgument();
+      double headWidth = _loader.GetDoubleArgument();
+      double radius = _loader.GetOptionalDoubleParam(0);
+      double headDepth2 = _loader.GetDoubleArgument();
+      double headDepth3 = _loader.GetDoubleArgument();
+      double webThickness = _loader.GetDoubleArgument();
+      double baseDepth1 = _loader.GetDoubleArgument();
+      double baseDepth2 = _loader.GetDoubleArgument();
+
+      // F-shape rail profile (no base flange, just a flat bottom)
+      double hh = overallHeight / 2;
+      double hhw = headWidth / 2;
+      double hweb = webThickness / 2;
+
+      glm::dmat4 pl = glm::dmat4(
+        glm::dvec4(placement[0], 0),
+        glm::dvec4(placement[1], 0),
+        glm::dvec4(0, 0, 1, 0),
+        glm::dvec4(placement[2], 1));
+
+      IfcCurve c;
+      // Base (flat bottom at web width)
+      c.points.push_back(pl * glm::dvec4(-hweb, -hh, 0, 1));
+      c.points.push_back(pl * glm::dvec4(+hweb, -hh, 0, 1));
+      // Web right up to head
+      c.points.push_back(pl * glm::dvec4(+hweb, +hh - headDepth2 - headDepth3, 0, 1));
+      c.points.push_back(pl * glm::dvec4(+hhw, +hh - headDepth2, 0, 1));
+      c.points.push_back(pl * glm::dvec4(+hhw, +hh, 0, 1));
+      // Head top
+      c.points.push_back(pl * glm::dvec4(-hhw, +hh, 0, 1));
+      c.points.push_back(pl * glm::dvec4(-hhw, +hh - headDepth2, 0, 1));
+      // Web left down to base
+      c.points.push_back(pl * glm::dvec4(-hweb, +hh - headDepth2 - headDepth3, 0, 1));
+      c.points.push_back(pl * glm::dvec4(-hweb, -hh, 0, 1));  // close
+
+      profile.curve = c;
+      return profile;
+    }
     default:
         if (lineType != 0) {
             std::string lineTypeStr = _loader.GetSchemaManager().IfcTypeCodeToType(lineType);
