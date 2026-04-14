@@ -3713,6 +3713,108 @@ namespace webifc::geometry
 
       return profile;
     }
+    case schema::IFCCENTERLINEPROFILEDEF:
+    {
+      // IfcCenterLineProfileDef: a closed profile created by offsetting a center line
+      // Arg 0: ProfileType, Arg 1: ProfileName, Arg 2: Curve, Arg 3: Thickness
+      IfcProfile profile;
+
+      _loader.MoveToArgumentOffset(expressID, 0);
+      profile.type = _loader.GetStringArgument();
+
+      _loader.MoveToArgumentOffset(expressID, 2);
+      uint32_t curveID = _loader.GetRefArgument();
+      IfcCurve centerLine = GetCurve(curveID, 3);
+
+      _loader.MoveToArgumentOffset(expressID, 3);
+      double thickness = _loader.GetDoubleArgument();
+      double halfThickness = thickness / 2.0;
+
+      size_t numPts = centerLine.points.size();
+      if (numPts < 2)
+      {
+        spdlog::error("[GetProfileByLine()] IfcCenterLineProfileDef {} has fewer than 2 curve points", expressID);
+        return profile;
+      }
+
+      // Compute per-vertex 2D normals (perpendicular to curve direction)
+      // For interior vertices, use the averaged (miter) normal of adjacent segments
+      std::vector<glm::dvec2> normals(numPts);
+      for (size_t i = 0; i < numPts; i++)
+      {
+        glm::dvec2 n(0, 0);
+        if (i == 0)
+        {
+          glm::dvec2 dir = glm::dvec2(centerLine.points[1].x - centerLine.points[0].x,
+                                       centerLine.points[1].y - centerLine.points[0].y);
+          double len = glm::length(dir);
+          if (len > 1e-12) dir /= len;
+          n = glm::dvec2(-dir.y, dir.x);
+        }
+        else if (i == numPts - 1)
+        {
+          glm::dvec2 dir = glm::dvec2(centerLine.points[i].x - centerLine.points[i - 1].x,
+                                       centerLine.points[i].y - centerLine.points[i - 1].y);
+          double len = glm::length(dir);
+          if (len > 1e-12) dir /= len;
+          n = glm::dvec2(-dir.y, dir.x);
+        }
+        else
+        {
+          glm::dvec2 dir1 = glm::dvec2(centerLine.points[i].x - centerLine.points[i - 1].x,
+                                        centerLine.points[i].y - centerLine.points[i - 1].y);
+          glm::dvec2 dir2 = glm::dvec2(centerLine.points[i + 1].x - centerLine.points[i].x,
+                                        centerLine.points[i + 1].y - centerLine.points[i].y);
+          double len1 = glm::length(dir1);
+          double len2 = glm::length(dir2);
+          if (len1 > 1e-12) dir1 /= len1;
+          if (len2 > 1e-12) dir2 /= len2;
+          glm::dvec2 n1(-dir1.y, dir1.x);
+          glm::dvec2 n2(-dir2.y, dir2.x);
+          n = n1 + n2;
+          double nLen = glm::length(n);
+          if (nLen > 1e-12)
+          {
+            n /= nLen;
+            // Miter length correction: scale by 1/cos(half-angle) to maintain constant offset width
+            double dot = glm::dot(n, n1);
+            if (dot > 1e-3)
+            {
+              n /= dot;
+            }
+          }
+          else
+          {
+            n = n1;  // Parallel segments, use either normal
+          }
+        }
+        normals[i] = n;
+      }
+
+      // Build closed profile: left side forward, then right side backward
+      double z = centerLine.points[0].z;
+      for (size_t i = 0; i < numPts; i++)
+      {
+        glm::dvec2 pt(centerLine.points[i].x, centerLine.points[i].y);
+        glm::dvec2 offset = normals[i] * halfThickness;
+        profile.curve.Add(glm::dvec3(pt.x + offset.x, pt.y + offset.y, z));
+      }
+      for (size_t i = numPts; i > 0; i--)
+      {
+        glm::dvec2 pt(centerLine.points[i - 1].x, centerLine.points[i - 1].y);
+        glm::dvec2 offset = normals[i - 1] * halfThickness;
+        profile.curve.Add(glm::dvec3(pt.x - offset.x, pt.y - offset.y, z));
+      }
+      // Close the loop
+      {
+        glm::dvec2 pt(centerLine.points[0].x, centerLine.points[0].y);
+        glm::dvec2 offset = normals[0] * halfThickness;
+        profile.curve.Add(glm::dvec3(pt.x + offset.x, pt.y + offset.y, z));
+      }
+
+      profile.isConvex = false;
+      return profile;
+    }
     case schema::IFCCOMPOSITEPROFILEDEF:
     {
       IfcProfile profile = IfcProfile();
@@ -3843,7 +3945,10 @@ namespace webifc::geometry
       return profile;
     }
     default:
-      spdlog::error("[GetProfileByLine()] unexpected profile type {}: {}", expressID, lineType);
+        if (lineType != 0) {
+            std::string lineTypeStr = _loader.GetSchemaManager().IfcTypeCodeToType(lineType);
+            spdlog::error("[GetProfileByLine()] unexpected profile type {}: {}", expressID, lineTypeStr);
+        }
       break;
     }
 
