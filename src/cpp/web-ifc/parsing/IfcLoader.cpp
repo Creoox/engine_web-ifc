@@ -305,13 +305,13 @@ namespace webifc::parsing {
    uint32_t IfcLoader::GetLineType(const uint32_t expressID) const
    { 
       if (expressID == 0 || expressID > _maxExpressId) {
-        spdlog::error("[GetLineType()] Attempt to Access Invalid ExpressID {}", expressID);
+        spdlog::error("[GetLineType()] Attempt to access invalid entity ID {}", expressID);
         return 0;
       }
 
       const auto lineIt = _lines.find(expressID);
       if (lineIt == _lines.end()) {
-          spdlog::error("[GetLineType()] Attempt to Access Invalid ExpressID {}", expressID);
+          spdlog::error("[GetLineType()] Attempt to access invalid entity ID {}", expressID);
           return 0;
       }
 
@@ -702,10 +702,12 @@ namespace webifc::parsing {
    }
 
    
-   void IfcLoader::MoveToArgumentOffset(const uint32_t expressID, const uint32_t argumentIndex) const
-   {
+   void IfcLoader::MoveToArgumentOffset(const uint32_t expressID, const uint32_t argumentIndex) const {
        const auto lineIt = _lines.find(expressID);
-       if (lineIt == _lines.end()) return;
+       if (lineIt == _lines.end()) {
+           spdlog::error("[MoveToArgumentOffset()] Attempt to access invalid entity ID {}", expressID);
+           return;
+       }
 
         _tokenStream->MoveTo(lineIt->second->tapeOffset);
    	    ArgumentOffset(argumentIndex);

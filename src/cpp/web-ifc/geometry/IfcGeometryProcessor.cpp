@@ -15,11 +15,12 @@
 #include "operations/geometryutils.h"
 #include "operations/curve-utils.h"
 #include "operations/mesh_utils.h"
+#include "operations/meshCleanup.h"
 #include "operations/boolean-utils/fuzzy-bools.h"
 
 namespace webifc::geometry
 {
-    
+
     double BOOLSTATUS = 0;
 
     IfcGeometryProcessor::IfcGeometryProcessor(webifc::parsing::IfcLoader &loader, const webifc::schema::IfcSchemaManager &schemaManager, uint16_t circleSegments, bool coordinateToOrigin, double TOLERANCE_PLANE_INTERSECTION, double TOLERANCE_PLANE_DEVIATION, double TOLERANCE_BACK_DEVIATION_DISTANCE, double TOLERANCE_INSIDE_OUTSIDE_PERIMETER, double TOLERANCE_SCALAR_EQUALITY, double PLANE_REFIT_ITERATIONS)
@@ -192,6 +193,7 @@ namespace webifc::geometry
                 for (auto relVoidExpressID : relVoidsIt->second)
                 {
                     IfcComposedMesh voidGeom = GetMesh(relVoidExpressID);
+
                     auto flatVoidMesh = flatten(voidGeom, _expressIDToGeometry, normalizeMat);
                     voidGeoms.insert(voidGeoms.end(), flatVoidMesh.begin(), flatVoidMesh.end());
                 }
@@ -292,8 +294,10 @@ namespace webifc::geometry
                 uint32_t firstOperandID = _loader.GetRefArgument();
                 uint32_t secondOperandID = _loader.GetRefArgument();
 
-                auto firstMesh = GetMesh(firstOperandID);
-                auto secondMesh = GetMesh(secondOperandID);
+                IfcComposedMesh firstMesh = GetMesh(firstOperandID);
+                IfcComposedMesh secondMesh = GetMesh(secondOperandID);
+                firstMesh.expressID = firstOperandID;
+                secondMesh.expressID = secondOperandID;
 
                 auto origin = GetOrigin(firstMesh, _expressIDToGeometry);
                 auto normalizeMat = glm::translate(-origin);
@@ -311,9 +315,15 @@ namespace webifc::geometry
                 size_t numFacesGeoms = 0;
                 for (auto& geom : flatFirstMeshes) {
                     numFacesGeoms += geom.numFaces;
+                    if (geom.entityID == UINT32_MAX) {
+                        geom.entityID = firstOperandID;
+                    }
                 }
                 for (auto& geom : flatSecondMeshes) {
                     numFacesGeoms += geom.numFaces;
+                    if (geom.entityID == UINT32_MAX) {
+                        geom.entityID = secondOperandID;
+                    }
                 }
 
                 if (numFacesGeoms > _settings._CSG_MAX_NUM_FACES) {
@@ -324,7 +334,7 @@ namespace webifc::geometry
                     for (const auto& g : flatFirstMeshes) {
                         resultMesh.MergeGeometry(g);
                     }
-
+                    resultMesh.entityID = expressID;
                     _expressIDToGeometry[expressID] = resultMesh;
                     mesh.hasGeometry = true;
                     mesh.transformation = glm::translate(origin);
@@ -340,6 +350,7 @@ namespace webifc::geometry
 
                 IfcGeometry resultMesh = BoolProcess(flatFirstMeshes, flatSecondMeshes, std::string(op), _settings);
 
+                resultMesh.entityID = expressID;
                 _expressIDToGeometry[expressID] = resultMesh;
                 mesh.hasGeometry = true;
                 mesh.transformation = glm::translate(origin);
@@ -390,6 +401,7 @@ namespace webifc::geometry
 
                 mesh.transformation = surface.transformation;
                 // TODO: this is getting problematic.....
+                geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
                 mesh.hasGeometry = true;
 
@@ -455,6 +467,7 @@ namespace webifc::geometry
 #endif
 
                 // TODO: this is getting problematic.....
+                geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
                 mesh.hasGeometry = true;
                 mesh.transformation = position;
@@ -506,6 +519,7 @@ namespace webifc::geometry
                 }
 
                 IfcGeometry newGeometry;
+                newGeometry.entityID = expressID;
                 if (unitaryFaces > 12)
                 {
                     for (auto &child : mesh.children)
@@ -571,15 +585,33 @@ namespace webifc::geometry
             case schema::IFCSHAPEREPRESENTATION:
             {
                 // IFCTOPOLOGYREPRESENTATION and IFCSHAPEREPRESENTATION are identical in attributes layout
+                // attributes: 0=ContextOfItems, 1=RepresentationIdentifier, 2=RepresentationType, 3=Items
+                // RepresentationIdentifier is OPTIONAL in the schema, so seek explicitly
+                // and token-type check before reading.
+                std::string identifierStr;
                 _loader.MoveToArgumentOffset(expressID, 1);
-                auto type = _loader.GetStringArgument();
+                if (_loader.GetTokenType() == parsing::IfcTokenType::STRING) {
+                    _loader.StepBack();
+                    identifierStr = std::string(_loader.GetStringArgument());
+                }
+
+                if (!_settings._representationTypesEnabled.empty()) {
+                    if (_settings._representationTypesEnabled.find(identifierStr) == _settings._representationTypesEnabled.end()) {
+                        return mesh;
+                    }
+                }
 
                 _loader.MoveToArgumentOffset(expressID, 3);
                 auto repItems = _loader.GetSetArgument();
 
-                for (auto &repToken : repItems)
+                for (auto& repToken : repItems)
                 {
                     uint32_t repID = _loader.GetRefArgument(repToken);
+                    uint32_t repType = _loader.GetLineType(repID);
+                    std::string repTypeString = _loader.GetSchemaManager().IfcTypeCodeToType(repType);
+                    if (repType == schema::IFCBOUNDINGBOX) {
+                        continue;
+                    }
                     mesh.children.push_back(GetMesh(repID));
                 }
 
@@ -599,7 +631,7 @@ namespace webifc::geometry
                 auto faces = _loader.GetSetArgument();
 
                 IfcGeometry geom;
-
+                geom.entityID = expressID;
                 std::vector<IfcBound3D> bounds;
                 for (auto &face : faces)
                 {
@@ -616,7 +648,7 @@ namespace webifc::geometry
                 {
                     spdlog::error("[GetMesh()] Unsupported IFCPOLYGONALFACESET with PnIndex {}", expressID);
                 }
-
+                geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
                 mesh.expressID = expressID;
                 mesh.hasGeometry = true;
@@ -664,7 +696,7 @@ namespace webifc::geometry
                 {
                     TriangulateBounds(geometry, bounds3D, expressID);
                 }
-
+                geometry.entityID = expressID;
                 _expressIDToGeometry[expressID] = geometry;
                 mesh.expressID = expressID;
                 mesh.hasGeometry = true;
@@ -708,7 +740,7 @@ namespace webifc::geometry
                 }
 
                 // DumpIfcGeometry(geom, "test.obj");
-
+                geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
                 mesh.expressID = expressID;
                 mesh.hasGeometry = true;
@@ -792,6 +824,7 @@ namespace webifc::geometry
                 IfcGeometry geom = Sweep(_cache.GetLinearScalingFactor(), closed, profile, directrix, surface.normal(), true);
 
                 mesh.transformation = placement;
+                geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
                 mesh.expressID = expressID;
                 mesh.hasGeometry = true;
@@ -831,6 +864,7 @@ namespace webifc::geometry
                 );
 
                 // Store the geometry and update mesh
+                geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
                 mesh.expressID = expressID;
                 mesh.hasGeometry = true;
@@ -881,7 +915,7 @@ namespace webifc::geometry
                 geom.sweptDiskSolid.axis = std::vector<IfcCurve>{directrix};
                 geom.sweptDiskSolid.profiles = std::vector<IfcProfile>{profile};
                 geom.sweptDiskSolid.profileRadius = radius;
-
+                geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
                 mesh.expressID = expressID;
                 mesh.hasGeometry = true;
@@ -929,6 +963,7 @@ namespace webifc::geometry
                 }
 
                 mesh.transformation = placement;
+                geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
                 mesh.expressID = expressID;
                 mesh.hasGeometry = true;
@@ -1020,7 +1055,7 @@ namespace webifc::geometry
 #ifdef CSG_DEBUG_OUTPUT
 //    io::DumpIfcGeometry(geom, "IFCEXTRUDEDAREASOLID_geom.obj");
 #endif
-
+                geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
                 mesh.expressID = expressID;
                 mesh.hasGeometry = true;
@@ -1052,7 +1087,7 @@ namespace webifc::geometry
 #ifdef CSG_DEBUG_OUTPUT
                 io::DumpIfcGeometry(geom, "IFCRIGHTCIRCULARCYLINDER_geom.obj");
 #endif
-
+                geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
                 mesh.expressID = expressID;
                 mesh.hasGeometry = true;
@@ -1092,6 +1127,7 @@ namespace webifc::geometry
                 geom.numPoints = 1;
                 geom.isPolygon = true;
                 mesh.hasGeometry = true;
+                geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
 
                 return mesh;
@@ -1117,6 +1153,7 @@ namespace webifc::geometry
                 geom.numPoints = edge.points.size();
                 geom.isPolygon = true;
                 mesh.hasGeometry = true;
+                geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
 
                 return mesh;
@@ -1220,7 +1257,7 @@ namespace webifc::geometry
                 geom.numPoints = static_cast<uint32_t>(vertices.size());
                 geom.isPolygon = false;
                 geom.buildPlanes();
-
+                geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
                 mesh.hasGeometry = true;
                 mesh.expressID = expressID;
@@ -1257,6 +1294,7 @@ namespace webifc::geometry
                     geom.numPoints = curve.points.size();
                     geom.isPolygon = true;
                     mesh.hasGeometry = true;
+                    geom.entityID = expressID;
                     _expressIDToGeometry[expressID] = geom;
                 }
 
@@ -1267,8 +1305,10 @@ namespace webifc::geometry
                 // TODO: save string of the text literal in IfcComposedMesh
                 return mesh;
             default:
-                std::string lineTypeString = _schemaManager.IfcTypeCodeToType(lineType);
-                spdlog::error("[GetMesh()] unexpected mesh type {} for entity ID {}", lineTypeString, expressID );
+                if (lineType != 0) {
+                    std::string lineTypeString = _schemaManager.IfcTypeCodeToType(lineType);
+                    spdlog::error("[GetMesh()] unexpected mesh type {} for entity ID {}", lineTypeString, expressID);
+                }
                 break;
             }
         }
@@ -1672,6 +1712,9 @@ namespace webifc::geometry
         flatMesh.expressID = expressID;
 
         IfcComposedMesh composedMesh = GetMesh(expressID);
+        if (composedMesh.expressID == UINT32_MAX) {
+            composedMesh.expressID = expressID;
+        }
 
         glm::dmat4 mat = glm::dmat4(1);
         if (applyLinearScalingFactor)
@@ -1730,11 +1773,14 @@ namespace webifc::geometry
             if (geometry.testReverse())
                 geom.ReverseFaces();
 
+            if (geom.entityID == UINT32_MAX) {
+                geom.entityID = composedMesh.expressID;
+            }
             auto translation = glm::dmat4(1.0);
 
             // #1462 Reports having problems with this line, not sure why this is needed
             translation = geom.Normalize();
-
+            geom.entityID = composedMesh.expressID;
             _expressIDToGeometry[composedMesh.expressID] = geom;
 
             if (!composedMesh.hasColor)
@@ -1796,6 +1842,9 @@ namespace webifc::geometry
         if (composedMesh.hasGeometry && geomIt != _expressIDToGeometry.end())
         {
             IfcGeometry meshGeom = geomIt->second;
+#ifdef _DEBUG_PRINT
+            std::cout << "[ApplyBoolean] expressID=" << composedMesh.expressID << " faces=" << meshGeom.numFaces << " children=" << composedMesh.children.size() << std::endl;
+#endif
             if (meshGeom.numFaces <= _settings._CSG_MAX_NUM_FACES)
             {
                 std::vector<IfcGeometry> transformedGeoms = transformIfcGeometry(meshGeom, newMat, transformationBreaksWinding);
@@ -1917,7 +1966,19 @@ namespace webifc::geometry
                 uint32_t faceID = _loader.GetRefArgument(faceToken);
                 AddFaceToGeometry(faceID, geometry);
             }
-
+            geometry.entityID = expressID;
+#ifdef DUMP_CSG_MESHES
+            if( lineType == schema::IFCCLOSEDSHELL )
+            {
+                fuzzybools::Geometry fuzzyGeom = booleanManager::convertToEngine(geometry);
+                auto meshInfo = meshCleanup::isMeshWatertight(fuzzyGeom);
+                if (!meshInfo.watertight) {
+                    webifc::io::DumpIfcGeometry(geometry, "IFCCLOSEDSHELL-notWaterTight.obj");
+                    spdlog::warn("[GetBrep()] geometry with expressID {} is not watertight after triangulation", expressID);
+                }
+			}
+            
+#endif
             return geometry;
         }
         default:
@@ -2017,49 +2078,6 @@ namespace webifc::geometry
         }
     }
 
-    fuzzybools::Geometry booleanManager::convertToEngine(Geometry geom)
-    {
-        fuzzybools::Geometry newGeom;
-        newGeom.fvertexData = geom.fvertexData;
-        newGeom.vertexData = geom.vertexData;
-        newGeom.indexData = geom.indexData;
-        newGeom.planeData = geom.planeData;
-        newGeom.numPoints = geom.numPoints;
-        newGeom.numFaces = geom.numFaces;
-        for (auto plane : geom.planes)
-        {
-            fuzzybools::SimplePlane newPlane;
-            newPlane.distance = plane.distance;
-            newPlane.normal = plane.normal;
-            newGeom.planes.push_back(newPlane);
-        }
-        newGeom.hasPlanes = geom.hasPlanes;
-        return newGeom;
-    }
-
-    IfcGeometry booleanManager::convertToWebIfc(fuzzybools::Geometry geom)
-    {
-        IfcGeometry newGeom;
-        newGeom.fvertexData = geom.fvertexData;
-        newGeom.vertexData = geom.vertexData;
-        newGeom.indexData = geom.indexData;
-        newGeom.planeData = geom.planeData;
-        newGeom.numPoints = geom.numPoints;
-        newGeom.numFaces = geom.numFaces;
-        uint32_t id = 0;
-        for (auto plane : geom.planes)
-        {
-            webifc::geometry::Plane newPlane;
-            newPlane.id = id;
-            newPlane.distance = plane.distance;
-            newPlane.normal = plane.normal;
-            newGeom.planes.push_back(newPlane);
-            id++;
-        }
-        newGeom.hasPlanes = geom.hasPlanes;
-        return newGeom;
-    }
-
     IfcGeometry booleanManager::BoolProcess(const std::vector<IfcGeometry> &firstGeoms, std::vector<IfcGeometry> &secondGeoms, std::string op, IfcGeometrySettings _settings)
     {
         spdlog::debug("[BoolProcess({})]");
@@ -2067,7 +2085,7 @@ namespace webifc::geometry
 
         for (auto &firstGeom : firstGeoms)
         {
-            IfcGeometry firstOperator = firstGeom;
+            IfcGeometry firstOperand = firstGeom;
             for (auto &secondGeom : secondGeoms)
             {
                 if (secondGeom.numFaces == 0)
@@ -2079,7 +2097,7 @@ namespace webifc::geometry
                     continue;
                 }
 
-                if (firstOperator.numFaces == 0 && op != "UNION")
+                if (firstOperand.numFaces == 0 && op != "UNION")
                 {
                     spdlog::error("[BoolProcess()] bool aborted due to empty source or target");
 
@@ -2088,7 +2106,7 @@ namespace webifc::geometry
                     break;
                 }
 
-                IfcGeometry secondOperator;
+                IfcGeometry secondOperand;
 
                 if (secondGeom.halfSpace)
                 {
@@ -2106,9 +2124,9 @@ namespace webifc::geometry
                     double scaleY = 1;
                     double scaleZ = 1;
 
-                    for (uint32_t i = 0; i < firstOperator.numPoints; i++)
+                    for (uint32_t i = 0; i < firstOperand.numPoints; i++)
                     {
-                        glm::dvec3 p = firstOperator.GetPoint(i);
+                        glm::dvec3 p = firstOperand.GetPoint(i);
                         glm::dvec3 vec = (p - origin);
                         double dx = glm::dot(vec, x);
                         double dy = glm::dot(vec, y);
@@ -2126,60 +2144,94 @@ namespace webifc::geometry
                             scaleZ = glm::abs(dz);
                         }
                     }
-                    secondOperator.AddGeometry(secondGeom, trans, scaleX * 2, scaleY * 2, scaleZ * 2, secondGeom.halfSpaceOrigin);
+                    secondOperand.AddGeometry(secondGeom, trans, scaleX * 2, scaleY * 2, scaleZ * 2, secondGeom.halfSpaceOrigin);
                 }
                 else
                 {
-                    secondOperator = secondGeom;
+                    secondOperand = secondGeom;
                 }
 
-#ifdef CSG_DEBUG_OUTPUT
-                // io::DumpIfcGeometry(secondOperator, "second.obj");
-#endif
+                // Scale second operand 0.1% up if numFaces < 100, to remove membrane artifacts.
+                // If the bbox is smaller in one dimension (typical for window opening), scale only in that dimension.
+                if (secondOperand.numFaces > 0 && secondOperand.numFaces < 100 && false)
+                {
+                    bimGeometry::AABB bbox = secondOperand.GetAABB();
+                    glm::dvec3 center = (bbox.min + bbox.max) * 0.5;
+                    glm::dvec3 extents = bbox.max - bbox.min;
 
-#ifdef CSG_DEBUG_OUTPUT
-                // io::DumpIfcGeometry(firstOperator, "first.obj");
+                    double maxExtent = glm::max(extents.x, glm::max(extents.y, extents.z));
+                    double threshold = maxExtent * 0.1;
 
-                // BOOLSTATUS++;
+                    double scaleFactorX = 1.0;
+                    double scaleFactorY = 1.0;
+                    double scaleFactorZ = 1.0;
 
-#endif
+                    bool hasSmallDim = (extents.x < threshold) || (extents.y < threshold) || (extents.z < threshold);
 
-                firstOperator.buildPlanes();
-                secondOperator.buildPlanes();
+                    if (hasSmallDim)
+                    {
+                        // Scale only the small dimension(s)
+                        if (extents.x < threshold) scaleFactorX = 1.001;
+                        if (extents.y < threshold) scaleFactorY = 1.001;
+                        if (extents.z < threshold) scaleFactorZ = 1.001;
+                    }
+                    else
+                    {
+                        // Scale uniformly
+                        scaleFactorX = 1.001;
+                        scaleFactorY = 1.001;
+                        scaleFactorZ = 1.001;
+                    }
+
+                    for (uint32_t i = 0; i < secondOperand.numPoints; i++)
+                    {
+                        glm::dvec3 pt = secondOperand.GetPoint(i);
+                        pt.x = center.x + (pt.x - center.x) * scaleFactorX;
+                        pt.y = center.y + (pt.y - center.y) * scaleFactorY;
+                        pt.z = center.z + (pt.z - center.z) * scaleFactorZ;
+                        secondOperand.SetPoint(pt.x, pt.y, pt.z, i);
+                    }
+                }
+
+                firstOperand.buildPlanes();
+                secondOperand.buildPlanes();
 
                 fuzzybools::SetEpsilons(_settings.TOLERANCE_PLANE_INTERSECTION, _settings.TOLERANCE_PLANE_DEVIATION, _settings.TOLERANCE_BACK_DEVIATION_DISTANCE, _settings.TOLERANCE_INSIDE_OUTSIDE_PERIMETER, _settings.TOLERANCE_BOUNDING_BOX, BOOLSTATUS);
 
                 if (op == "DIFFERENCE")
                 {
-                    firstOperator = Subtract(firstOperator, secondOperator);
+                    firstOperand = Subtract(firstOperand, secondOperand);
                 }
                 else if (op == "UNION")
                 {
-                    firstOperator = Union(firstOperator, secondOperator);
+                    firstOperand = Union(firstOperand, secondOperand);
                 }
-
-#ifdef CSG_DEBUG_OUTPUT
-                io::DumpIfcGeometry(firstOperator, "result.obj");
+#ifdef _DEBUG_PRINT
+                std::cout << "[BoolProcess] result.faces=" << firstOperand.numFaces << std::endl;
 #endif
             }
-            finalResult.AddGeometry(firstOperator);
+            finalResult.AddGeometry(firstOperand);
         }
 
         return finalResult;
     }
 
-    IfcGeometry booleanManager::Union(IfcGeometry firstOperator, IfcGeometry secondOperator)
+    IfcGeometry booleanManager::Union(IfcGeometry firstOperand, IfcGeometry secondOperand)
     {
-        fuzzybools::Geometry firstEngGeom = convertToEngine(firstOperator);
-        fuzzybools::Geometry secondEngGeom = convertToEngine(secondOperator);
-        return convertToWebIfc(fuzzybools::Union(firstEngGeom, secondEngGeom));
+        fuzzybools::Geometry firstEngGeom = convertToEngine(firstOperand);
+        fuzzybools::Geometry secondEngGeom = convertToEngine(secondOperand);
+        fuzzybools::Geometry result = fuzzybools::Union(firstEngGeom, secondEngGeom);
+        meshCleanup::PostBooleanOperationMeshCleanup(result);
+        return convertToWebIfc(std::move(result));
     }
 
-    IfcGeometry booleanManager::Subtract(IfcGeometry firstOperator, IfcGeometry secondOperator)
+    IfcGeometry booleanManager::Subtract(IfcGeometry firstOperand, IfcGeometry secondOperand)
     {
-        fuzzybools::Geometry firstEngGeom = convertToEngine(firstOperator);
-        fuzzybools::Geometry secondEngGeom = convertToEngine(secondOperator);
-        return convertToWebIfc(fuzzybools::Subtract(firstEngGeom, secondEngGeom));
+        fuzzybools::Geometry firstEngGeom = convertToEngine(firstOperand);
+        fuzzybools::Geometry secondEngGeom = convertToEngine(secondOperand);
+        fuzzybools::Geometry result = fuzzybools::Subtract(firstEngGeom, secondEngGeom);
+        meshCleanup::PostBooleanOperationMeshCleanup(result);
+        return convertToWebIfc(std::move(result));
     }
 
     IfcGeometryProcessor *IfcGeometryProcessor::Clone(const webifc::parsing::IfcLoader &newLoader) const

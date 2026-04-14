@@ -35,7 +35,7 @@ namespace webifc::geometry {
 	struct Geometry : bimGeometry::Geometry
 	{
 		bool isPolygon = false;
-
+		uint32_t entityID = UINT32_MAX;
 		void BuildFromVectors(std::vector<double>& d, std::vector<uint32_t>& i);
 		AABB GetFaceBox(size_t index) const;
 		void GetCenterExtents(glm::dvec3& center, glm::dvec3& extents) const;

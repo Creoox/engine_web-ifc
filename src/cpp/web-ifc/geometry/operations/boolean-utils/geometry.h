@@ -41,6 +41,7 @@ namespace fuzzybools
 		uint32_t numPoints = 0;
 		uint32_t numFaces = 0;
 		uint32_t data = 0;
+		uint32_t entityID = UINT32_MAX;
 
 		void BuildFromVectors(std::vector<double> &d, std::vector<uint32_t> &i)
 		{
@@ -191,7 +192,7 @@ namespace fuzzybools
 		void GetCenterExtents(glm::dvec3 &center, glm::dvec3 &extents) const
 		{
 			glm::dvec3 min(DBL_MAX, DBL_MAX, DBL_MAX);
-			glm::dvec3 max(-DBL_MAX, -DBL_MAX, -DBL_MAX);
+			glm::dvec3 max(DBL_MIN, DBL_MIN, DBL_MIN);
 
 			for (size_t i = 0; i < numPoints; i++)
 			{

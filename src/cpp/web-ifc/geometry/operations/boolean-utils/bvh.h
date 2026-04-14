@@ -151,7 +151,7 @@ namespace fuzzybools
         {
             if (nodes.empty()) return;
 
-            static std::vector<uint32_t> stack;
+            static std::vector<uint32_t> stack;  // when used in threads: change static -> thread_local
             stack.clear();
             stack.emplace_back(0);
 
@@ -195,7 +195,7 @@ namespace fuzzybools
 
         nodes.reserve(nodeID + 1);
 
-        if (depth == 20)
+        if (depth == 6)
         {
             return nodeID;
         }
@@ -204,7 +204,7 @@ namespace fuzzybools
         int size = end - start;
 
         // ignore cubes
-        if (size <= 4)
+        if (size <= 12)
         {
             return nodeID;
         }

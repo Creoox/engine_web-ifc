@@ -126,7 +126,7 @@ namespace webifc::io
     void DumpCrossSections(std::vector<webifc::geometry::IfcCrossSections> &crossSection, std::string filename);
     void DumpIfcGeometryToPath(const webifc::geometry::IfcGeometry &geom, std::string path, double inputScale);
     std::string ToObj(webifc::geometry::IfcGeometry &geom, size_t &offset, glm::dmat4 transform = glm::dmat4(1));
-    void DumpIfcGeometry(webifc::geometry::IfcGeometry &geom, std::string filename);
+    void DumpIfcGeometry(const webifc::geometry::IfcGeometry &geom, std::string filename);
     void DumpFlatMesh(webifc::geometry::IfcFlatMesh &mesh, webifc::geometry::IfcGeometryProcessor &processor, std::string filename);
     void DumpSVGLines(std::vector<std::vector<glm::dvec2>> lines, std::string filename);
     std::string makeSVGLines(std::vector<glm::dvec2> input, std::vector<uint32_t> indices);

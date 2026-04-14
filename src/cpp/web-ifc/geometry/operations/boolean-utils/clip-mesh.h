@@ -6,6 +6,7 @@
 
 #include <glm/glm.hpp>
 #include <cstdint>
+#include <cstring>
 
 #include "util.h"
 #include "is-inside-mesh.h"
@@ -20,13 +21,9 @@ namespace fuzzybools
             std::vector<std::vector<glm::dvec2>> edgesPrinted;
         #endif
 
-        // Hash-map based O(1) duplicate-triangle detection, replaces the O(N) linear scan.
-        //
-        // hashDouble: MurmurHash finalizer applied to the bit pattern of a double so that bitwise-identical 
-        // values always hash the same.
-        // canonicalTriHash: cyclic-rotation-invariant hash of (a,b,c) -
-        //   invariant under (a,b,c)->(b,c,a)->(c,a,b) but NOT reflection, matching the three cyclic equalities
-        // tested by the dedup check.
+        // Hash-map based O(1) duplicate-triangle detection.
+        // canonicalTriHash is cyclic-rotation-invariant: (a,b,c)->(b,c,a)->(c,a,b)
+        // hash the same, matching the three cyclic equalities tested by the dedup check.
         auto hashDouble = [](double x) -> std::size_t {
             std::uint64_t bits = 0;
             std::memcpy(&bits, &x, sizeof(bits));
@@ -54,7 +51,6 @@ namespace fuzzybools
             h ^= h2 + 0x9e3779b9u + (h << 6) + (h >> 2);
             return h;
         };
-        // canonical-triangle-hash -> face indices already accepted into result
         std::unordered_map<std::size_t, std::vector<int>> triHashMap;
         triHashMap.reserve(mesh.data / 4 + 16);
 
@@ -90,7 +86,6 @@ namespace fuzzybools
 
             bool doNext = true;
 
-            // O(1) expected: hash-map lookup
             {
                 const std::size_t triKey = canonicalTriHash(a, b, c);
                 auto it = triHashMap.find(triKey);

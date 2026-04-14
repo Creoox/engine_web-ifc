@@ -513,15 +513,13 @@ namespace webifc::geometry
 				std::vector<uint32_t> indices = mapbox::earcut<uint32_t>(polygon2D);
 
 				uint32_t offset = 0;
+				bool winding = true;
 				bool flipWinding = false;
 
 				if (indices.size() >= 3)
 				{
-					// Check winding against the actual extrusion direction, not the hardcoded Z axis
-					glm::dvec3 capNormal = glm::cross(
-						geom.GetPoint(offset + indices[1]) - geom.GetPoint(offset + indices[0]),
-						geom.GetPoint(offset + indices[2]) - geom.GetPoint(offset + indices[0]));
-					flipWinding = (glm::dot(capNormal, dir) < 0);
+					winding = bimGeometry::GetWindingOfTriangle(geom.GetPoint(offset + indices[0]), geom.GetPoint(offset + indices[1]), geom.GetPoint(offset + indices[2]));
+					flipWinding = !winding;
 
 					for (size_t i = 0; i < indices.size(); i += 3)
 					{
@@ -830,9 +828,13 @@ namespace webifc::geometry
 			{
 
 				IfcGeometry newMeshGeom = sourceGeom.part[i];
+				if (newMeshGeom.entityID == UINT32_MAX) {
+					newMeshGeom.entityID = sourceGeom.entityID;
+				}
 				if (newMeshGeom.numFaces)
 				{
 					IfcGeometry newGeom;
+					newGeom.entityID = newMeshGeom.entityID;
 					newGeom.halfSpace = newMeshGeom.halfSpace;
 					if (newGeom.halfSpace)
 					{
@@ -868,6 +870,7 @@ namespace webifc::geometry
 			if (sourceGeom.numFaces)
 			{
 				IfcGeometry newGeom;
+				newGeom.entityID = sourceGeom.entityID;
 				newGeom.halfSpace = sourceGeom.halfSpace;
 				if (newGeom.halfSpace)
 				{
@@ -912,7 +915,7 @@ namespace webifc::geometry
 		if (geomIt != geometryMap.end())
 		{
 			auto meshGeom = geomIt->second;
-
+			meshGeom.entityID = mesh.expressID;
 			std::vector<IfcGeometry> transformedGeoms = transformIfcGeometry(meshGeom, newMat, transformationBreaksWinding);
 			geoms.insert(geoms.end(), transformedGeoms.begin(), transformedGeoms.end());
 		}

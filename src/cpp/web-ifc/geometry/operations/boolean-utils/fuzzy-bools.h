@@ -5,12 +5,6 @@
 #include "clip-mesh.h"
 #include <web-ifc/geometry/operations/meshCleanup.h>
 
-#include <queue>
-#include <array>
-#include <tuple>
-#include <functional>
-#include <algorithm>
-
 namespace fuzzybools
 {
 	inline void SetEpsilons(double TOLERANCE_PLANE_INTERSECTION, double TOLERANCE_PLANE_DEVIATION, double TOLERANCE_BACK_DEVIATION_DISTANCE, double TOLERANCE_INSIDE_OUTSIDE_PERIMETER, double TOLERANCE_BOUNDING_BOX, double BOOLSTATUS)
@@ -37,9 +31,7 @@ namespace fuzzybools
 //	DumpGeometry(geom, L"Post-normalize.obj");
 #endif
 
-		auto result = fuzzybools::clipSubtract(geom, bvh1, bvh2);
-		CleanNonManifoldShells(result);
-		return result;
+		return fuzzybools::clipSubtract(geom, bvh1, bvh2);
 	}
 
 	inline Geometry Union(const Geometry &A, const Geometry &B)
@@ -52,8 +44,6 @@ namespace fuzzybools
 
 		auto geom = Normalize(A, B, sp, true);
 
-		auto result = fuzzybools::clipJoin(geom, bvh1, bvh2);
-		CleanNonManifoldShells(result);
-		return result;
+		return fuzzybools::clipJoin(geom, bvh1, bvh2);
 	}
 }

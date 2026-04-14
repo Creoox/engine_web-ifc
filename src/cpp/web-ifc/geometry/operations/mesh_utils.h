@@ -389,7 +389,7 @@ namespace webifc::geometry
         // For each pair of adjacent angular columns, match overlapping V-strips
         // and create a triangle strip that follows the surface curvature.
         // This produces quads (split into 2 triangles) aligned with the natural
-        // (angle, profile) parameterization — no chord-through-interior issues.
+        // (angle, profile) parameterization - no chord-through-interior issues.
         for (int k = 0; k < uSteps; k++)
         {
             const auto& colL = columns[k];

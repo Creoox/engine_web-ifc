@@ -305,7 +305,7 @@ namespace webifc::geometry
             else
             {
                 // fallback to other types of IfcPoint
-                glm::dmat4 linearPlacement = GetLocalPlacement(LocationID, Axis);
+                glm::dmat4 linearPlacement = GetLocalPlacement(LocationID);
                 linearPlacement *= scale; // check if already applied in GetLocalPlacement
                 vecCrossSectionPositionsFallback.push_back(linearPlacement);
             }
@@ -2101,6 +2101,34 @@ namespace webifc::geometry
                     return;
                 }
             }
+            else if (params.trimStart.trimType == TRIM_BY_LENGTH && params.trimEnd.trimType == TRIM_BY_PARAMETER)
+            {
+                // Mixed types: start is arc length, end is parameter (angle)
+                if (radius1 > 0)
+                {
+                    startRad = params.trimStart.value / radius1;
+                    endRad = params.trimEnd.value * _cache.GetAngularScalingFactor();
+                }
+                else
+                {
+                    spdlog::error("IFCCIRCLE (ID: {}) has zero radius1, cannot compute angles from length.", expressID);
+                    return;
+                }
+            }
+            else if (params.trimStart.trimType == TRIM_BY_PARAMETER && params.trimEnd.trimType == TRIM_BY_LENGTH)
+            {
+                // Mixed types: start is parameter (angle), end is arc length
+                if (radius1 > 0)
+                {
+                    startRad = params.trimStart.value * _cache.GetAngularScalingFactor();
+                    endRad = params.trimEnd.value / radius1;
+                }
+                else
+                {
+                    spdlog::error("IFCCIRCLE (ID: {}) has zero radius1, cannot compute angles from length.", expressID);
+                    return;
+                }
+            }
             else if (params.trimStart.trimType == TRIM_BY_POSITION && params.trimEnd.trimType == TRIM_BY_POSITION)
             {
                 byPos = true;
@@ -2522,7 +2550,69 @@ namespace webifc::geometry
       segmentParams.trimSense = trimSense;
 
       ComputeCurve(ParentCurveID, curve, segmentParams);
-      
+
+      // The parent curve is evaluated with ignorePlacement=true, so its
+      // points are in the parent curve's local coordinate system.  Per IFC
+      // spec the CurveSegment Placement defines a coordinate system where
+      // the origin is at the segment's start point and the X-axis is the
+      // tangent direction at the start.  We must therefore:
+      //   1. Translate so the first point sits at the local origin (0,0,0)
+      //   2. Rotate so the start tangent aligns with the local X-axis (1,0,0)
+      // Then the Placement correctly maps local coords to world coords.
+      if (curve.points.size() > curvePointsOffset)
+      {
+          // 1. Translate start point to origin
+          glm::dvec3 startOffset = curve.points[curvePointsOffset];
+          for (size_t i = curvePointsOffset; i < curve.points.size(); ++i)
+          {
+              curve.points[i] -= startOffset;
+          }
+
+          // 2. Rotate so start tangent aligns with X-axis (1,0,0)
+          glm::dvec3 localStartTangent(1, 0, 0);
+          if (!curve.segmentStartTangents.empty())
+          {
+              localStartTangent = curve.segmentStartTangents.back();
+          }
+          else if (curve.points.size() > curvePointsOffset + 1)
+          {
+              localStartTangent = glm::normalize(
+                  curve.points[curvePointsOffset + 1] - curve.points[curvePointsOffset]);
+          }
+
+          double tangentAngle = std::atan2(localStartTangent.y, localStartTangent.x);
+          if (std::abs(tangentAngle) > 1e-10)
+          {
+              double cosA = std::cos(-tangentAngle);
+              double sinA = std::sin(-tangentAngle);
+              for (size_t i = curvePointsOffset; i < curve.points.size(); ++i)
+              {
+                  double x = curve.points[i].x;
+                  double y = curve.points[i].y;
+                  curve.points[i].x = x * cosA - y * sinA;
+                  curve.points[i].y = x * sinA + y * cosA;
+              }
+
+              // Also rotate the end tangent to match
+              double ex = curve.endTangent.x;
+              double ey = curve.endTangent.y;
+              curve.endTangent.x = ex * cosA - ey * sinA;
+              curve.endTangent.y = ex * sinA + ey * cosA;
+              curve.endTangent.z = 0.0;
+
+              // Rotate start tangent (should become (1,0,0) or close to it)
+              if (!curve.segmentStartTangents.empty())
+              {
+                  auto& st = curve.segmentStartTangents.back();
+                  double sx = st.x;
+                  double sy = st.y;
+                  st.x = sx * cosA - sy * sinA;
+                  st.y = sx * sinA + sy * cosA;
+                  st.z = 0.0;
+              }
+          }
+      }
+
       bool applyOwnPlacement = true;
       if (params.ignorePlacement) {
           applyOwnPlacement = false;
@@ -3132,8 +3222,10 @@ namespace webifc::geometry
     }
 
     default:
-      std::string lineTypeString = _loader.GetSchemaManager().IfcTypeCodeToType(lineType);
-      spdlog::error("[ComputeCurve()] Unsupported curve type {}: {}", expressID, lineTypeString);
+        if (lineType != 0) {
+            std::string lineTypeString = _loader.GetSchemaManager().IfcTypeCodeToType(lineType);
+            spdlog::error("[ComputeCurve()] Unsupported curve type {}: {}", expressID, lineTypeString);
+        }
       break;
     }
     // DEBUG
@@ -3923,354 +4015,351 @@ namespace webifc::geometry
     return curve;
   }
 
-  glm::dmat4 IfcGeometryLoader::GetLocalPlacement(uint32_t expressID, glm::dvec3 vector) const
+  glm::dmat4 IfcGeometryLoader::GetLocalPlacement(uint32_t expressID) const
   {
-    if (_cache.GetExpressIDToPlacement().contains(expressID))
-    {
-      return _cache.GetExpressIDToPlacement()[expressID];
-    }
-    else
-    {
-      spdlog::debug("[GetLocalPlacement({})]", expressID);
-      auto lineType = _loader.GetLineType(expressID);
-      switch (lineType)
-      {
-      case schema::IFCPOINTBYDISTANCEEXPRESSION:
-      {
-        // IfcPointByDistanceExpression : public IfcPoint
-        //    IfcCurveMeasureSelect					DistanceAlong;
-        //    IfcLengthMeasure						OffsetLateral;			//optional
-        //    IfcLengthMeasure						OffsetVertical;			//optional
-        //    IfcLengthMeasure						OffsetLongitudinal;		//optional
-        //    IfcCurve								BasisCurve;
+	if (_cache.GetExpressIDToPlacement().contains(expressID))
+	{
+		return _cache.GetExpressIDToPlacement()[expressID];
+	}
+	spdlog::debug("[GetLocalPlacement({})]", expressID);
+	auto lineType = _loader.GetLineType(expressID);
+	switch (lineType)
+	{
+	case schema::IFCPOINTBYDISTANCEEXPRESSION:
+	{
+		// IfcPointByDistanceExpression : public IfcPoint
+		//    IfcCurveMeasureSelect					DistanceAlong;
+		//    IfcLengthMeasure						OffsetLateral;			//optional
+		//    IfcLengthMeasure						OffsetVertical;			//optional
+		//    IfcLengthMeasure						OffsetLongitudinal;		//optional
+		//    IfcCurve								BasisCurve;
 
-        _loader.MoveToArgumentOffset(expressID, 0);
-        IfcCurve curve;
-        double DistanceAlong = 0;
-        double OffsetLateral = 0;
-        double OffsetVertical = 0;
-        double OffsetLongitudinal = 0;
+		_loader.MoveToArgumentOffset(expressID, 0);
+		IfcCurve curve;
+		double DistanceAlong = 0;
+		double OffsetLateral = 0;
+		double OffsetVertical = 0;
+		double OffsetLongitudinal = 0;
 
-        if (_loader.GetTokenType() != parsing::IfcTokenType::EMPTY)
-        {
-          _loader.StepBack();
-          DistanceAlong = ReadLenghtMeasure();
-        }
+		if (_loader.GetTokenType() != parsing::IfcTokenType::EMPTY)
+		{
+			_loader.StepBack();
+			DistanceAlong = ReadLenghtMeasure();
+		}
 
-        _loader.MoveToArgumentOffset(expressID, 2);
-        auto tokenTypeOffsetLateral = _loader.GetTokenType();
-        if (tokenTypeOffsetLateral == parsing::LABEL)
-        {
-            OffsetLateral = ReadLenghtMeasure();
-        }
-        else if (tokenTypeOffsetLateral == parsing::REAL)
-        {
-            _loader.StepBack();
-            OffsetLateral = _loader.GetDoubleArgument();
-        }
+		_loader.MoveToArgumentOffset(expressID, 2);
+		auto tokenTypeOffsetLateral = _loader.GetTokenType();
+		if (tokenTypeOffsetLateral == parsing::LABEL)
+		{
+			OffsetLateral = ReadLenghtMeasure();
+		}
+		else if (tokenTypeOffsetLateral == parsing::REAL)
+		{
+			_loader.StepBack();
+			OffsetLateral = _loader.GetDoubleArgument();
+		}
 
-        _loader.MoveToArgumentOffset(expressID, 3);
-        auto tokenTypeOffsetVertical = _loader.GetTokenType();
-        if (tokenTypeOffsetVertical == parsing::LABEL)
-        {
-            OffsetVertical = ReadLenghtMeasure();
-        }
-        else if (tokenTypeOffsetVertical == parsing::REAL)
-        {
-            _loader.StepBack();
-            OffsetVertical = _loader.GetDoubleArgument();
-        }
+		_loader.MoveToArgumentOffset(expressID, 3);
+		auto tokenTypeOffsetVertical = _loader.GetTokenType();
+		if (tokenTypeOffsetVertical == parsing::LABEL)
+		{
+			OffsetVertical = ReadLenghtMeasure();
+		}
+		else if (tokenTypeOffsetVertical == parsing::REAL)
+		{
+			_loader.StepBack();
+			OffsetVertical = _loader.GetDoubleArgument();
+		}
 
-        _loader.MoveToArgumentOffset(expressID, 4);
-        auto tokenTypeOffsetLongitudinal = _loader.GetTokenType();
-        if (tokenTypeOffsetLongitudinal == parsing::LABEL)
-        {
-            OffsetLongitudinal = ReadLenghtMeasure();
-        }
-        else if (tokenTypeOffsetLongitudinal == parsing::REAL)
-        {
-            _loader.StepBack();
-            OffsetLongitudinal = _loader.GetDoubleArgument();
-        }
+		_loader.MoveToArgumentOffset(expressID, 4);
+		auto tokenTypeOffsetLongitudinal = _loader.GetTokenType();
+		if (tokenTypeOffsetLongitudinal == parsing::LABEL)
+		{
+			OffsetLongitudinal = ReadLenghtMeasure();
+		}
+		else if (tokenTypeOffsetLongitudinal == parsing::REAL)
+		{
+			_loader.StepBack();
+			OffsetLongitudinal = _loader.GetDoubleArgument();
+		}
 
-        glm::dmat4 result;
-        _loader.MoveToArgumentOffset(expressID, 5);
-        auto t = _loader.GetTokenType();
-        if (t == parsing::IfcTokenType::REF)
-        {
-            _loader.StepBack();
-            auto curveId = _loader.GetRefArgument();
-            curve = GetLocalCurve(curveId);
-            result = curve.getPlacementAtDistance(DistanceAlong, IfcCurve::CurvePlacementMode::GlobalZAxis);
-        }
-        else
-        {
-            spdlog::error("[GetLocalPlacement({})] missing BasisCurve in IFCPOINTBYDISTANCEEXPRESSION, returning identity", expressID);
-            result = glm::dmat4(1);
-        }
+		glm::dmat4 result;
+		_loader.MoveToArgumentOffset(expressID, 5);
+		auto t = _loader.GetTokenType();
+		if (t == parsing::IfcTokenType::REF)
+		{
+			_loader.StepBack();
+			auto curveId = _loader.GetRefArgument();
+			curve = GetLocalCurve(curveId);
+			result = curve.getPlacementAtDistance(DistanceAlong, IfcCurve::CurvePlacementMode::GlobalZAxis);
+		}
+		else
+		{
+			spdlog::error("[GetLocalPlacement({})] missing BasisCurve in IFCPOINTBYDISTANCEEXPRESSION, returning identity", expressID);
+			result = glm::dmat4(1);
+		}
 
-        if (std::abs(OffsetLateral) > EPS_SMALL || std::abs(OffsetVertical) > EPS_SMALL || std::abs(OffsetLongitudinal) > EPS_SMALL)
-        {
-            glm::dmat4 localTranslation = glm::translate(glm::dmat4(1), glm::dvec3(OffsetLongitudinal, OffsetLateral, 0));
-            glm::dmat4 globalVerticalTranslation = glm::translate(glm::dmat4(1), glm::dvec3(0, 0, OffsetVertical));
-            result = globalVerticalTranslation * (result * localTranslation);
-        }
-        _cache.GetExpressIDToPlacement()[expressID] = result;
-        return result;
-      }
-      case schema::IFCAXIS1PLACEMENT:
-      {
-        glm::dvec3 zAxis(0, 0, 1);
-        glm::dvec3 xAxis(1, 0, 0);
-        _loader.MoveToArgumentOffset(expressID, 0);
-        uint32_t posID = _loader.GetRefArgument();
-        parsing::IfcTokenType zID = _loader.GetTokenType();
-        if (zID == parsing::IfcTokenType::REF)
-        {
-          _loader.StepBack();
-          auto tmpVec = GetCartesianPoint3D(_loader.GetRefArgument());
-          if (glm::length(tmpVec) > 0)
-            zAxis = glm::normalize(tmpVec);
-        }
-        glm::dvec3 pos = GetCartesianPoint3D(posID);
-        if (std::abs(glm::dot(xAxis, zAxis)) > 0.9)
-        {
-          xAxis = glm::dvec3(0, 1, 0);
-        }
-        glm::dvec3 yAxis = glm::normalize(glm::cross(zAxis, xAxis));
-        xAxis = glm::normalize(glm::cross(zAxis, yAxis));
+		if (std::abs(OffsetLateral) > EPS_SMALL || std::abs(OffsetVertical) > EPS_SMALL || std::abs(OffsetLongitudinal) > EPS_SMALL)
+		{
+			glm::dmat4 localTranslation = glm::translate(glm::dmat4(1), glm::dvec3(OffsetLongitudinal, OffsetLateral, 0));
+			glm::dmat4 globalVerticalTranslation = glm::translate(glm::dmat4(1), glm::dvec3(0, 0, OffsetVertical));
+			result = globalVerticalTranslation * (result * localTranslation);
+		}
+		_cache.GetExpressIDToPlacement()[expressID] = result;
+		return result;
+	}
+	case schema::IFCAXIS1PLACEMENT:
+	{
+		glm::dvec3 zAxis(0, 0, 1);
+		glm::dvec3 xAxis(1, 0, 0);
+		_loader.MoveToArgumentOffset(expressID, 0);
+		uint32_t posID = _loader.GetRefArgument();
+		parsing::IfcTokenType zID = _loader.GetTokenType();
+		if (zID == parsing::IfcTokenType::REF)
+		{
+			_loader.StepBack();
+			auto tmpVec = GetCartesianPoint3D(_loader.GetRefArgument());
+			if (glm::length(tmpVec) > 0)
+				zAxis = glm::normalize(tmpVec);
+		}
+		glm::dvec3 pos = GetCartesianPoint3D(posID);
+		if (std::abs(glm::dot(xAxis, zAxis)) > 0.9)
+		{
+			xAxis = glm::dvec3(0, 1, 0);
+		}
+		glm::dvec3 yAxis = glm::normalize(glm::cross(zAxis, xAxis));
+		xAxis = glm::normalize(glm::cross(zAxis, yAxis));
 
-        glm::dmat4 result = glm::dmat4(
-            glm::dvec4(xAxis, 0),
-            glm::dvec4(yAxis, 0),
-            glm::dvec4(zAxis, 0),
-            glm::dvec4(pos, 1));
+		glm::dmat4 result = glm::dmat4(
+			glm::dvec4(xAxis, 0),
+			glm::dvec4(yAxis, 0),
+			glm::dvec4(zAxis, 0),
+			glm::dvec4(pos, 1));
 
-        _cache.GetExpressIDToPlacement()[expressID] = result;
-        return result;
-      }
-      case schema::IFCAXIS2PLACEMENT3D:
-      {
-        glm::dvec3 zAxis(0, 0, 1);
-        glm::dvec3 xAxis(1, 0, 0);
+		_cache.GetExpressIDToPlacement()[expressID] = result;
+		return result;
+	}
+	case schema::IFCAXIS2PLACEMENT3D:
+	{
+		glm::dvec3 zAxis(0, 0, 1);
+		glm::dvec3 xAxis(1, 0, 0);
 
-        _loader.MoveToArgumentOffset(expressID, 0);
-        uint32_t posID = _loader.GetRefArgument();
-        parsing::IfcTokenType zID = _loader.GetTokenType();
-        if (zID == parsing::IfcTokenType::REF)
-        {
-          _loader.StepBack();
-          auto tmpVec = GetCartesianPoint3D(_loader.GetRefArgument());
-          if (glm::length(tmpVec) > 0)
-            zAxis = glm::normalize(tmpVec);
-        }
+		_loader.MoveToArgumentOffset(expressID, 0);
+		uint32_t posID = _loader.GetRefArgument();
+		parsing::IfcTokenType zID = _loader.GetTokenType();
+		if (zID == parsing::IfcTokenType::REF)
+		{
+			_loader.StepBack();
+			auto tmpVec = GetCartesianPoint3D(_loader.GetRefArgument());
+			if (glm::length(tmpVec) > 0)
+				zAxis = glm::normalize(tmpVec);
+		}
 
-        _loader.MoveToArgumentOffset(expressID, 2);
-        parsing::IfcTokenType xID = _loader.GetTokenType();
-        if (xID == parsing::IfcTokenType::REF)
-        {
-          _loader.StepBack();
-          auto tmpVec = GetCartesianPoint3D(_loader.GetRefArgument());
-          if (glm::length(tmpVec) > 0)
-            xAxis = glm::normalize(tmpVec);
-        }
+		_loader.MoveToArgumentOffset(expressID, 2);
+		parsing::IfcTokenType xID = _loader.GetTokenType();
+		if (xID == parsing::IfcTokenType::REF)
+		{
+			_loader.StepBack();
+			auto tmpVec = GetCartesianPoint3D(_loader.GetRefArgument());
+			if (glm::length(tmpVec) > 0)
+				xAxis = glm::normalize(tmpVec);
+		}
 
-        glm::dvec3 pos = GetCartesianPoint3D(posID);
+		glm::dvec3 pos = GetCartesianPoint3D(posID);
 
-        glm::dvec3 yAxis = glm::normalize(glm::cross(zAxis, xAxis));
-        xAxis = glm::normalize(glm::cross(yAxis, zAxis));
+		glm::dvec3 yAxis = glm::normalize(glm::cross(zAxis, xAxis));
+		xAxis = glm::normalize(glm::cross(yAxis, zAxis));
 
-        glm::dmat4 result = glm::dmat4(
-            glm::dvec4(xAxis, 0),
-            glm::dvec4(yAxis, 0),
-            glm::dvec4(zAxis, 0),
-            glm::dvec4(pos, 1));
+		glm::dmat4 result = glm::dmat4(
+			glm::dvec4(xAxis, 0),
+			glm::dvec4(yAxis, 0),
+			glm::dvec4(zAxis, 0),
+			glm::dvec4(pos, 1));
 
-        _cache.GetExpressIDToPlacement()[expressID] = result;
+		_cache.GetExpressIDToPlacement()[expressID] = result;
 
-        return result;
-      }
-      case schema::IFCAXIS2PLACEMENT2D:
-      {
-        glm::dvec3 xAxis(1, 0, 0);
-        glm::dvec3 zAxis(0, 0, 1);
+		return result;
+	}
+	case schema::IFCAXIS2PLACEMENT2D:
+	{
+		glm::dvec3 xAxis(1, 0, 0);
+		glm::dvec3 zAxis(0, 0, 1);
 
-        _loader.MoveToArgumentOffset(expressID, 0);
-        uint32_t posID = _loader.GetRefArgument();
+		_loader.MoveToArgumentOffset(expressID, 0);
+		uint32_t posID = _loader.GetRefArgument();
 
-        _loader.MoveToArgumentOffset(expressID, 1);
-        parsing::IfcTokenType xID = _loader.GetTokenType();
-        if (xID == parsing::IfcTokenType::REF)
-        {
-          _loader.StepBack();
-          auto tmpVec = GetCartesianPoint3D(_loader.GetRefArgument());
-          if (glm::length(tmpVec) > 0)
-            xAxis = glm::normalize(tmpVec);
-        }
+		_loader.MoveToArgumentOffset(expressID, 1);
+		parsing::IfcTokenType xID = _loader.GetTokenType();
+		if (xID == parsing::IfcTokenType::REF)
+		{
+			_loader.StepBack();
+			auto tmpVec = GetCartesianPoint3D(_loader.GetRefArgument());
+			if (glm::length(tmpVec) > 0)
+				xAxis = glm::normalize(tmpVec);
+		}
 
-        glm::dvec3 pos = GetCartesianPoint3D(posID);
+		glm::dvec3 pos = GetCartesianPoint3D(posID);
 
-        glm::dvec3 yAxis = glm::normalize(glm::cross(zAxis, xAxis));
-        xAxis = glm::normalize(glm::cross(yAxis, zAxis));
+		glm::dvec3 yAxis = glm::normalize(glm::cross(zAxis, xAxis));
+		xAxis = glm::normalize(glm::cross(yAxis, zAxis));
 
-        glm::dmat4 result = glm::dmat4(
-            glm::dvec4(xAxis, 0),
-            glm::dvec4(yAxis, 0),
-            glm::dvec4(zAxis, 0),
-            glm::dvec4(pos, 1));
+		glm::dmat4 result = glm::dmat4(
+			glm::dvec4(xAxis, 0),
+			glm::dvec4(yAxis, 0),
+			glm::dvec4(zAxis, 0),
+			glm::dvec4(pos, 1));
 
-        _cache.GetExpressIDToPlacement()[expressID] = result;
-        return result;
-      }
-      case schema::IFCLOCALPLACEMENT:
-      {
-        glm::dmat4 relPlacement(1);
+		_cache.GetExpressIDToPlacement()[expressID] = result;
+		return result;
+	}
+	case schema::IFCLOCALPLACEMENT:
+	{
+		glm::dmat4 relPlacement(1);
 
-        _loader.MoveToArgumentOffset(expressID, 0);
-        parsing::IfcTokenType relPlacementToken = _loader.GetTokenType();
-        if (relPlacementToken == parsing::IfcTokenType::REF)
-        {
-          _loader.StepBack();
-          relPlacement = GetLocalPlacement(_loader.GetRefArgument());
-        }
+		_loader.MoveToArgumentOffset(expressID, 0);
+		parsing::IfcTokenType relPlacementToken = _loader.GetTokenType();
+		if (relPlacementToken == parsing::IfcTokenType::REF)
+		{
+			_loader.StepBack();
+			relPlacement = GetLocalPlacement(_loader.GetRefArgument());
+		}
 
-        _loader.MoveToArgumentOffset(expressID, 1);
-        uint32_t axis2PlacementID = _loader.GetRefArgument();
+		_loader.MoveToArgumentOffset(expressID, 1);
+		uint32_t axis2PlacementID = _loader.GetRefArgument();
 
-        glm::dmat4 axis2Placement = GetLocalPlacement(axis2PlacementID);
+		glm::dmat4 axis2Placement = GetLocalPlacement(axis2PlacementID);
 
-        auto result = relPlacement * axis2Placement;
+		auto result = relPlacement * axis2Placement;
 
-        _cache.GetExpressIDToPlacement()[expressID] = result;
-        return result;
-      }
-      case schema::IFCCARTESIANTRANSFORMATIONOPERATOR3D:
-      case schema::IFCCARTESIANTRANSFORMATIONOPERATOR3DNONUNIFORM:
-      {
-          // IfcCartesianTransformationOperator3D
-          //  IfcDirection								Axis1;					//optional
-          //  IfcDirection								Axis2;					//optional
-          //  IfcCartesianPoint							LocalOrigin;
-          //  IfcReal									Scale;					//optional
-          //  IfcDirection								Axis3;					//optional
-  
-          // IfcCartesianTransformationOperator3DnonUniform:
-          //IfcReal										Scale2;					//optional
-          //IfcReal										Scale3;					//optional
+		_cache.GetExpressIDToPlacement()[expressID] = result;
+		return result;
+	}
+	case schema::IFCCARTESIANTRANSFORMATIONOPERATOR3D:
+	case schema::IFCCARTESIANTRANSFORMATIONOPERATOR3DNONUNIFORM:
+	{
+		// IfcCartesianTransformationOperator3D
+		//  IfcDirection								Axis1;					//optional
+		//  IfcDirection								Axis2;					//optional
+		//  IfcCartesianPoint							LocalOrigin;
+		//  IfcReal									Scale;					//optional
+		//  IfcDirection								Axis3;					//optional
 
-        double scale1 = 1.0;
-        double scale2 = 1.0;
-        double scale3 = 1.0;
+		// IfcCartesianTransformationOperator3DnonUniform:
+		//IfcReal										Scale2;					//optional
+		//IfcReal										Scale3;					//optional
 
-        glm::dvec3 Axis1(1, 0, 0);
-        glm::dvec3 Axis2(0, 1, 0);
-        glm::dvec3 Axis3(0, 0, 1);
+		double scale1 = 1.0;
+		double scale2 = 1.0;
+		double scale3 = 1.0;
 
-        _loader.MoveToArgumentOffset(expressID, 0);
-        if (_loader.GetTokenType() == parsing::IfcTokenType::REF)
-        {
-          _loader.StepBack();
-          Axis1 = glm::normalize(GetCartesianPoint3D(_loader.GetRefArgument()));
-        }
-        _loader.MoveToArgumentOffset(expressID, 1);
-        if (_loader.GetTokenType() == parsing::IfcTokenType::REF)
-        {
-          _loader.StepBack();
-          Axis2 = glm::normalize(GetCartesianPoint3D(_loader.GetRefArgument()));
-        }
+		glm::dvec3 Axis1(1, 0, 0);
+		glm::dvec3 Axis2(0, 1, 0);
+		glm::dvec3 Axis3(0, 0, 1);
 
-        _loader.MoveToArgumentOffset(expressID, 2);
-        uint32_t LocalOriginID = _loader.GetRefArgument();
-        glm::dvec3 LocalOrigin = GetCartesianPoint3D(LocalOriginID);
+		_loader.MoveToArgumentOffset(expressID, 0);
+		if (_loader.GetTokenType() == parsing::IfcTokenType::REF)
+		{
+			_loader.StepBack();
+			Axis1 = glm::normalize(GetCartesianPoint3D(_loader.GetRefArgument()));
+		}
+		_loader.MoveToArgumentOffset(expressID, 1);
+		if (_loader.GetTokenType() == parsing::IfcTokenType::REF)
+		{
+			_loader.StepBack();
+			Axis2 = glm::normalize(GetCartesianPoint3D(_loader.GetRefArgument()));
+		}
 
-        _loader.MoveToArgumentOffset(expressID, 3);
-        if (_loader.GetTokenType() == parsing::IfcTokenType::REAL)
-        {
-          _loader.StepBack();
-          scale1 = _loader.GetDoubleArgument();
-        }
+		_loader.MoveToArgumentOffset(expressID, 2);
+		uint32_t LocalOriginID = _loader.GetRefArgument();
+		glm::dvec3 LocalOrigin = GetCartesianPoint3D(LocalOriginID);
 
-        _loader.MoveToArgumentOffset(expressID, 4);
-        if (_loader.GetTokenType() == parsing::IfcTokenType::REF)
-        {
-          _loader.StepBack();
-          Axis3 = glm::normalize(GetCartesianPoint3D(_loader.GetRefArgument()));
-        }
+		_loader.MoveToArgumentOffset(expressID, 3);
+		if (_loader.GetTokenType() == parsing::IfcTokenType::REAL)
+		{
+			_loader.StepBack();
+			scale1 = _loader.GetDoubleArgument();
+		}
 
-        if (lineType == schema::IFCCARTESIANTRANSFORMATIONOPERATOR3DNONUNIFORM)
-        {
-          _loader.MoveToArgumentOffset(expressID, 5);
-          if (_loader.GetTokenType() == parsing::IfcTokenType::REAL)
-          {
-            _loader.StepBack();
-            scale2 = _loader.GetDoubleArgument();
-          }
+		_loader.MoveToArgumentOffset(expressID, 4);
+		if (_loader.GetTokenType() == parsing::IfcTokenType::REF)
+		{
+			_loader.StepBack();
+			Axis3 = glm::normalize(GetCartesianPoint3D(_loader.GetRefArgument()));
+		}
 
-          _loader.MoveToArgumentOffset(expressID, 6);
-          if (_loader.GetTokenType() == parsing::IfcTokenType::REAL)
-          {
-            _loader.StepBack();
-            scale3 = _loader.GetDoubleArgument();
-          }
-        }
+		if (lineType == schema::IFCCARTESIANTRANSFORMATIONOPERATOR3DNONUNIFORM)
+		{
+			_loader.MoveToArgumentOffset(expressID, 5);
+			if (_loader.GetTokenType() == parsing::IfcTokenType::REAL)
+			{
+				_loader.StepBack();
+				scale2 = _loader.GetDoubleArgument();
+			}
 
-        if (lineType == schema::IFCCARTESIANTRANSFORMATIONOPERATOR3D)
-        {
-          scale2 = scale1;
-          scale3 = scale1;
-        }
+			_loader.MoveToArgumentOffset(expressID, 6);
+			if (_loader.GetTokenType() == parsing::IfcTokenType::REAL)
+			{
+				_loader.StepBack();
+				scale3 = _loader.GetDoubleArgument();
+			}
+		}
 
-        glm::dmat4 result = glm::dmat4(
-            glm::dvec4(Axis1 * scale1, 0),
-            glm::dvec4(Axis2 * scale2, 0),
-            glm::dvec4(Axis3 * scale3, 0),
-            glm::dvec4(LocalOrigin, 1));
+		if (lineType == schema::IFCCARTESIANTRANSFORMATIONOPERATOR3D)
+		{
+			scale2 = scale1;
+			scale3 = scale1;
+		}
 
-        _cache.GetExpressIDToPlacement()[expressID] = result;
-        return result;
-      }
-      case schema::IFCAXIS2PLACEMENTLINEAR:
-      {
-        glm::dvec3 vector = glm::dvec3(0, 0, 1);
-        glm::dmat4 result = glm::dmat4(1);
-        _loader.MoveToArgumentOffset(expressID, 0);
-        auto tokenTypeLocation = _loader.GetTokenType();
-        // Location is not optional, but check anyway:
-        if (tokenTypeLocation == parsing::IfcTokenType::REF)
-        {
-            _loader.StepBack();
-            uint32_t posID = _loader.GetRefArgument();
+		glm::dmat4 result = glm::dmat4(
+			glm::dvec4(Axis1 * scale1, 0),
+			glm::dvec4(Axis2 * scale2, 0),
+			glm::dvec4(Axis3 * scale3, 0),
+			glm::dvec4(LocalOrigin, 1));
 
-            // Axis is optional:
-            _loader.MoveToArgumentOffset(expressID, 1);
-            auto tokenTypeAxis = _loader.GetTokenType();
-            if (tokenTypeAxis == parsing::IfcTokenType::REF)
-            {
-                _loader.StepBack();
-                vector = GetCartesianPoint3D(_loader.GetRefArgument());
-            }
-            result = GetLocalPlacement(posID, vector);
-        }
+		_cache.GetExpressIDToPlacement()[expressID] = result;
+		return result;
+	}
+	case schema::IFCAXIS2PLACEMENTLINEAR:
+	{
+		glm::dvec3 vector = glm::dvec3(0, 0, 1);
+		glm::dmat4 result = glm::dmat4(1);
+		_loader.MoveToArgumentOffset(expressID, 0);
+		auto tokenTypeLocation = _loader.GetTokenType();
+		// Location is not optional, but check anyway:
+		if (tokenTypeLocation == parsing::IfcTokenType::REF)
+		{
+			_loader.StepBack();
+			uint32_t posID = _loader.GetRefArgument();
 
-        _cache.GetExpressIDToPlacement()[expressID] = result;
-        return result;
-      }
-      case schema::IFCLINEARPLACEMENT:
-      {
-        _loader.MoveToArgumentOffset(expressID, 1);
-        uint32_t posID = _loader.GetRefArgument();
-        glm::dmat4 result = GetLocalPlacement(posID);
+			// Axis is optional:
+			_loader.MoveToArgumentOffset(expressID, 1);
+			auto tokenTypeAxis = _loader.GetTokenType();
+			if (tokenTypeAxis == parsing::IfcTokenType::REF)
+			{
+				_loader.StepBack();
+				vector = GetCartesianPoint3D(_loader.GetRefArgument());
+			}
+			result = GetLocalPlacement(posID);
+		}
 
-        _cache.GetExpressIDToPlacement()[expressID] = result;
-        return result;
-      }
-      default:
-        spdlog::error("[GetLocalPlacement()] unexpected placement type {}: {}", expressID, lineType);
-        break;
-      }
+		_cache.GetExpressIDToPlacement()[expressID] = result;
+		return result;
+	}
+	case schema::IFCLINEARPLACEMENT:
+	{
+		_loader.MoveToArgumentOffset(expressID, 1);
+		uint32_t posID = _loader.GetRefArgument();
+		glm::dmat4 result = GetLocalPlacement(posID);
 
-      return glm::dmat4(1);
-    }
+		_cache.GetExpressIDToPlacement()[expressID] = result;
+		return result;
+	}
+	default:
+		spdlog::error("[GetLocalPlacement()] unexpected placement type {}: {}", expressID, lineType);
+		break;
+	}
+
+	return glm::dmat4(1);
   }
 
   std::array<glm::dvec3, 2> IfcGeometryLoader::GetAxis1Placement(const uint32_t expressID) const
