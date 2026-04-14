@@ -55,7 +55,7 @@ void meshCleanup::DumpDebugGeometry(const fuzzybools::Geometry& geom, const std:
 	webifc::io::DumpIfcGeometry(webifcGeom, filenameWithPath);
 }
 
-static void meshCleanup::DumpDebugGeometry(const webifc::geometry::IfcGeometry& geom, const std::string& filename) {
+void meshCleanup::DumpDebugGeometry(const webifc::geometry::IfcGeometry& geom, const std::string& filename) {
 	if (!g_debugDumpDirectory.empty()) {
 		std::error_code ec;
 		std::filesystem::create_directories(g_debugDumpDirectory, ec);
