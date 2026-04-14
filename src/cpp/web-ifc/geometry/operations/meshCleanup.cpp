@@ -22,10 +22,9 @@
 
 #include "../../test/io_helpers.h"
 
-#if defined(_DEBUG)
+//#if defined(_DEBUG)
 #define DUMP_CSG_MESHES
-//#include "../../test/dumpToThree.h"
-#endif
+//#endif
 
 using namespace fuzzybools;
 
@@ -372,9 +371,28 @@ uint32_t meshCleanup::RemoveDisconnectedFragments(Geometry& workingMesh, std::st
 		}
 	}
 
-	if (removedByComp == 0 || removedByComp >= nFaces) {
+	if (removedByComp == 0) {
 		meshInfoResult = meshInfoInput;
 		return 0;
+	}
+	if (removedByComp >= nFaces) {
+		// All components are non-manifold + zero-volume. Compute total mesh
+		// volume to decide: if the whole mesh is zero-volume (degenerate membrane
+		// from a boolean subtract that fully consumed the first operand), allow
+		// removal. Otherwise preserve the mesh.
+		double totalVol = 0.0;
+		for (uint32_t i = 0; i < nFaces; i++) {
+			int cid = compId[i];
+			Vec va = fv[i].a - comps[cid].centroid;
+			Vec vb = fv[i].b - comps[cid].centroid;
+			Vec vc = fv[i].c - comps[cid].centroid;
+			totalVol += glm::dot(va, glm::cross(vb, vc)) / 6.0;
+		}
+		if (std::abs(totalVol) >= VOLUME_THRESHOLD) {
+			meshInfoResult = meshInfoInput;
+			return 0;
+		}
+		// Zero-volume: fall through to rebuild as empty mesh
 	}
 
 	Geometry cleaned;
@@ -385,6 +403,13 @@ uint32_t meshCleanup::RemoveDisconnectedFragments(Geometry& workingMesh, std::st
 		cleaned.AddFace(fv[i].a, fv[i].b, fv[i].c, fv[i].pId);
 	}
 	cleaned.data = workingMesh.data;
+
+	// Empty mesh from zero-volume membrane removal: skip topology gate.
+	if (cleaned.numFaces == 0) {
+		workingMesh = std::move(cleaned);
+		meshInfoResult = meshCleanup::isMeshWatertight(workingMesh);
+		return removedByComp;
+	}
 
 	auto infoCleaned = meshCleanup::isMeshWatertight(cleaned);
 	if (MeshPenaltyImprovedNoRegression(meshInfoInput, infoCleaned)) {
@@ -2401,12 +2426,24 @@ uint32_t meshCleanup::RemoveThinMembranes(Geometry& workingMesh, std::string ste
 		removedArea += fv[i].area;
 	}
 
-	if (thinCount == 0 || thinCount >= nFaces * 3 / 4) {
+	// Compute total signed volume of the mesh. A near-zero volume indicates
+	// the mesh is a degenerate membrane (e.g. boolean subtract fully consumed
+	// the first operand). In that case, relax the safety guards below so the
+	// membrane can be removed entirely.
+	double totalVolume = 0.0;
+	for (uint32_t i = 0; i < nFaces; i++)
+		totalVolume += glm::dot(fv[i].a, glm::cross(fv[i].b, fv[i].c)) / 6.0;
+	const bool isZeroVolume = std::abs(totalVolume) < VOLUME_THRESHOLD;
+
+	if (thinCount == 0) {
+		return 0;
+	}
+	if (thinCount >= nFaces * 3 / 4 && !isZeroVolume) {
 		return 0;
 	}
 
 	const double areaLossRatio = totalAreaBefore > 1e-9 ? removedArea / totalAreaBefore : 0.0;
-	if (areaLossRatio > 0.20) {
+	if (areaLossRatio > 0.20 && !isZeroVolume) {
 		return 0;
 	}
 
@@ -2419,8 +2456,20 @@ uint32_t meshCleanup::RemoveThinMembranes(Geometry& workingMesh, std::string ste
 		cleaned.AddFace(fv[i].a, fv[i].b, fv[i].c, fv[i].pId);
 	}
 
-	if (cleaned.numFaces == 0 || cleaned.numFaces >= nFaces) {
+	if (cleaned.numFaces >= nFaces) {
 		return 0;
+	}
+	// An empty result is valid for zero-volume membranes (fully consumed operand).
+	if (cleaned.numFaces == 0 && !isZeroVolume) {
+		return 0;
+	}
+
+	// Zero-volume membrane fully removed: skip topology checks (empty mesh is correct).
+	if (cleaned.numFaces == 0 && isZeroVolume) {
+		workingMesh = std::move(cleaned);
+		workingMesh.hasPlanes = false;
+		meshInfoResult = meshCleanup::isMeshWatertight(workingMesh);
+		return thinCount;
 	}
 
 	auto cleanedInfo = meshCleanup::isMeshWatertight(cleaned);
@@ -3177,6 +3226,36 @@ void meshCleanup::PostBooleanOperationMeshCleanup(fuzzybools::Geometry& input) {
 	if (input.numFaces == 0 || input.numFaces > 2000) return;
 	auto infoEntry = isMeshWatertight(input);
 	if (infoEntry.watertight) return;
+
+	// Early zero-volume membrane detection: if the mesh is not watertight
+	// and has near-zero signed volume, it is a degenerate membrane artifact
+	// (e.g. from a boolean subtract that fully consumed the first operand).
+	// Clear it to prevent cascading errors through subsequent boolean ops.
+	// Use centroid-relative computation so the result is origin-independent.
+	{
+		Vec centroid(0.0);
+		for (uint32_t i = 0; i < input.numFaces; i++) {
+			Face f = input.GetFace(i);
+			centroid += input.GetPoint(f.i0);
+			centroid += input.GetPoint(f.i1);
+			centroid += input.GetPoint(f.i2);
+		}
+		centroid /= static_cast<double>(input.numFaces * 3);
+
+		double signedVol = 0.0;
+		for (uint32_t i = 0; i < input.numFaces; i++) {
+			Face f = input.GetFace(i);
+			Vec a = input.GetPoint(f.i0) - centroid;
+			Vec b = input.GetPoint(f.i1) - centroid;
+			Vec c = input.GetPoint(f.i2) - centroid;
+			signedVol += glm::dot(a, glm::cross(b, c)) / 6.0;
+		}
+		constexpr double MEMBRANE_VOLUME_THRESHOLD = 1e-6;
+		if (std::abs(signedVol) < MEMBRANE_VOLUME_THRESHOLD) {
+			input = fuzzybools::Geometry();
+			return;
+		}
+	}
 
 	fuzzybools::Geometry working = input;
 	MeshInfo cur = infoEntry;
