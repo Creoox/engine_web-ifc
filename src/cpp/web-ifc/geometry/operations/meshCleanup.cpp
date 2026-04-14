@@ -20,7 +20,7 @@
 #include <web-ifc/geometry/operations/boolean-utils/shared-position.h>
 #include "meshCleanup.h"   // keep it like this
 
-#include "../../test/io_helpers.h"
+#include "cpp/test/io_helpers.h"
 
 //#if defined(_DEBUG)
 #define DUMP_CSG_MESHES
