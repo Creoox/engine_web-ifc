@@ -14,7 +14,6 @@
 
 namespace webifc::geometry
 {
-
   IfcGeometryLoader::IfcGeometryLoader(const webifc::parsing::IfcLoader &loader, webifc::cache::IfcCache &cache, uint16_t circleSegments)
       : _loader(loader), _cache(cache),  _circleSegments(circleSegments)
   {
