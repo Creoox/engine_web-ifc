@@ -72,16 +72,21 @@ namespace fuzzybools
 
             if (!aabb.intersects(bvh2.box))
             {
-                // Why is this commented?
-
-                // when subtracting, if box is outside the second operand, its guaranteed to remain
-                // result.AddFace(a, b, c);
-                //continue;
+                // When subtracting, a face whose AABB does not touch the
+                // second operand cannot be cut by it, so the subtract leaves
+                // it verbatim. Skipping the downstream isInsideMesh / ray
+                // tie-break avoids both the cost and the mis-classification
+                // that otherwise blows up pathological inputs (e.g. test61
+                // op #8204981 went from 9734 input faces to 352413).
+                result.AddFace(a, b, c, tri.pId);
+                continue;
             }
             else if (!aabb.intersects(bvh1.box))
             {
-                // when subtracting, if box is outside the first operand, it won't remain ever
-                //continue;
+                // When subtracting, a face that does not touch the first
+                // operand's AABB is a B-only face (from the normalised
+                // combined mesh) and must not appear in the result.
+                continue;
             }
 
             bool doNext = true;

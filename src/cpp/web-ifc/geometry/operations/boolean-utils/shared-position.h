@@ -1177,16 +1177,31 @@ namespace fuzzybools
             { return left < right; };
             std::sort(points.begin(), points.end(), double_less);
 
-            std::vector<std::pair<double, double>> result;
-            result.reserve(points.size() * 2);
-
-            for (size_t i = 1; i < points.size(); i++)
+            // Epsilon-dedup: two intersection distances that differ only by
+            // floating-point noise must collapse to a single point, otherwise
+            // the pair-generation below emits a zero-or-near-zero-length
+            // segment that later spawns a micro-triangle cascade in
+            // Normalize (the main engine of test61's face blow-up).
+            std::vector<double> uniq;
+            uniq.reserve(points.size());
+            for (double v : points)
             {
-                result.emplace_back(points[i - 1], points[i]);
+                if (uniq.empty() || std::abs(v - uniq.back()) > _TOLERANCE_PLANE_INTERSECTION)
+                {
+                    uniq.push_back(v);
+                }
             }
 
-            // Remove redundant lines
-            result.erase(std::unique(result.begin(), result.end()), result.end());
+            std::vector<std::pair<double, double>> result;
+            result.reserve(uniq.size());
+
+            for (size_t i = 1; i < uniq.size(); i++)
+            {
+                // Skip any pair whose two endpoints are within tolerance of
+                // each other. Belt-and-braces after the dedup above.
+                if (std::abs(uniq[i] - uniq[i - 1]) <= _TOLERANCE_PLANE_INTERSECTION) continue;
+                result.emplace_back(uniq[i - 1], uniq[i]);
+            }
 
             return result;
         }
@@ -1384,6 +1399,24 @@ namespace fuzzybools
             }
 
             auto mapping = CDT::RemoveDuplicatesAndRemapEdges(cdt_verts, cdt_edges).mapping;
+            // mapping[] is OLD->NEW (CDT.h line 64). After the call cdt_verts
+            // is compacted and cdt_edges is already remapped to new indices,
+            // so CDT works in the NEW index space and tri.vertices[i] is a
+            // NEW index. The surrounding code needs OLD indices to look into
+            // projectedPoints / projectedPointToPoint (those arrays were
+            // built before the dedup), so we build the inverse mapping once
+            // here. When several old vertices collapse to the same new one
+            // (duplicates), any of their old indices represents the same
+            // location; we keep the first.
+            std::vector<size_t> newToOld(cdt_verts.size(), SIZE_MAX);
+            for (size_t oldIdx = 0; oldIdx < mapping.size(); ++oldIdx)
+            {
+                size_t newIdx = mapping[oldIdx];
+                if (newIdx < newToOld.size() && newToOld[newIdx] == SIZE_MAX)
+                {
+                    newToOld[newIdx] = oldIdx;
+                }
+            }
 
             cdt.insertVertices(cdt_verts);
             cdt.insertEdges(cdt_edges);
@@ -1408,9 +1441,9 @@ namespace fuzzybools
                 // edgesTriangles.insert(std::make_pair(tri.vertices[0], tri.vertices[2]));
 #endif
 
-                size_t pointIdA = projectedPointToPoint[mapping[tri.vertices[0]]];
-                size_t pointIdB = projectedPointToPoint[mapping[tri.vertices[1]]];
-                size_t pointIdC = projectedPointToPoint[mapping[tri.vertices[2]]];
+                size_t pointIdA = projectedPointToPoint[newToOld[tri.vertices[0]]];
+                size_t pointIdB = projectedPointToPoint[newToOld[tri.vertices[1]]];
+                size_t pointIdC = projectedPointToPoint[newToOld[tri.vertices[2]]];
 
                 auto ptA = points[pointIdA].location3D;
                 auto ptB = points[pointIdB].location3D;
@@ -1430,9 +1463,9 @@ namespace fuzzybools
                     continue;
                 }
 
-                auto pt2DA = projectedPoints[mapping[tri.vertices[0]]];
-                auto pt2DB = projectedPoints[mapping[tri.vertices[1]]];
-                auto pt2DC = projectedPoints[mapping[tri.vertices[2]]];
+                auto pt2DA = projectedPoints[newToOld[tri.vertices[0]]];
+                auto pt2DB = projectedPoints[newToOld[tri.vertices[1]]];
+                auto pt2DC = projectedPoints[newToOld[tri.vertices[2]]];
 
                 auto triCenter = (ptA + ptB + ptC) / 3.0;
 
@@ -1450,9 +1483,9 @@ namespace fuzzybools
                 // It can't be discarded because inside/outside could fail when boundaries have internal partitions
                 // Therefore new tests are required to verify that the triangle is on the boundary of A or B
 
-                glm::dvec2 t1 = projectedPoints[tri.vertices[0]];
-                glm::dvec2 t2 = projectedPoints[tri.vertices[1]];
-                glm::dvec2 t3 = projectedPoints[tri.vertices[2]];
+                glm::dvec2 t1 = projectedPoints[newToOld[tri.vertices[0]]];
+                glm::dvec2 t2 = projectedPoints[newToOld[tri.vertices[1]]];
+                glm::dvec2 t3 = projectedPoints[newToOld[tri.vertices[2]]];
 
                 bool inside2d = isInsideBoundary(t1, t2, t3, edges, projectedPoints);
 
@@ -1720,7 +1753,22 @@ namespace fuzzybools
         { return left < right; };
         std::sort(distances.begin(), distances.end(), double_less);
 
-        distances.erase(std::unique(distances.begin(), distances.end()), distances.end());
+        // Epsilon-dedup distances along the line. std::unique on raw doubles
+        // misses near-identical intersection positions that differ only by
+        // floating-point noise, and the resulting micro-segments cascade
+        // into huge face counts downstream (test61 op #8204981 blowup).
+        {
+            std::vector<double> uniq;
+            uniq.reserve(distances.size());
+            for (double d : distances)
+            {
+                if (uniq.empty() || std::abs(d - uniq.back()) > _TOLERANCE_PLANE_INTERSECTION)
+                {
+                    uniq.push_back(d);
+                }
+            }
+            distances.swap(uniq);
+        }
 
         return distances;
     }

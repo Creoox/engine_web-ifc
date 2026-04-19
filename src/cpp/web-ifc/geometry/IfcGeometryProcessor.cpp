@@ -4,12 +4,13 @@
 
 #include <spdlog/spdlog.h>
 
-#if defined(DEBUG_DUMP_SVG) || defined(DUMP_CSG_MESHES)
+#if defined(DEBUG_DUMP_SVG) || defined(DUMP_CSG_MESHES) || defined(_DEBUG)
 #include "../../test/io_helpers.h"
 #include "../../test/dumpToThree.h"
 #endif
 
 #include "IfcGeometryProcessor.h"
+#include <unordered_set>
 #include <glm/gtx/transform.hpp>
 #include "representation/geometry.h"
 #include "operations/geometryutils.h"
@@ -2151,47 +2152,11 @@ namespace webifc::geometry
                     secondOperand = secondGeom;
                 }
 
-                // Scale second operand 0.1% up if numFaces < 100, to remove membrane artifacts.
-                // If the bbox is smaller in one dimension (typical for window opening), scale only in that dimension.
-                if (secondOperand.numFaces > 0 && secondOperand.numFaces < 100 && false)
-                {
-                    bimGeometry::AABB bbox = secondOperand.GetAABB();
-                    glm::dvec3 center = (bbox.min + bbox.max) * 0.5;
-                    glm::dvec3 extents = bbox.max - bbox.min;
-
-                    double maxExtent = glm::max(extents.x, glm::max(extents.y, extents.z));
-                    double threshold = maxExtent * 0.1;
-
-                    double scaleFactorX = 1.0;
-                    double scaleFactorY = 1.0;
-                    double scaleFactorZ = 1.0;
-
-                    bool hasSmallDim = (extents.x < threshold) || (extents.y < threshold) || (extents.z < threshold);
-
-                    if (hasSmallDim)
-                    {
-                        // Scale only the small dimension(s)
-                        if (extents.x < threshold) scaleFactorX = 1.001;
-                        if (extents.y < threshold) scaleFactorY = 1.001;
-                        if (extents.z < threshold) scaleFactorZ = 1.001;
-                    }
-                    else
-                    {
-                        // Scale uniformly
-                        scaleFactorX = 1.001;
-                        scaleFactorY = 1.001;
-                        scaleFactorZ = 1.001;
-                    }
-
-                    for (uint32_t i = 0; i < secondOperand.numPoints; i++)
-                    {
-                        glm::dvec3 pt = secondOperand.GetPoint(i);
-                        pt.x = center.x + (pt.x - center.x) * scaleFactorX;
-                        pt.y = center.y + (pt.y - center.y) * scaleFactorY;
-                        pt.z = center.z + (pt.z - center.z) * scaleFactorZ;
-                        secondOperand.SetPoint(pt.x, pt.y, pt.z, i);
-                    }
-                }
+                // Pre-boolean operand scale-up: considered and not applied.
+                // Empirically the scale-up trick trades one class of
+                // artifact for another (window-opening membranes disappear
+                // but edge-bleed membranes appear), so we leave the
+                // operand untouched and clean up post hoc.
 
                 firstOperand.buildPlanes();
                 secondOperand.buildPlanes();
@@ -2216,11 +2181,72 @@ namespace webifc::geometry
         return finalResult;
     }
 
+    // Safety guard for pathological single-op growth: if a boolean returns
+    // a face count that is more than `kPathologicalFactor` times the sum of
+    // its input face counts, something went badly wrong in the kernel. Run
+    // a cheap collapse pass (degenerate + exact duplicate triangles) before
+    // the result is allowed into the next op in a chain. This caps
+    // compounding damage when the kernel misclassifies in one op.
+    static constexpr uint32_t kPathologicalFactor = 10;
+
+    static void CheapCollapseAfterBoolean(fuzzybools::Geometry& g)
+    {
+        const uint32_t nF = g.numFaces;
+        if (nF == 0) return;
+        // Exact triangle deduplication using the fvertexData / vertexData
+        // positions (no tolerance; only faces that are bit-for-bit equal
+        // after the boolean are dropped).
+        struct TriKey { uint64_t a, b, c; };
+        struct TriKeyHash {
+            size_t operator()(const TriKey& k) const {
+                size_t h = std::hash<uint64_t>()(k.a);
+                h ^= std::hash<uint64_t>()(k.b) + 0x9e3779b9 + (h << 6) + (h >> 2);
+                h ^= std::hash<uint64_t>()(k.c) + 0x9e3779b9 + (h << 6) + (h >> 2);
+                return h;
+            }
+        };
+        struct TriKeyEq {
+            bool operator()(const TriKey& a, const TriKey& b) const {
+                return a.a == b.a && a.b == b.b && a.c == b.c;
+            }
+        };
+        std::unordered_set<TriKey, TriKeyHash, TriKeyEq> seen;
+        seen.reserve(nF);
+        std::vector<uint32_t> newIdx;
+        std::vector<uint32_t> newPlane;
+        newIdx.reserve(g.indexData.size());
+        newPlane.reserve(g.planeData.size());
+        for (uint32_t i = 0; i < nF; i++) {
+            uint32_t i0 = g.indexData[i * 3 + 0];
+            uint32_t i1 = g.indexData[i * 3 + 1];
+            uint32_t i2 = g.indexData[i * 3 + 2];
+            if (i0 == i1 || i1 == i2 || i0 == i2) continue; // degenerate
+            // Canonicalise the triple so cyclic rotations match.
+            uint64_t a = i0, b = i1, c = i2;
+            if (b < a && b < c) { uint64_t t = a; a = b; b = c; c = t; }
+            else if (c < a && c < b) { uint64_t t = a; a = c; c = b; b = t; }
+            if (!seen.insert({ a, b, c }).second) continue; // exact duplicate
+            newIdx.push_back(i0);
+            newIdx.push_back(i1);
+            newIdx.push_back(i2);
+            if (i < g.planeData.size()) newPlane.push_back(g.planeData[i]);
+        }
+        g.indexData = std::move(newIdx);
+        g.planeData = std::move(newPlane);
+        g.numFaces = (uint32_t)(g.indexData.size() / 3);
+        g.hasPlanes = false;
+    }
+
     IfcGeometry booleanManager::Union(IfcGeometry firstOperand, IfcGeometry secondOperand)
     {
         fuzzybools::Geometry firstEngGeom = convertToEngine(firstOperand);
         fuzzybools::Geometry secondEngGeom = convertToEngine(secondOperand);
+        const uint32_t inputFaces = firstEngGeom.numFaces + secondEngGeom.numFaces;
         fuzzybools::Geometry result = fuzzybools::Union(firstEngGeom, secondEngGeom);
+        if (inputFaces > 0 && result.numFaces > kPathologicalFactor * inputFaces)
+        {
+            CheapCollapseAfterBoolean(result);
+        }
         meshCleanup::PostBooleanOperationMeshCleanup(result);
         return convertToWebIfc(std::move(result));
     }
@@ -2229,7 +2255,12 @@ namespace webifc::geometry
     {
         fuzzybools::Geometry firstEngGeom = convertToEngine(firstOperand);
         fuzzybools::Geometry secondEngGeom = convertToEngine(secondOperand);
+        const uint32_t inputFaces = firstEngGeom.numFaces + secondEngGeom.numFaces;
         fuzzybools::Geometry result = fuzzybools::Subtract(firstEngGeom, secondEngGeom);
+        if (inputFaces > 0 && result.numFaces > kPathologicalFactor * inputFaces)
+        {
+            CheapCollapseAfterBoolean(result);
+        }
         meshCleanup::PostBooleanOperationMeshCleanup(result);
         return convertToWebIfc(std::move(result));
     }
