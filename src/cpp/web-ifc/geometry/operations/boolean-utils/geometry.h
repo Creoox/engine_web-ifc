@@ -12,8 +12,13 @@ namespace fuzzybools
 
 	struct SimplePlane
 	{
-		double distance;
-		Vec normal;
+		// id is written by bimGeometry::Geometry::buildPlanes/AddPlane and
+		// read by bim-geometry callers; fuzzybools itself ignores it. We
+		// keep it on the shared struct so bimGeometry::Plane can alias to
+		// SimplePlane without layout changes.
+		size_t id = 0;
+		double distance = 0.0;
+		Vec normal = Vec(0.0);
 
 		bool IsEqualTo(const Vec &n, double d)
 		{
