@@ -53,6 +53,7 @@ namespace webifc::geometry
         newGeom.planeData = geom.planeData;
         newGeom.numPoints = geom.numPoints;
         newGeom.numFaces = geom.numFaces;
+        newGeom.mBoolOpCount = geom.mBoolOpCount;
         for (auto plane : geom.planes)
         {
             fuzzybools::SimplePlane newPlane;
@@ -74,6 +75,7 @@ namespace webifc::geometry
         newGeom.numPoints = geom.numPoints;
         newGeom.numFaces = geom.numFaces;
         newGeom.entityID = geom.entityID;
+        newGeom.mBoolOpCount = geom.mBoolOpCount;
         uint32_t id = 0;
         for (auto plane : geom.planes)
         {

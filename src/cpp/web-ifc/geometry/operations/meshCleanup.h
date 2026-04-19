@@ -53,6 +53,7 @@ namespace meshCleanup
 	uint32_t RemoveOpposedEdgeMembranes(fuzzybools::Geometry& input, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult);
 
 	void PostBooleanOperationMeshCleanup(fuzzybools::Geometry& input);
+
 	void DumpDebugGeometry(const webifc::geometry::IfcGeometry& webifcGeom, const std::string& filename);
 	void DumpDebugGeometry(const fuzzybools::Geometry& geom, const std::string& filename);
 	void removeTempFiles();

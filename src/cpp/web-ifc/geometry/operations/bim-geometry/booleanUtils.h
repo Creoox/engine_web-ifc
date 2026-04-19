@@ -14,6 +14,7 @@ namespace bimGeometry
         newGeom.planeData = geom.planeData;
 		newGeom.numPoints = geom.numPoints;
 		newGeom.numFaces = geom.numFaces;
+		newGeom.mBoolOpCount = geom.mBoolOpCount;
         for(auto plane: geom.planes)
         {
             fuzzybools::SimplePlane newPlane;
@@ -34,6 +35,7 @@ namespace bimGeometry
         newGeom.planeData = geom.planeData;
 		newGeom.numPoints = geom.numPoints;
 		newGeom.numFaces = geom.numFaces;
+		newGeom.mBoolOpCount = geom.mBoolOpCount;
         uint32_t id = 0;
         for(auto plane: geom.planes)
         {

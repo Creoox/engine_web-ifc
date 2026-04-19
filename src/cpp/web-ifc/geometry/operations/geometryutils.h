@@ -831,10 +831,15 @@ namespace webifc::geometry
 				if (newMeshGeom.entityID == UINT32_MAX) {
 					newMeshGeom.entityID = sourceGeom.entityID;
 				}
+				// Propagate boolean-op provenance from both the part and the
+				// source (TODO 2 in main.cpp): a transformed boolean result
+				// is still a boolean result.
+				newMeshGeom.mBoolOpCount = std::max(newMeshGeom.mBoolOpCount, sourceGeom.mBoolOpCount);
 				if (newMeshGeom.numFaces)
 				{
 					IfcGeometry newGeom;
 					newGeom.entityID = newMeshGeom.entityID;
+					newGeom.mBoolOpCount = newMeshGeom.mBoolOpCount;
 					newGeom.halfSpace = newMeshGeom.halfSpace;
 					if (newGeom.halfSpace)
 					{
@@ -871,6 +876,7 @@ namespace webifc::geometry
 			{
 				IfcGeometry newGeom;
 				newGeom.entityID = sourceGeom.entityID;
+				newGeom.mBoolOpCount = sourceGeom.mBoolOpCount;
 				newGeom.halfSpace = sourceGeom.halfSpace;
 				if (newGeom.halfSpace)
 				{

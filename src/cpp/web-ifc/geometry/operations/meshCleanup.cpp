@@ -18,13 +18,14 @@
 #include <web-ifc/geometry/operations/bim-geometry/geometry.h>
 #include <web-ifc/geometry/operations/boolean-utils/clip-mesh.h>
 #include <web-ifc/geometry/operations/boolean-utils/shared-position.h>
+#include <web-ifc/geometry/operations/boolean-utils/is-inside-mesh.h>
+#include <web-ifc/geometry/operations/boolean-utils/intersect-ray-tri.h>
 #include "meshCleanup.h"   // keep it like this
 
-#include "cpp/test/io_helpers.h"
-
-//#if defined(_DEBUG)
-#define DUMP_CSG_MESHES
-//#endif
+//#define DUMP_CSG_MESHES
+#if defined(DEBUG_DUMP_SVG) || defined(DUMP_CSG_MESHES) || defined(_DEBUG)
+#include "test/io_helpers.h"
+#endif
 
 using namespace fuzzybools;
 
@@ -47,21 +48,25 @@ static std::filesystem::path BuildDebugDumpPath(const std::string& filename) {
 }
 
 void meshCleanup::DumpDebugGeometry(const fuzzybools::Geometry& geom, const std::string& filename) {
+#if defined(DEBUG_DUMP_SVG) || defined(DUMP_CSG_MESHES)
 	if (g_debugDumpDirectory.empty()) return;
 	std::error_code ec;
 	std::filesystem::create_directories(g_debugDumpDirectory, ec);
 	webifc::geometry::IfcGeometry webifcGeom = webifc::geometry::booleanManager::convertToWebIfc(geom);
 	std::string filenameWithPath = BuildDebugDumpPath(filename).string();
 	webifc::io::DumpIfcGeometry(webifcGeom, filenameWithPath);
+#endif
 }
 
 void meshCleanup::DumpDebugGeometry(const webifc::geometry::IfcGeometry& geom, const std::string& filename) {
+#if defined(DEBUG_DUMP_SVG) || defined(DUMP_CSG_MESHES)
 	if (!g_debugDumpDirectory.empty()) {
 		std::error_code ec;
 		std::filesystem::create_directories(g_debugDumpDirectory, ec);
 	}
 	std::string filenameWithPath = BuildDebugDumpPath(filename).string();
 	webifc::io::DumpIfcGeometry(geom, filenameWithPath);
+#endif
 }
 
 static int SelectProjectionAxis(const Vec& normal) {
@@ -398,6 +403,8 @@ uint32_t meshCleanup::RemoveDisconnectedFragments(Geometry& workingMesh, std::st
 	Geometry cleaned;
 	cleaned.planes = workingMesh.planes;
 	cleaned.hasPlanes = workingMesh.hasPlanes;
+	cleaned.mBoolOpCount = workingMesh.mBoolOpCount;
+	cleaned.entityID = workingMesh.entityID;
 	for (uint32_t i = 0; i < nFaces; i++) {
 		if (badComp[compId[i]]) continue;
 		cleaned.AddFace(fv[i].a, fv[i].b, fv[i].c, fv[i].pId);
@@ -531,6 +538,8 @@ uint32_t meshCleanup::RemoveDegeneratedTriangles(Geometry& workingMesh, std::str
 	tmp.planes = workingMesh.planes;
 	tmp.hasPlanes = workingMesh.hasPlanes;
 	tmp.data = workingMesh.data;
+	tmp.mBoolOpCount = workingMesh.mBoolOpCount;
+	tmp.entityID = workingMesh.entityID;
 	for (uint32_t i = 0; i < n; i++) {
 		Face f = workingMesh.GetFace(i);
 		Vec a = workingMesh.GetPoint(f.i0);
@@ -820,6 +829,8 @@ uint32_t meshCleanup::ResolveTJunctions(Geometry& geom, std::string step,
 	rebuilt.planes = geom.planes;
 	rebuilt.hasPlanes = geom.hasPlanes;
 	rebuilt.data = geom.data;
+	rebuilt.mBoolOpCount = geom.mBoolOpCount;
+	rebuilt.entityID = geom.entityID;
 	uint32_t retriangulatedFaces = 0;
 
 	for (uint32_t fi = 0; fi < nFaces; fi++) {
@@ -1093,6 +1104,8 @@ uint32_t meshCleanup::RemoveTinyBoundaryBridgeFaces(Geometry& geom, std::string 
 			rebuilt.planes = current.planes;
 			rebuilt.hasPlanes = current.hasPlanes;
 			rebuilt.data = current.data;
+			rebuilt.mBoolOpCount = current.mBoolOpCount;
+			rebuilt.entityID = current.entityID;
 			for (uint32_t i = 0; i < nFaces; i++) {
 				if (i == candidate.faceIndex) continue;
 				rebuilt.AddFace(faces[i].verts[0], faces[i].verts[1], faces[i].verts[2], faces[i].pId);
@@ -2451,6 +2464,8 @@ uint32_t meshCleanup::RemoveThinMembranes(Geometry& workingMesh, std::string ste
 	cleaned.planes = baseMesh.planes;
 	cleaned.hasPlanes = baseMesh.hasPlanes;
 	cleaned.data = baseMesh.data;
+	cleaned.mBoolOpCount = baseMesh.mBoolOpCount;
+	cleaned.entityID = baseMesh.entityID;
 	for (uint32_t i = 0; i < nFaces; i++) {
 		if (thinMarked[i]) continue;
 		cleaned.AddFace(fv[i].a, fv[i].b, fv[i].c, fv[i].pId);
@@ -3004,6 +3019,8 @@ uint32_t meshCleanup::RemoveOpposedEdgeMembranes(Geometry& workingMesh, std::str
 				rebuilt.planes = current.planes;
 				rebuilt.hasPlanes = current.hasPlanes;
 				rebuilt.data = current.data;
+				rebuilt.mBoolOpCount = current.mBoolOpCount;
+				rebuilt.entityID = current.entityID;
 				for (uint32_t fi = 0; fi < nFaces; ++fi) {
 					if (neighborhoodFaces.count(fi)) continue;
 					rebuilt.AddFace(faces[fi].verts[0], faces[fi].verts[1], faces[fi].verts[2], faces[fi].pId);
@@ -3133,6 +3150,8 @@ uint32_t meshCleanup::RemoveOpposedEdgeMembranes(Geometry& workingMesh, std::str
 			rebuilt.planes = current.planes;
 			rebuilt.hasPlanes = current.hasPlanes;
 			rebuilt.data = current.data;
+			rebuilt.mBoolOpCount = current.mBoolOpCount;
+			rebuilt.entityID = current.entityID;
 			for (uint32_t i = 0; i < nFaces; ++i) {
 				if (removeFaces.count(i)) continue;
 				rebuilt.AddFace(faces[i].verts[0], faces[i].verts[1], faces[i].verts[2], faces[i].pId);
@@ -3292,3 +3311,5 @@ void meshCleanup::PostBooleanOperationMeshCleanup(fuzzybools::Geometry& input) {
 		input.hasPlanes = false;
 	}
 }
+
+

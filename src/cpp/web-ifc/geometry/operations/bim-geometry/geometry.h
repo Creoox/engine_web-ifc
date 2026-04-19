@@ -11,9 +11,13 @@ namespace bimGeometry {
     
     struct Geometry
     {
-        bool hasPlanes = false;        
+        bool hasPlanes = false;
         uint32_t numPoints = 0;
 		uint32_t numFaces = 0;
+        // Number of boolean operations (Subtract / Union) that produced this
+        // mesh. 0 means as-imported, > 0 means CSG output. Mirrored to and
+        // from fuzzybools::Geometry through convertToEngine / convertToBim.
+        uint32_t mBoolOpCount = 0;
         std::vector<float> fvertexData;
         std::vector<double> vertexData;
         std::vector<uint32_t> indexData;

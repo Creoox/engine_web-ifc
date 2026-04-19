@@ -272,6 +272,7 @@ namespace webifc::geometry {
 
 	void IfcGeometry::AddGeometry(Geometry geom, glm::dmat4 trans, double scx, double scy, double scz, glm::dvec3 origin)
 	{
+		mBoolOpCount = std::max(mBoolOpCount, geom.mBoolOpCount);
 		for (uint32_t i = 0; i < geom.numFaces; i++)
 		{
 			bimGeometry::Face f = geom.GetFace(i);
@@ -300,6 +301,7 @@ namespace webifc::geometry {
 
 	void IfcGeometry::MergeGeometry(Geometry geom)
 	{
+		mBoolOpCount = std::max(mBoolOpCount, geom.mBoolOpCount);
 		for (uint32_t i = 0; i < geom.numFaces; i++)
 		{
 			bimGeometry::Face f = geom.GetFace(i);

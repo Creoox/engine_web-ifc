@@ -43,6 +43,15 @@ namespace fuzzybools
 		uint32_t data = 0;
 		uint32_t entityID = UINT32_MAX;
 
+		// Number of boolean operations (Subtract / Union) that produced this
+		// mesh. Incremented by fuzzybools::Subtract / Union on the result. A
+		// value of 0 means the mesh is as-imported: cleanup must NOT modify
+		// it (open surface models, trees, sheets, IFCFACEBASEDSURFACEMODEL
+		// etc. are legitimately open / zero-volume and must be preserved
+		// exactly). A value > 0 means the mesh is the result of CSG and may
+		// carry artifacts worth cleaning aggressively.
+		uint32_t mBoolOpCount = 0;
+
 		void BuildFromVectors(std::vector<double> &d, std::vector<uint32_t> &i)
 		{
 			vertexData = d;

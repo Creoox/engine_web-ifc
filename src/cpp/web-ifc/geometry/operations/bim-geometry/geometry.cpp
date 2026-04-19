@@ -247,6 +247,9 @@ namespace bimGeometry
 
     void Geometry::AddGeometry(Geometry geom)
     {
+        // Preserve the highest mBoolOpCount seen: if any merged geometry was
+        // produced by a boolean, the combined mesh carries that provenance.
+        mBoolOpCount = std::max(mBoolOpCount, geom.mBoolOpCount);
         for (uint32_t i = 0; i < geom.numFaces; i++)
         {
             Face f = geom.GetFace(i);

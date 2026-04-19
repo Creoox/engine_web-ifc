@@ -31,7 +31,11 @@ namespace fuzzybools
 //	DumpGeometry(geom, L"Post-normalize.obj");
 #endif
 
-		return fuzzybools::clipSubtract(geom, bvh1, bvh2);
+		Geometry result = fuzzybools::clipSubtract(geom, bvh1, bvh2);
+		// Track that this mesh is a boolean result -- cleanup is allowed to
+		// be more aggressive on it.
+		result.mBoolOpCount = std::max(A.mBoolOpCount, B.mBoolOpCount) + 1;
+		return result;
 	}
 
 	inline Geometry Union(const Geometry &A, const Geometry &B)
@@ -44,6 +48,8 @@ namespace fuzzybools
 
 		auto geom = Normalize(A, B, sp, true);
 
-		return fuzzybools::clipJoin(geom, bvh1, bvh2);
+		Geometry result = fuzzybools::clipJoin(geom, bvh1, bvh2);
+		result.mBoolOpCount = std::max(A.mBoolOpCount, B.mBoolOpCount) + 1;
+		return result;
 	}
 }
