@@ -3,7 +3,7 @@
 #include <glm/glm.hpp>
 #include "profile.h"
 #include "utils.h"
-#include "epsilons.h"
+#include "../boolean-utils/eps.h"
 
 namespace bimGeometry
 {

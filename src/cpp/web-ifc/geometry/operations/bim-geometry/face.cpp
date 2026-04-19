@@ -2,7 +2,7 @@
 #include <algorithm>
 #include <glm/glm.hpp>
 #include "face.h"
-#include "epsilons.h"
+#include "../boolean-utils/eps.h"
 
 using Vec = glm::dvec3;
 

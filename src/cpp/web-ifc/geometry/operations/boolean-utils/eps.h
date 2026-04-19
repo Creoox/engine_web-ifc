@@ -1,10 +1,14 @@
 #pragma once
 
+// Runtime-configurable tolerances (written by
+// IfcGeometryProcessor::SetTransformation and bimGeometry::SetEpsilons).
 inline double _TOLERANCE_PLANE_INTERSECTION = 1.0E-04;
 inline double _TOLERANCE_PLANE_DEVIATION = 1.0E-04;
 inline double _TOLERANCE_BACK_DEVIATION_DISTANCE = 1.0E-04;
 inline double _TOLERANCE_INSIDE_OUTSIDE_PERIMETER = 1.0E-10;
 inline double _TOLERANCE_BOUNDING_BOX = 1.0E-02;
+inline double _TOLERANCE_SCALAR_EQUALITY = 1.0E-04;
+inline double _PLANE_REFIT_ITERATIONS = 1;
 
 // Debug value
 inline double _BOOLSTATUS = 1.0E-10;
@@ -19,11 +23,15 @@ constexpr bool messages = false;
 */
 constexpr double EPS_NONZERO = 1.0E-20;
 constexpr double EPS_MINISCULE = 1.0E-12;
+constexpr double EPS_TINY_CURVE = 1.0E-09;
 constexpr double EPS_TINY = 1.0E-04;
 constexpr double EPS_SMALL = 1.0E-04;
 constexpr double EPS_BIG = 1.0E-04;
 constexpr double EPS_BIG2 = 1.0E-03;
 constexpr double SCALED_EPS_BIG = 1.0E-04;
+
+// Used in bim-geometry/geometry.cpp for the planar-refit reconstruction.
+constexpr double reconstructTolerance = 1.0E-01;
 
 /*
     Constants used in math.h

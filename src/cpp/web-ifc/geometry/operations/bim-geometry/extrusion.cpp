@@ -2,7 +2,7 @@
 #include <algorithm>
 #include <glm/glm.hpp>
 #include "extrusion.h"
-#include "epsilons.h"
+#include "../boolean-utils/eps.h"
 #include "geometry.h"
 #include "utils.h"
 

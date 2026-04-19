@@ -2,7 +2,7 @@
 #include <algorithm>
 #include <glm/glm.hpp>
 #include "geometry.h"
-#include "epsilons.h"
+#include "../boolean-utils/eps.h"
 #include "utils.h"
 #include "face.h"
 

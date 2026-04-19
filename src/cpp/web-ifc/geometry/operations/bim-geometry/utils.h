@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <glm/glm.hpp>
 #include "geometry.h"
-#include "epsilons.h"
+#include "../boolean-utils/eps.h"
 #include "curve.h"
 #include <mapbox/earcut.hpp>
 
