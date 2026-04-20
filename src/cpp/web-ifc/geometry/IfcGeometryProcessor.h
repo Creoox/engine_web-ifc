@@ -43,55 +43,6 @@ namespace webifc::geometry
   {
   public:
     IfcGeometry BoolProcess(const std::vector<IfcGeometry> &firstGeoms, std::vector<IfcGeometry> &secondGeoms, std::string op, IfcGeometrySettings _settings);
-
-    static fuzzybools::Geometry convertToEngine(Geometry geom)
-    {
-        fuzzybools::Geometry newGeom;
-        newGeom.fvertexData = geom.fvertexData;
-        newGeom.vertexData = geom.vertexData;
-        newGeom.indexData = geom.indexData;
-        newGeom.planeData = geom.planeData;
-        newGeom.numPoints = geom.numPoints;
-        newGeom.numFaces = geom.numFaces;
-        newGeom.mBoolOpCount = geom.mBoolOpCount;
-        for (auto plane : geom.planes)
-        {
-            fuzzybools::SimplePlane newPlane;
-            newPlane.distance = plane.distance;
-            newPlane.normal = plane.normal;
-            newGeom.planes.push_back(newPlane);
-        }
-        newGeom.hasPlanes = geom.hasPlanes;
-        return newGeom;
-    }
-
-    static IfcGeometry convertToWebIfc(fuzzybools::Geometry geom)
-    {
-        IfcGeometry newGeom;
-        newGeom.fvertexData = geom.fvertexData;
-        newGeom.vertexData = geom.vertexData;
-        newGeom.indexData = geom.indexData;
-        newGeom.planeData = geom.planeData;
-        newGeom.numPoints = geom.numPoints;
-        newGeom.numFaces = geom.numFaces;
-        newGeom.entityID = geom.entityID;
-        newGeom.mBoolOpCount = geom.mBoolOpCount;
-        uint32_t id = 0;
-        for (auto plane : geom.planes)
-        {
-            webifc::geometry::Plane newPlane;
-            newPlane.id = id;
-            newPlane.distance = plane.distance;
-            newPlane.normal = plane.normal;
-            newGeom.planes.push_back(newPlane);
-            id++;
-        }
-        newGeom.hasPlanes = geom.hasPlanes;
-        return newGeom;
-    }
-
-    //static fuzzybools::Geometry convertToEngine(Geometry geom);
-    //static IfcGeometry convertToWebIfc(fuzzybools::Geometry geom);
     IfcGeometry Union(IfcGeometry firstOperator, IfcGeometry secondOperator);
     IfcGeometry Subtract(IfcGeometry firstOperator, IfcGeometry secondOperator);
   };

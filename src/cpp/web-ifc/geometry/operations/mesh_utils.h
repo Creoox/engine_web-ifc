@@ -61,7 +61,7 @@ namespace webifc::geometry
         }
     }
 
-    inline void AppendGeometry(IfcGeometry& geometry, const bimGeometry::Geometry& geom)
+    inline void AppendGeometry(IfcGeometry& geometry, const fuzzybools::Geometry& geom)
     {
         for (int i = 0; i < geom.numFaces; ++i)
         {

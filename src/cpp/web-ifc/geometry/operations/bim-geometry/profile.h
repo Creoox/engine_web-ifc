@@ -9,16 +9,16 @@
 namespace bimGeometry {
 	struct Profile
 	{
-        uint16_t pType;
-        double width;
-        double depth; 
-        double thickness; 
-        double flangeThickness; 
-        bool hasFillet;
-        double filletRadius; 
-        double radius;
-        double slope;
-        uint16_t numSegments;
+        uint16_t pType = 0;
+        double width = 0.0;
+        double depth = 0.0;
+        double thickness = 0.0;
+        double flangeThickness = 0.0;
+        bool hasFillet = false;
+        double filletRadius = 0.0;
+        double radius = 0.0;
+        double slope = 0.0;
+        uint16_t numSegments = 0;
         std::vector<double> placement;
         Curve profile;
 

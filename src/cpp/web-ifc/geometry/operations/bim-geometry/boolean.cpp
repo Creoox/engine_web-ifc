@@ -2,8 +2,8 @@
 #include <algorithm>
 #include <glm/glm.hpp>
 #include "boolean.h"
-#include "../boolean-utils/eps.h"
-#include "geometry.h"
+#include "web-ifc/geometry/operations/boolean-utils/eps.h"
+#include "web-ifc/geometry/operations/boolean-utils/geometry.h"
 #include "utils.h"
 #include "booleanUtils.h"
 
@@ -15,11 +15,11 @@ namespace bimGeometry {
     {
         Buffers buffers;
 
-        Geometry geom = BoolProcess(geometry, seconds, op);
+        fuzzybools::Geometry geom = BoolProcess(geometry, seconds, op);
 
         for (int r = 0; r < geom.numFaces; r++)
         {
-            bimGeometry::Face f = geom.GetFace(r);
+            fuzzybools::Face f = geom.GetFace(r);
             buffers.AddTri(geom.GetPoint(f.i0), geom.GetPoint(f.i1),  geom.GetPoint(f.i2));
         }
 
@@ -28,7 +28,7 @@ namespace bimGeometry {
 
     void Boolean::SetValues(std::vector<double> triangles_, std::string op_) {
         op = op_;
-        geometry = Geometry();
+        geometry = fuzzybools::Geometry();
         for (size_t i = 0; i + 8 < triangles_.size(); i += 9) {
             geometry.AddFace(
                 glm::dvec3(triangles_[i], triangles_[i + 1], triangles_[i + 2]),
@@ -40,7 +40,7 @@ namespace bimGeometry {
     }
 
     void Boolean::SetSecond(std::vector<double> triangles_) {
-        Geometry newGeometry = Geometry();
+        fuzzybools::Geometry newGeometry = fuzzybools::Geometry();
         for (size_t i = 0; i + 8 < triangles_.size(); i += 9) {
             newGeometry.AddFace(
                 glm::dvec3(triangles_[i], triangles_[i + 1], triangles_[i + 2]),
@@ -54,7 +54,7 @@ namespace bimGeometry {
 
     void Boolean::clear()
     {
-        geometry = Geometry();
+        geometry = fuzzybools::Geometry();
         seconds.clear();
         op = "";
     }

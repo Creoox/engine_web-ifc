@@ -15,7 +15,6 @@
 
 #include <web-ifc/geometry/IfcGeometryProcessor.h>
 #include <web-ifc/geometry/operations/bim-geometry/booleanUtils.h>
-#include <web-ifc/geometry/operations/bim-geometry/geometry.h>
 #include <web-ifc/geometry/operations/boolean-utils/clip-mesh.h>
 #include <web-ifc/geometry/operations/boolean-utils/shared-position.h>
 #include <web-ifc/geometry/operations/boolean-utils/is-inside-mesh.h>
@@ -52,7 +51,8 @@ void meshCleanup::DumpDebugGeometry(const fuzzybools::Geometry& geom, const std:
 	if (g_debugDumpDirectory.empty()) return;
 	std::error_code ec;
 	std::filesystem::create_directories(g_debugDumpDirectory, ec);
-	webifc::geometry::IfcGeometry webifcGeom = webifc::geometry::booleanManager::convertToWebIfc(geom);
+	webifc::geometry::IfcGeometry webifcGeom;
+	static_cast<fuzzybools::Geometry&>(webifcGeom) = geom;
 	std::string filenameWithPath = BuildDebugDumpPath(filename).string();
 	webifc::io::DumpIfcGeometry(webifcGeom, filenameWithPath);
 #endif
@@ -572,8 +572,7 @@ uint32_t meshCleanup::RemoveDegeneratedTriangles(Geometry& workingMesh, std::str
 	else {
 		meshInfoResult = meshInfoInput;
 #ifdef DUMP_CSG_MESHES
-		webifc::geometry::IfcGeometry  inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(workingMesh);
-		DumpDebugGeometry(inputWebIfc, "meshCleanup"+step+"-fail.obj");
+		DumpDebugGeometry(workingMesh, "meshCleanup"+step+"-fail.obj");
 #endif
 		return 0;
 	}
@@ -939,10 +938,8 @@ uint32_t meshCleanup::ResolveTJunctions(Geometry& geom, std::string step,
 	else {
 		meshInfoResult = meshInfoInput;
 #ifdef DUMP_CSG_MESHES
-		webifc::geometry::IfcGeometry webifcGeom = webifc::geometry::booleanManager::convertToWebIfc(geom);
-		webifc::geometry::IfcGeometry geomFail = webifc::geometry::booleanManager::convertToWebIfc(rebuilt);
-		DumpDebugGeometry(webifcGeom, "meshCleanup" + step + "-input.obj");
-		DumpDebugGeometry(geomFail, "meshCleanup" + step + "-fail.obj");
+		DumpDebugGeometry(geom, "meshCleanup" + step + "-input.obj");
+		DumpDebugGeometry(rebuilt, "meshCleanup" + step + "-fail.obj");
 #endif
 		return 0;
 	}
@@ -2506,8 +2503,7 @@ uint32_t meshCleanup::RemoveThinMembranes(Geometry& workingMesh, std::string ste
 
 #ifdef DUMP_CSG_MESHES
 	if (thinCount > 7 && cleanedInfo.numFaces > 87) {
-		webifc::geometry::IfcGeometry inputWebIfc = webifc::geometry::booleanManager::convertToWebIfc(workingMesh);
-		DumpDebugGeometry(inputWebIfc, "meshCleanup" + step + "-removedMembranes.obj");
+		DumpDebugGeometry(workingMesh, "meshCleanup" + step + "-removedMembranes.obj");
 	}
 #endif
 	return thinCount;

@@ -5,156 +5,15 @@
 // Implementation for IfcGeometry
 
 #include "IfcGeometry.h"
-#include "../operations/geometryutils.h"
+#include "web-ifc/geometry/operations/geometryutils.h"
 
 namespace webifc::geometry {
-
-		void Geometry::BuildFromVectors(std::vector<double>& d, std::vector<uint32_t>& i)
-		{
-			vertexData = d;
-			indexData = i;
-
-			numPoints = indexData.size();
-			numFaces = indexData.size() / 3;
-		}
-
-		AABB Geometry::GetFaceBox(size_t index) const
-		{
-			AABB aabb;
-			aabb.index = static_cast<uint32_t>(index);
-
-			glm::dvec3 a = GetPoint(indexData[index * 3 + 0]);
-			glm::dvec3 b = GetPoint(indexData[index * 3 + 1]);
-			glm::dvec3 c = GetPoint(indexData[index * 3 + 2]);
-
-			aabb.min = glm::min(a, aabb.min);
-			aabb.min = glm::min(b, aabb.min);
-			aabb.min = glm::min(c, aabb.min);
-
-			aabb.max = glm::max(a, aabb.max);
-			aabb.max = glm::max(b, aabb.max);
-			aabb.max = glm::max(c, aabb.max);
-
-			aabb.center = (aabb.max + aabb.min) / 2.0;
-
-			return aabb;
-		}
-
-		void Geometry::GetCenterExtents(glm::dvec3& center, glm::dvec3& extents) const
-		{
-			if (numPoints == 0)
-			{
-				// avoid inf values
-				extents = glm::dvec3(0,0,0);
-				center = glm::dvec3(0, 0, 0);
-				return;
-			}
-			glm::dvec3 min(DBL_MAX, DBL_MAX, DBL_MAX);
-			glm::dvec3 max(-DBL_MAX, -DBL_MAX, -DBL_MAX);
-
-			for (size_t i = 0; i < numPoints; i++)
-			{
-				auto pt = GetPoint(i);
-				min = glm::min(min, pt);
-				max = glm::max(max, pt);
-			}
-
-			extents = (max - min);
-			center = min + extents / 2.0;
-		}
-
-		Geometry Geometry::Normalize(glm::dvec3 center, glm::dvec3 extents) const
-		{
-			Geometry newGeom;
-
-			double scale = std::max(extents.x, std::max(extents.y, extents.z)) / 10.0;
-
-			for (size_t i = 0; i < numFaces; i++)
-			{
-				auto face = GetFace(i);
-				auto pa = GetPoint(face.i0);
-				auto pb = GetPoint(face.i1);
-				auto pc = GetPoint(face.i2);
-
-				auto a = (pa - center) / scale;
-				auto b = (pb - center) / scale;
-				auto c = (pc - center) / scale;
-
-				// std::cout << areaOfTriangle(pa, pb, pc) << std::endl;
-
-				newGeom.AddFace(pa, pb, pc);
-			}
-
-
-			return newGeom;
-		}
-
-		Geometry Geometry::DeNormalize(glm::dvec3 center, glm::dvec3 extents) const
-		{
-			Geometry newGeom;
-
-			double scale = std::max(extents.x, std::max(extents.y, extents.z)) / 10.0;
-
-			for (size_t i = 0; i < numFaces; i++)
-			{
-				auto face = GetFace(i);
-				auto pa = GetPoint(face.i0);
-				auto pb = GetPoint(face.i1);
-				auto pc = GetPoint(face.i2);
-
-				// std::cout << areaOfTriangle(pa, pb, pc) << std::endl;
-
-				auto a = pa * scale + center;
-				auto b = pb * scale + center;
-				auto c = pc * scale + center;
-
-				newGeom.AddFace(a, b, c);
-			}
-
-
-			return newGeom;
-		}
-		
-		bool Geometry::IsEmpty()
-		{
-			return vertexData.empty();
-		}
-
-		double Geometry::Volume(const glm::dmat4& trans)
-		{
-			double totalVolume = 0;
-
-			for (uint32_t i = 0; i < numFaces; i++)
-			{
-				bimGeometry::Face f = GetFace(i);
-
-				glm::dvec3 a = trans * glm::dvec4(GetPoint(f.i0), 1);
-				glm::dvec3 b = trans * glm::dvec4(GetPoint(f.i1), 1);
-				glm::dvec3 c = trans * glm::dvec4(GetPoint(f.i2), 1);
-
-				glm::dvec3 norm;
-
-//				if (computeSafeNormal(a, b, c, norm))
-				if (computeSafeNormal(a, b, c, norm, EPS_SMALL))
-				{
-					double area = areaOfTriangle(a, b, c);
-					double height = glm::dot(norm, a);
-
-					double tetraVolume = area * height / 3;
-
-					totalVolume += tetraVolume;
-				}
-			}
-
-			return totalVolume;
-		}
-	
 	void IfcGeometry::ReverseFace(uint32_t index)
 	{
-			bimGeometry::Face f = GetFace(index);
-			indexData[index * 3 + 0] = f.i2;
-			indexData[index * 3 + 1] = f.i1;
-			indexData[index * 3 + 2] = f.i0;
+		fuzzybools::Face f = GetFace(index);
+		indexData[index * 3 + 0] = f.i2;
+		indexData[index * 3 + 1] = f.i1;
+		indexData[index * 3 + 2] = f.i0;
 	}
 
 	void IfcGeometry::ReverseFaces()
@@ -169,9 +28,9 @@ namespace webifc::geometry {
 	{
 		glm::dvec3 center = normalizationCenter;
 		if (!normalized)
-		{	
-			glm::dvec3 extents(0,0,0);
-			GetCenterExtents(center,extents);
+		{
+			glm::dvec3 extents(0, 0, 0);
+			GetCenterExtents(center, extents);
 			for (size_t i = 0; i < vertexData.size(); i += 6)
 			{
 				vertexData[i + 0] = vertexData[i + 0] - center.x;
@@ -187,7 +46,7 @@ namespace webifc::geometry {
 					sweptDiskSolid.axis[i].points[j].z -= center.z;
 				}
 			}
-			
+
 			for (size_t i = 0; i < sweptDiskSolid.profiles.size(); i++)
 			{
 				for (size_t j = 0; j < sweptDiskSolid.profiles[i].curve.points.size(); j++)
@@ -238,7 +97,7 @@ namespace webifc::geometry {
 		return (uintptr_t)(size_t)&fvertexData[0];
 	}
 
-    uint32_t IfcGeometry::GetVertexDataSize()
+	uint32_t IfcGeometry::GetVertexDataSize()
 	{
 		return (uint32_t)fvertexData.size();
 	}
@@ -275,24 +134,24 @@ namespace webifc::geometry {
 		mBoolOpCount = std::max(mBoolOpCount, geom.mBoolOpCount);
 		for (uint32_t i = 0; i < geom.numFaces; i++)
 		{
-			bimGeometry::Face f = geom.GetFace(i);
+			fuzzybools::Face f = geom.GetFace(i);
 			glm::dvec3 a = geom.GetPoint(f.i0);
 			glm::dvec3 b = geom.GetPoint(f.i1);
 			glm::dvec3 c = geom.GetPoint(f.i2);
-			if(scx != 1 || scy != 1 || scz != 1)
+			if (scx != 1 || scy != 1 || scz != 1)
 			{
 				double aax = glm::dot(trans[0], glm::dvec4(a - origin, 1)) * scx;
 				double aay = glm::dot(trans[1], glm::dvec4(a - origin, 1)) * scy;
 				double aaz = glm::dot(trans[2], glm::dvec4(a - origin, 1)) * scz;
-				a = origin + glm::dvec3(aax *  trans[0]) + glm::dvec3(aay * trans[1]) + glm::dvec3(aaz * trans[2]);
+				a = origin + glm::dvec3(aax * trans[0]) + glm::dvec3(aay * trans[1]) + glm::dvec3(aaz * trans[2]);
 				double bbx = glm::dot(trans[0], glm::dvec4(b - origin, 1)) * scx;
 				double bby = glm::dot(trans[1], glm::dvec4(b - origin, 1)) * scy;
 				double bbz = glm::dot(trans[2], glm::dvec4(b - origin, 1)) * scz;
-				b = origin + glm::dvec3(bbx *  trans[0]) + glm::dvec3(bby * trans[1]) + glm::dvec3(bbz * trans[2]);
+				b = origin + glm::dvec3(bbx * trans[0]) + glm::dvec3(bby * trans[1]) + glm::dvec3(bbz * trans[2]);
 				double ccx = glm::dot(trans[0], glm::dvec4(c - origin, 1)) * scx;
 				double ccy = glm::dot(trans[1], glm::dvec4(c - origin, 1)) * scy;
 				double ccz = glm::dot(trans[2], glm::dvec4(c - origin, 1)) * scz;
-				c = origin + glm::dvec3(ccx *  trans[0]) + glm::dvec3(ccy * trans[1]) + glm::dvec3(ccz * trans[2]);
+				c = origin + glm::dvec3(ccx * trans[0]) + glm::dvec3(ccy * trans[1]) + glm::dvec3(ccz * trans[2]);
 			}
 			AddFace(a, b, c);
 		}
@@ -304,7 +163,7 @@ namespace webifc::geometry {
 		mBoolOpCount = std::max(mBoolOpCount, geom.mBoolOpCount);
 		for (uint32_t i = 0; i < geom.numFaces; i++)
 		{
-			bimGeometry::Face f = geom.GetFace(i);
+			fuzzybools::Face f = geom.GetFace(i);
 			glm::dvec3 a = geom.GetPoint(f.i0);
 			glm::dvec3 b = geom.GetPoint(f.i1);
 			glm::dvec3 c = geom.GetPoint(f.i2);

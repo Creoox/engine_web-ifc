@@ -1,7 +1,6 @@
 #pragma once
 
-// Runtime-configurable tolerances (written by
-// IfcGeometryProcessor::SetTransformation and bimGeometry::SetEpsilons).
+// Runtime-configurable tolerances (written by IfcGeometryProcessor::SetTransformation and bimGeometry::SetEpsilons).
 inline double _TOLERANCE_PLANE_INTERSECTION = 1.0E-04;
 inline double _TOLERANCE_PLANE_DEVIATION = 1.0E-04;
 inline double _TOLERANCE_BACK_DEVIATION_DISTANCE = 1.0E-04;
@@ -16,10 +15,9 @@ inline double _BOOLSTATUS = 1.0E-10;
 constexpr bool messages = false;
 
 /*
-    Constants from the original eps.h.  However,
-        EPS_TINY, EPS_SMALL, EPS_BIG, EPS_BIG2 and SCALED_EPS_BIG
-    have been assigned a new, common value.  Use of these constants
-    needs to be rationalised and eliminated!
+    Constants from the original eps.h.  However, EPS_TINY, EPS_SMALL, EPS_BIG, EPS_BIG2 and SCALED_EPS_BIG
+    have been assigned a new, common value. 
+    Use of these constants needs to be rationalised and eliminated!
 */
 constexpr double EPS_NONZERO = 1.0E-20;
 constexpr double EPS_MINISCULE = 1.0E-12;

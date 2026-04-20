@@ -1126,7 +1126,7 @@ namespace webifc::geometry
                 geom.indexData.push_back(0);
 
                 geom.numPoints = 1;
-                geom.isPolygon = true;
+                geom.primitiveType = fuzzybools::PrimitiveType::POLYLINE;
                 mesh.hasGeometry = true;
                 geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
@@ -1152,7 +1152,7 @@ namespace webifc::geometry
                     geom.indexData.push_back(i);
                 }
                 geom.numPoints = edge.points.size();
-                geom.isPolygon = true;
+                geom.primitiveType = fuzzybools::PrimitiveType::POLYLINE;
                 mesh.hasGeometry = true;
                 geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
@@ -1256,7 +1256,7 @@ namespace webifc::geometry
 
                 geom.numFaces = geom.indexData.size() / 3;
                 geom.numPoints = static_cast<uint32_t>(vertices.size());
-                geom.isPolygon = false;
+                geom.primitiveType = fuzzybools::PrimitiveType::TRIANGLES;
                 geom.buildPlanes();
                 geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
@@ -1293,7 +1293,7 @@ namespace webifc::geometry
                         geom.indexData.push_back(i);
                     }
                     geom.numPoints = curve.points.size();
-                    geom.isPolygon = true;
+                    geom.primitiveType = fuzzybools::PrimitiveType::POLYLINE;
                     mesh.hasGeometry = true;
                     geom.entityID = expressID;
                     _expressIDToGeometry[expressID] = geom;
@@ -1764,7 +1764,7 @@ namespace webifc::geometry
             }
 
             auto geom = _expressIDToGeometry[composedMesh.expressID];
-            if (geom.isPolygon)
+            if (geom.isPolygon())
             {
                 if (!_settings._exportPolylines)
                 {
@@ -1971,7 +1971,7 @@ namespace webifc::geometry
 #ifdef DUMP_CSG_MESHES
             if( lineType == schema::IFCCLOSEDSHELL )
             {
-                fuzzybools::Geometry fuzzyGeom = booleanManager::convertToEngine(geometry);
+                fuzzybools::Geometry fuzzyGeom = geometry;
                 auto meshInfo = meshCleanup::isMeshWatertight(fuzzyGeom);
                 if (!meshInfo.watertight) {
                     webifc::io::DumpIfcGeometry(geometry, "IFCCLOSEDSHELL-notWaterTight.obj");
@@ -2153,10 +2153,8 @@ namespace webifc::geometry
                 }
 
                 // Pre-boolean operand scale-up: considered and not applied.
-                // Empirically the scale-up trick trades one class of
-                // artifact for another (window-opening membranes disappear
-                // but edge-bleed membranes appear), so we leave the
-                // operand untouched and clean up post hoc.
+                // Empirically the scale-up trick trades one class of artifact for another (window-opening membranes 
+                // disappear but edge-bleed membranes appear), so we leave the operand untouched and clean up post hoc.
 
                 firstOperand.buildPlanes();
                 secondOperand.buildPlanes();
@@ -2181,21 +2179,18 @@ namespace webifc::geometry
         return finalResult;
     }
 
-    // Safety guard for pathological single-op growth: if a boolean returns
-    // a face count that is more than `kPathologicalFactor` times the sum of
-    // its input face counts, something went badly wrong in the kernel. Run
-    // a cheap collapse pass (degenerate + exact duplicate triangles) before
-    // the result is allowed into the next op in a chain. This caps
-    // compounding damage when the kernel misclassifies in one op.
+    // Safety guard for pathological single-op growth: if a boolean returns a face count that is more 
+    // than `kPathologicalFactor` times the sum of its input face counts, something went badly wrong in the kernel.
+    // Run a cheap collapse pass (degenerate + exact duplicate triangles) before the result is allowed into the 
+    // next op in a chain. This caps compounding damage when the kernel misclassifies in one op.
     static constexpr uint32_t kPathologicalFactor = 10;
 
     static void CheapCollapseAfterBoolean(fuzzybools::Geometry& g)
     {
         const uint32_t nF = g.numFaces;
         if (nF == 0) return;
-        // Exact triangle deduplication using the fvertexData / vertexData
-        // positions (no tolerance; only faces that are bit-for-bit equal
-        // after the boolean are dropped).
+        // Exact triangle deduplication using the fvertexData / vertexData positions (no tolerance; only faces that are bit-for-bit 
+        // equal after the boolean are dropped).
         struct TriKey { uint64_t a, b, c; };
         struct TriKeyHash {
             size_t operator()(const TriKey& k) const {
@@ -2239,30 +2234,30 @@ namespace webifc::geometry
 
     IfcGeometry booleanManager::Union(IfcGeometry firstOperand, IfcGeometry secondOperand)
     {
-        fuzzybools::Geometry firstEngGeom = convertToEngine(firstOperand);
-        fuzzybools::Geometry secondEngGeom = convertToEngine(secondOperand);
-        const uint32_t inputFaces = firstEngGeom.numFaces + secondEngGeom.numFaces;
-        fuzzybools::Geometry result = fuzzybools::Union(firstEngGeom, secondEngGeom);
+        const uint32_t inputFaces = firstOperand.numFaces + secondOperand.numFaces;
+        fuzzybools::Geometry result = fuzzybools::Union(firstOperand, secondOperand);
         if (inputFaces > 0 && result.numFaces > kPathologicalFactor * inputFaces)
         {
             CheapCollapseAfterBoolean(result);
         }
         meshCleanup::PostBooleanOperationMeshCleanup(result);
-        return convertToWebIfc(std::move(result));
+        IfcGeometry out;
+        static_cast<fuzzybools::Geometry&>(out) = std::move(result);
+        return out;
     }
 
     IfcGeometry booleanManager::Subtract(IfcGeometry firstOperand, IfcGeometry secondOperand)
     {
-        fuzzybools::Geometry firstEngGeom = convertToEngine(firstOperand);
-        fuzzybools::Geometry secondEngGeom = convertToEngine(secondOperand);
-        const uint32_t inputFaces = firstEngGeom.numFaces + secondEngGeom.numFaces;
-        fuzzybools::Geometry result = fuzzybools::Subtract(firstEngGeom, secondEngGeom);
+        const uint32_t inputFaces = firstOperand.numFaces + secondOperand.numFaces;
+        fuzzybools::Geometry result = fuzzybools::Subtract(firstOperand, secondOperand);
         if (inputFaces > 0 && result.numFaces > kPathologicalFactor * inputFaces)
         {
             CheapCollapseAfterBoolean(result);
         }
         meshCleanup::PostBooleanOperationMeshCleanup(result);
-        return convertToWebIfc(std::move(result));
+        IfcGeometry out;
+        static_cast<fuzzybools::Geometry&>(out) = std::move(result);
+        return out;
     }
 
     IfcGeometryProcessor *IfcGeometryProcessor::Clone(const webifc::parsing::IfcLoader &newLoader) const

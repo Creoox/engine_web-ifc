@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <spdlog/spdlog.h>
 #include <glm/gtc/matrix_transform.hpp>
+#include "web-ifc/geometry/operations/boolean-utils/geometry.h"
 #include "../representation/geometry.h"
 #include "../representation/IfcGeometry.h"
 #include <mapbox/earcut.hpp>
@@ -54,7 +55,7 @@ namespace webifc::geometry
 		return angle;
 	}
 
-	inline IfcGeometry ToIfcGeometry(bimGeometry::Geometry geom)
+	inline IfcGeometry ToIfcGeometry(fuzzybools::Geometry geom)
 	{
 		IfcGeometry ifcGeom;
 		ifcGeom.fvertexData = geom.fvertexData;
@@ -451,7 +452,7 @@ namespace webifc::geometry
 
 		if (buildCaps && profiles.size() > 1)
 		{
-			bimGeometry::Geometry geom;
+			fuzzybools::Geometry geom;
 			std::vector<bool> holesIndicesHash;
 
 			// check if first point is equal to last point, otherwise the outer loop of the shape is not closed
@@ -779,7 +780,7 @@ namespace webifc::geometry
 			auto meshGeom = geomIt->second;
 			if (meshGeom.numFaces > 0)
 			{
-				bimGeometry::Face f = meshGeom.GetFace(0);
+				fuzzybools::Face f = meshGeom.GetFace(0);
 				glm::dvec3 a = newMat * glm::dvec4(meshGeom.GetPoint(f.i0), 1);
 				return a;
 			}
@@ -851,7 +852,7 @@ namespace webifc::geometry
 
 					for (uint32_t i = 0; i < newMeshGeom.numFaces; i++)
 					{
-						bimGeometry::Face f = newMeshGeom.GetFace(i);
+						fuzzybools::Face f = newMeshGeom.GetFace(i);
 						glm::dvec3 a = matrix * glm::dvec4(newMeshGeom.GetPoint(f.i0), 1);
 						glm::dvec3 b = matrix * glm::dvec4(newMeshGeom.GetPoint(f.i1), 1);
 						glm::dvec3 c = matrix * glm::dvec4(newMeshGeom.GetPoint(f.i2), 1);
@@ -888,7 +889,7 @@ namespace webifc::geometry
 
 				for (uint32_t i = 0; i < sourceGeom.numFaces; i++)
 				{
-					bimGeometry::Face f = sourceGeom.GetFace(i);
+					fuzzybools::Face f = sourceGeom.GetFace(i);
 					glm::dvec3 a = matrix * glm::dvec4(sourceGeom.GetPoint(f.i0), 1);
 					glm::dvec3 b = matrix * glm::dvec4(sourceGeom.GetPoint(f.i1), 1);
 					glm::dvec3 c = matrix * glm::dvec4(sourceGeom.GetPoint(f.i2), 1);
@@ -962,7 +963,7 @@ namespace webifc::geometry
 				{
 					for (uint32_t i = 0; i < geoms[g].numFaces; i++)
 					{
-						bimGeometry::Face f = geoms[g].GetFace(i);
+						fuzzybools::Face f = geoms[g].GetFace(i);
 						glm::dvec3 a = geoms[g].GetPoint(f.i0);
 						glm::dvec3 b = geoms[g].GetPoint(f.i1);
 						glm::dvec3 c = geoms[g].GetPoint(f.i2);

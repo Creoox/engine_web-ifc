@@ -2,8 +2,8 @@
 #include <algorithm>
 #include <glm/glm.hpp>
 #include "sweep.h"
-#include "../boolean-utils/eps.h"
-#include "geometry.h"
+#include "web-ifc/geometry/operations/boolean-utils/eps.h"
+#include "web-ifc/geometry/operations/boolean-utils/geometry.h"
 #include "utils.h"
 
 using Vec = glm::dvec3;
@@ -14,11 +14,11 @@ namespace bimGeometry {
     {
         Buffers buffers;
 
-        Geometry geom = SweepFunction(scaling, closed, profilePoints, directrix, initialDirectrixNormal, rotate90, optimize);
+        fuzzybools::Geometry geom = SweepFunction(scaling, closed, profilePoints, directrix, initialDirectrixNormal, rotate90, optimize);
 
         for (int r = 0; r < geom.numFaces; r++)
         {
-            bimGeometry::Face f = geom.GetFace(r);
+            fuzzybools::Face f = geom.GetFace(r);
             buffers.AddTri(geom.GetPoint(f.i0), geom.GetPoint(f.i1),  geom.GetPoint(f.i2));
         }
 

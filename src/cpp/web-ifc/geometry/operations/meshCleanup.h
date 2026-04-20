@@ -2,9 +2,8 @@
 
 #include <cstdint>
 #include <filesystem>
-#include <web-ifc/geometry/operations/bim-geometry/geometry.h>
-#include <web-ifc/geometry/operations/boolean-utils/geometry.h>
-#include <web-ifc/geometry/representation/IfcGeometry.h>
+#include "web-ifc/geometry/operations/boolean-utils/geometry.h"
+#include "web-ifc/geometry/representation/IfcGeometry.h"
 
 namespace meshCleanup
 {

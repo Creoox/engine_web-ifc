@@ -1,7 +1,7 @@
 #include <vector>
 #include <algorithm>
 #include <glm/glm.hpp>
-#include "geometry.h"
+#include "web-ifc/geometry/operations/boolean-utils/geometry.h"
 #include "buffers.h"
 #include <string>
 
@@ -15,8 +15,8 @@ namespace bimGeometry {
     { 
         int type;
         std::string op;
-        Geometry geometry;
-        std::vector<Geometry> seconds;
+        fuzzybools::Geometry geometry;
+        std::vector<fuzzybools::Geometry> seconds;
         std::vector<std::vector<glm::dvec3>> triangles;
 
         Buffers GetBuffers();

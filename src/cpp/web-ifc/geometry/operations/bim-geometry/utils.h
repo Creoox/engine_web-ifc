@@ -2,8 +2,8 @@
 #include <vector>
 #include <algorithm>
 #include <glm/glm.hpp>
-#include "geometry.h"
-#include "../boolean-utils/eps.h"
+#include "web-ifc/geometry/operations/boolean-utils/eps.h"
+#include "web-ifc/geometry/operations/boolean-utils/geometry.h"
 #include "curve.h"
 #include <mapbox/earcut.hpp>
 
@@ -13,8 +13,6 @@
 
 namespace bimGeometry
 {
-	constexpr int VERTEX_FORMAT_SIZE_FLOATS = 6;
-
 	inline double cross2d(const glm::dvec2 &point1, const glm::dvec2 &point2)
 	{
 		return point1.x * point2.y - point1.y * point2.x;
@@ -88,9 +86,9 @@ namespace bimGeometry
 		return glm::dot(norm, glm::dvec3(0, 0, 1)) > 0.0;
 	}
 
-	inline Geometry Revolution(glm::dmat4 transform, double startDegrees, double endDegrees, std::vector<glm::dvec3> Profile, double numRots)
+	inline fuzzybools::Geometry Revolution(glm::dmat4 transform, double startDegrees, double endDegrees, std::vector<glm::dvec3> Profile, double numRots)
 	{
-		Geometry geometry;
+		fuzzybools::Geometry geometry;
 
 		if (numRots < 2)
 		{
@@ -173,9 +171,9 @@ namespace bimGeometry
 		return geometry;
 	}
 
-	inline Geometry RevolveCylinder(glm::dmat4 transform, double startDegrees, double endDegrees, double minZ, double maxZ, int numRots, double radius)
+	inline fuzzybools::Geometry RevolveCylinder(glm::dmat4 transform, double startDegrees, double endDegrees, double minZ, double maxZ, int numRots, double radius)
 	{
-		Geometry geometry;
+		fuzzybools::Geometry geometry;
 
 		if (numRots < 2)
 		{
@@ -536,9 +534,9 @@ namespace bimGeometry
 		return points;
 	}
 
-	inline bimGeometry::Geometry Extrude(const std::vector<glm::dvec3> &points, glm::dvec3 &dir, double len)
+	inline fuzzybools::Geometry Extrude(const std::vector<glm::dvec3> &points, glm::dvec3 &dir, double len)
 	{
-		bimGeometry::Geometry geom;
+		fuzzybools::Geometry geom;
 		for (size_t j = 0; j < points.size() - 1; j++)
 		{
 			int j2 = j + 1;
@@ -620,9 +618,9 @@ namespace bimGeometry
 		return poly2D;
 	}
 
-	inline bimGeometry::Geometry Extrude(std::vector<std::vector<glm::dvec3>> profile, glm::dvec3 dir, double distance, glm::dvec3 cuttingPlaneNormal = glm::dvec3(0), glm::dvec3 cuttingPlanePos = glm::dvec3(0))
+	inline fuzzybools::Geometry Extrude(std::vector<std::vector<glm::dvec3>> profile, glm::dvec3 dir, double distance, glm::dvec3 cuttingPlaneNormal = glm::dvec3(0), glm::dvec3 cuttingPlanePos = glm::dvec3(0))
 	{
-		bimGeometry::Geometry geom;
+		fuzzybools::Geometry geom;
 		std::vector<bool> holesIndicesHash;
 
 		// check if first point is equal to last point, otherwise the outer loop of the shape is not closed
@@ -788,9 +786,9 @@ namespace bimGeometry
 	//! This implementation generates much more vertices than needed, and does not have smoothed normals
 	// TODO: Review rotate90 value, as it should be inferred from IFC but the source data had not been identified yet
 	// An arbitrary value has been added in IFCSURFACECURVESWEPTAREASOLID but this is a bad solution
-	inline Geometry SweepFunction(const double scaling, const bool closed, const std::vector<glm::dvec3> &profilePoints, const std::vector<glm::dvec3> &directrix, const glm::dvec3 &initialDirectrixNormal = glm::dvec3(0), const bool rotate90 = false, const bool optimize = true)
+	inline fuzzybools::Geometry SweepFunction(const double scaling, const bool closed, const std::vector<glm::dvec3> &profilePoints, const std::vector<glm::dvec3> &directrix, const glm::dvec3 &initialDirectrixNormal = glm::dvec3(0), const bool rotate90 = false, const bool optimize = true)
 	{
-		Geometry geom;
+		fuzzybools::Geometry geom;
 
 		std::vector<glm::vec<3, glm::f64>> dpts;
 
@@ -998,9 +996,9 @@ namespace bimGeometry
 		return geom;
 	}
 
-	inline Geometry SweepCircular(const double scaling, const bool closed, const std::vector<glm::dvec3> &profile, const double radius, const std::vector<glm::dvec3> &directrix, const glm::dvec3 &initialDirectrixNormal = glm::dvec3(0), const bool rotate90 = false)
+	inline fuzzybools::Geometry SweepCircular(const double scaling, const bool closed, const std::vector<glm::dvec3> &profile, const double radius, const std::vector<glm::dvec3> &directrix, const glm::dvec3 &initialDirectrixNormal = glm::dvec3(0), const bool rotate90 = false)
 	{
-		Geometry geom;
+		fuzzybools::Geometry geom;
 
 		std::vector<glm::vec<3, glm::f64>> dpts;
 
@@ -1243,9 +1241,9 @@ namespace bimGeometry
 		return geom;
 	}
 
-	inline Geometry SectionedSurface(std::vector<std::vector<glm::dvec3>> profiles, bool buildCaps, double eps=0.0)
+	inline fuzzybools::Geometry SectionedSurface(std::vector<std::vector<glm::dvec3>> profiles, bool buildCaps, double eps=0.0)
 	{
-		Geometry geom;
+		fuzzybools::Geometry geom;
 
 		// Check for insufficient profiles
 		if (profiles.size() < 2)
