@@ -537,7 +537,7 @@ opacity: 0.7
         }
         for (uint32_t i = 0; i < geom.numFaces; i++)
         {
-            bimGeometry::Face f = geom.GetFace(i);
+            fuzzybools::Face f = geom.GetFace(i);
             obj << "f " << (f.i0 + 1 + offset) << "// " << (f.i1 + 1 + offset) << "// " << (f.i2 + 1 + offset) << "//\n";
         }
         offset += geom.numPoints;
@@ -599,7 +599,7 @@ opacity: 0.7
         }
         for (uint32_t i = 0; i < geom.numFaces; i++)
         {
-            bimGeometry::Face f = geom.GetFace(i);
+            fuzzybools::Face f = geom.GetFace(i);
             obj << "f " << (f.i0 + 1 + offset) << "// " << (f.i1 + 1 + offset) << "// " << (f.i2 + 1 + offset) << "//\n";
         }
         offset += geom.numPoints;
@@ -662,7 +662,7 @@ opacity: 0.7
         uint32_t id = 0;
         for (auto plane : geom.planes)
         {
-            webifc::geometry::Plane newPlane;
+            fuzzybools::SimplePlane newPlane;
             newPlane.id = id;
             newPlane.distance = plane.distance;
             newPlane.normal = plane.normal;
