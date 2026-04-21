@@ -1465,13 +1465,46 @@ namespace webifc::geometry
       _loader.MoveToArgumentOffset(expressID, 2);
       uint32_t CurveRef = _loader.GetRefArgument();
       IfcCurve curve;
-      
+
       edgeParams.dimensions = 3;
       edgeParams.edge = true;
       edgeParams.sameSense = -1;
       edgeParams.trimSense = TRIM_SENSE_SAME;
-      
+
       ComputeCurve(CurveRef, curve, edgeParams);
+
+      // Some curve handlers (notably IFCBSPLINECURVEWITHKNOTS and its rational
+      // variant) ignore the trim params in ComputeCurveParams and emit the full
+      // underlying curve. Apply a positional trim here so the returned points
+      // only span the slice between the edge's start and end vertices. Without
+      // this, every B-spline-backed edge contributes its entire source curve
+      // to the face's boundary loop, producing oversized mesh output.
+      if (curve.points.size() >= 2)
+      {
+        auto findNearest = [&](glm::dvec3 const& target) {
+          size_t bestIdx = 0;
+          double bestDist = std::numeric_limits<double>::max();
+          for (size_t i = 0; i < curve.points.size(); ++i) {
+            double d = glm::distance(curve.points[i], target);
+            if (d < bestDist) { bestDist = d; bestIdx = i; }
+          }
+          return bestIdx;
+        };
+        size_t iStart = findNearest(p1);
+        size_t iEnd = findNearest(p2);
+        std::vector<glm::dvec3> trimmed;
+        if (iStart <= iEnd) {
+          trimmed.assign(curve.points.begin() + iStart, curve.points.begin() + iEnd + 1);
+        } else {
+          trimmed.assign(curve.points.begin() + iEnd, curve.points.begin() + iStart + 1);
+          std::reverse(trimmed.begin(), trimmed.end());
+        }
+        if (!trimmed.empty()) {
+          trimmed.front() = p1;
+          trimmed.back() = p2;
+        }
+        curve.points = std::move(trimmed);
+      }
 
       return curve;
     }
@@ -4241,6 +4274,7 @@ namespace webifc::geometry
     auto lineType = _loader.GetLineType(expressID);
     switch (lineType)
     {
+    case schema::IFCARBITRARYCLOSEDPROFILEDEF:
     case schema::IFCARBITRARYOPENPROFILEDEF:
     {
       IfcProfile profile;
@@ -4249,11 +4283,63 @@ namespace webifc::geometry
       profile.type = _loader.GetStringArgument();
       _loader.MoveToArgumentOffset(expressID, 2);
       profile.curve = GetCurve(_loader.GetRefArgument(), 3);
+      profile.isConvex = IsCurveConvex(profile.curve);
+
+      if (lineType == schema::IFCARBITRARYCLOSEDPROFILEDEF)
+      {
+        if (!profile.curve.points.empty())
+        {
+          glm::dvec3 gap = profile.curve.points.front() - profile.curve.points.back();
+          if (glm::length(gap) > 1e-8)
+          {
+            profile.curve.points.push_back(profile.curve.points.front());
+          }
+        }
+      }
+
+      return profile;
+    }
+    case schema::IFCARBITRARYPROFILEDEFWITHVOIDS:
+    {
+      IfcProfile profile;
+
+      _loader.MoveToArgumentOffset(expressID, 0);
+      profile.type = _loader.GetStringArgument();
+      _loader.MoveToArgumentOffset(expressID, 2);
+      profile.curve = GetCurve(_loader.GetRefArgument(), 3);
+      profile.isConvex = IsCurveConvex(profile.curve);
+
+      if (!profile.curve.points.empty())
+      {
+        glm::dvec3 gap = profile.curve.points.front() - profile.curve.points.back();
+        if (glm::length(gap) > 1e-8)
+        {
+          profile.curve.points.push_back(profile.curve.points.front());
+        }
+      }
+
+      _loader.MoveToArgumentOffset(expressID, 3);
+      auto holes = _loader.GetSetArgument();
+
+      for (auto &hole : holes)
+      {
+        IfcCurve holeCurve = GetCurve(_loader.GetRefArgument(hole), 3);
+        if (!holeCurve.points.empty())
+        {
+          glm::dvec3 holeGap = holeCurve.points.front() - holeCurve.points.back();
+          if (glm::length(holeGap) > 1e-8)
+          {
+            holeCurve.points.push_back(holeCurve.points.front());
+          }
+        }
+        profile.holes.push_back(holeCurve);
+      }
 
       return profile;
     }
     default:
-      spdlog::error("[GetProfilebyLine()] unexpected 3D profile type {}: {}", expressID, lineType);
+      std::string lineTypeStr = _loader.GetSchemaManager().IfcTypeCodeToType(lineType);
+      spdlog::error("[GetProfilebyLine()] unexpected 3D profile type {}: {}", expressID, lineTypeStr);
       break;
     }
 

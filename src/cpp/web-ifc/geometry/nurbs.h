@@ -38,10 +38,8 @@ namespace webifc::geometry{
 		std::vector<double> get_weights() const;
 		std::vector<double> get_knots(std::vector<double>const & bs_knots, std::vector<uint32_t> const & bs_mults) const;
 		std::vector<glm::dvec3> get_control_points() const;
-		uv_points_t get_uv_points() const;
 		uv_point_t inverse_evaluation(glm::dvec3 const& pt) const;
 		uv_point_t inverse_method(glm::dvec3 const& pt) const;
-		std::vector<uint32_t> get_triangulation_uv_points(uv_points_t const& uv_points) const;
 		std::vector<double> get_zscores(std::vector<double> const& knots) const;
 		std::vector<double> check_knots(std::vector<double> const& knots) const;
 		auto get_approximation(glm::dvec3 const& pt, uv_point_t const& range_u, uv_point_t const& range_v) const;
