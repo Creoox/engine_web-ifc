@@ -14,64 +14,165 @@ namespace webifc::geometry{
 		if (!_initialized) {
 			return;
 		}
-		auto uv_points {this->get_uv_points()};
-		auto indices {get_triangulation_uv_points(uv_points)};
 
-		// Subdivide resulting triangles to increase definition
-		// r indicates the level of subdivision, currently 3 you can increase it to 5
-		for (size_t r = 0; r < 3; r++)
-		{
-			auto num_indices{indices.size()};
-			std::vector<uint32_t> newIndices;
-			newIndices.reserve(num_indices / 3 * 12);
-			Nurbs::uv_points_t newUVPoints;
-			newUVPoints.reserve(num_indices / 3 * 6);
+		// Model-unit tolerance used both for loop densification and interior
+		// subdivision. Keeping them on the same scale means the CDT polygon and
+		// the final triangulation agree on how smooth is smooth.
+		double const subdivTol = 0.005 / this->scaling;
+		spdlog::debug("[Nurbs::fill_geometry] scaling={} subdivTol={}", this->scaling, subdivTol);
 
-			for (size_t i = 0; i < num_indices; i += 3)
-			{
-				// Copy values before emplace_back calls to avoid dangling references on reallocation
-				auto const p0 = uv_points[indices[i + 0]];
-				auto const p1 = uv_points[indices[i + 1]];
-				auto const p2 = uv_points[indices[i + 2]];
-				newUVPoints.emplace_back(p0);
-				newUVPoints.emplace_back(p1);
-				newUVPoints.emplace_back(p2);
-				newUVPoints.emplace_back((p0.x + p1.x) / 2, (p0.y + p1.y) / 2);
-				newUVPoints.emplace_back((p0.x + p2.x) / 2, (p0.y + p2.y) / 2);
-				newUVPoints.emplace_back((p1.x + p2.x) / 2, (p1.y + p2.y) / 2);
-
-				int offset = newUVPoints.size() - 6;
-
-				newIndices.push_back(offset + 0);
-				newIndices.push_back(offset + 3);
-				newIndices.push_back(offset + 4);
-
-				newIndices.push_back(offset + 3);
-				newIndices.push_back(offset + 5);
-				newIndices.push_back(offset + 4);
-
-				newIndices.push_back(offset + 3);
-				newIndices.push_back(offset + 1);
-				newIndices.push_back(offset + 5);
-
-				newIndices.push_back(offset + 4);
-				newIndices.push_back(offset + 5);
-				newIndices.push_back(offset + 2);
+		// Step 1: project each bound loop to UV space, preserving per-loop topology
+		// so the CDT below can use each loop as a constraint polygon.
+		std::vector<std::vector<glm::dvec2>> uvLoops;
+		uvLoops.reserve(this->bounds.size());
+		for (auto const& bound : this->bounds) {
+			std::vector<glm::dvec2> loop;
+			loop.reserve(bound.curve.points.size());
+			for (auto const& point : bound.curve.points) {
+				auto uv {this->inverse_evaluation(point)};
+				auto back {tinynurbs::surfacePoint(*this->nurbs, uv.x, uv.y)};
+				double residual = glm::distance(glm::dvec3(back), point);
+				spdlog::debug("[NurbsBound] in=({:.4f},{:.4f},{:.4f}) uv=({:.6f},{:.6f}) back=({:.4f},{:.4f},{:.4f}) residual={:.6e} maxErr={:.6e}",
+					point.x, point.y, point.z, uv.x, uv.y, back.x, back.y, back.z, residual, this->maxError);
+				if (residual > this->maxError) {
+					spdlog::warn("[NurbsBound] projection failed, residual={:.6e} > maxError={:.6e} at uv=({:.6f},{:.6f}) for pt=({:.4f},{:.4f},{:.4f})",
+						residual, this->maxError, uv.x, uv.y, point.x, point.y, point.z);
+				}
+				if (!loop.empty() && glm::distance(loop.back(), glm::dvec2(uv.x, uv.y)) < 1e-8) continue;
+				loop.emplace_back(uv.x, uv.y);
 			}
+			if (loop.size() >= 2 && glm::distance(loop.front(), loop.back()) < 1e-8) loop.pop_back();
+			if (loop.size() < 3) continue;
+			uvLoops.push_back(std::move(loop));
+		}
+		if (uvLoops.empty()) return;
 
-			uv_points = newUVPoints;
-			indices = newIndices;
+		// Step 1b: densify each UV loop until chord-to-surface deviation drops
+		// below subdivTol. Without this pass the CDT polygon is just the chord
+		// polygon of the original IFC edge samples, so curved bounds render as
+		// visible facets no matter how finely we subdivide the interior.
+		for (auto& loop : uvLoops) {
+			for (int pass = 0; pass < 5; ++pass) {
+				std::vector<glm::dvec2> next;
+				next.reserve(loop.size() * 2);
+				bool inserted = false;
+				for (size_t i = 0; i < loop.size(); ++i) {
+					size_t const j = (i + 1) % loop.size();
+					glm::dvec2 const& a = loop[i];
+					glm::dvec2 const& b = loop[j];
+					glm::dvec2 const m = (a + b) * 0.5;
+					glm::dvec3 const pa = tinynurbs::surfacePoint(*this->nurbs, a.x, a.y);
+					glm::dvec3 const pb = tinynurbs::surfacePoint(*this->nurbs, b.x, b.y);
+					glm::dvec3 const pm = tinynurbs::surfacePoint(*this->nurbs, m.x, m.y);
+					next.push_back(a);
+					if (glm::distance(pm, (pa + pb) * 0.5) > subdivTol) {
+						next.push_back(m);
+						inserted = true;
+					}
+				}
+				loop = std::move(next);
+				if (!inserted) break;
+			}
 		}
 
-		for (size_t i = 0; i < indices.size(); i += 3)
-		{
-			auto const& p0 {uv_points[indices[i + 0]]};
-			auto const& p1 {uv_points[indices[i + 1]]};
-			auto const& p2 {uv_points[indices[i + 2]]};
-			auto pt0 {tinynurbs::surfacePoint(*this->nurbs, p0.x, p0.y)};
-			auto pt1 {tinynurbs::surfacePoint(*this->nurbs, p1.x, p1.y)};
-			auto pt2 {tinynurbs::surfacePoint(*this->nurbs, p2.x, p2.y)};
-			geometry.AddFace(pt0, pt1, pt2);
+		// Step 2: constrained Delaunay triangulation with bound loops as edge constraints.
+		std::vector<CDT::V2d<double>> cdtVerts;
+		std::vector<CDT::Edge> cdtEdges;
+		for (auto const& loop : uvLoops) {
+			size_t const baseIdx = cdtVerts.size();
+			for (auto const& uv : loop) {
+				cdtVerts.push_back(CDT::V2d<double>::make(uv.x, uv.y));
+			}
+			size_t const n = loop.size();
+			for (size_t i = 0; i < n; ++i) {
+				cdtEdges.push_back(CDT::Edge(
+					static_cast<uint32_t>(baseIdx + i),
+					static_cast<uint32_t>(baseIdx + (i + 1) % n)));
+			}
+		}
+		CDT::RemoveDuplicatesAndRemapEdges(cdtVerts, cdtEdges);
+		cdtEdges.erase(
+			std::remove_if(cdtEdges.begin(), cdtEdges.end(),
+				[](CDT::Edge const& e) { return e.v1() == e.v2(); }),
+			cdtEdges.end());
+		if (cdtVerts.size() < 3) return;
+
+		CDT::Triangulation<double> cdt(CDT::VertexInsertionOrder::AsProvided);
+		try {
+			cdt.insertVertices(cdtVerts);
+			cdt.insertEdges(cdtEdges);
+			cdt.eraseSuperTriangle();
+		}
+		catch (...) {
+			spdlog::warn("[Nurbs::fill_geometry] CDT failed; skipping surface");
+			return;
+		}
+
+		// Step 3: clip to the bound polygon interior with an even-odd fill test
+		// on the original UV loops. This matches the approach used in
+		// TriangulateRevolution and is more robust than eraseOuterTrianglesAndHoles
+		// when input loops have numerical imprecision.
+		auto insideUVPoly = [&](double pu, double pv) -> bool {
+			int crossings = 0;
+			for (auto const& loop : uvLoops) {
+				size_t const n = loop.size();
+				for (size_t i = 0, j = n - 1; i < n; j = i++) {
+					double yi = loop[i].y, yj = loop[j].y;
+					if ((yi > pv) != (yj > pv)) {
+						double xCross = loop[j].x + (pv - yj) / (yi - yj) * (loop[i].x - loop[j].x);
+						if (pu < xCross) crossings++;
+					}
+				}
+			}
+			return (crossings & 1) != 0;
+		};
+
+		// Step 4: adaptive subdivision driven by 3D deviation. Each triangle is
+		// split into 4 only if the true surface sags from the flat triangle by
+		// more than `subdivTol` (in model units). Replaces the previous 3 fixed
+		// midpoint passes which multiplied the triangle count by 64 regardless
+		// of curvature.
+		struct UVTri { glm::dvec2 a, b, c; int depth; };
+		int const maxDepth = 5;
+		std::vector<UVTri> work;
+		work.reserve(cdt.triangles.size());
+		for (auto const& tri : cdt.triangles) {
+			auto const& v0 = cdt.vertices[tri.vertices[0]];
+			auto const& v1 = cdt.vertices[tri.vertices[1]];
+			auto const& v2 = cdt.vertices[tri.vertices[2]];
+			double const cu = (v0.x + v1.x + v2.x) / 3.0;
+			double const cv = (v0.y + v1.y + v2.y) / 3.0;
+			if (!insideUVPoly(cu, cv)) continue;
+			work.push_back({ glm::dvec2(v0.x, v0.y), glm::dvec2(v1.x, v1.y), glm::dvec2(v2.x, v2.y), 0 });
+		}
+
+		while (!work.empty()) {
+			UVTri const t = work.back();
+			work.pop_back();
+			glm::dvec3 const p0 = tinynurbs::surfacePoint(*this->nurbs, t.a.x, t.a.y);
+			glm::dvec3 const p1 = tinynurbs::surfacePoint(*this->nurbs, t.b.x, t.b.y);
+			glm::dvec3 const p2 = tinynurbs::surfacePoint(*this->nurbs, t.c.x, t.c.y);
+			if (t.depth < maxDepth) {
+				glm::dvec2 const mab = (t.a + t.b) * 0.5;
+				glm::dvec2 const mbc = (t.b + t.c) * 0.5;
+				glm::dvec2 const mca = (t.c + t.a) * 0.5;
+				glm::dvec3 const pab = tinynurbs::surfacePoint(*this->nurbs, mab.x, mab.y);
+				glm::dvec3 const pbc = tinynurbs::surfacePoint(*this->nurbs, mbc.x, mbc.y);
+				glm::dvec3 const pca = tinynurbs::surfacePoint(*this->nurbs, mca.x, mca.y);
+				double const dev = std::max({
+					glm::distance(pab, (p0 + p1) * 0.5),
+					glm::distance(pbc, (p1 + p2) * 0.5),
+					glm::distance(pca, (p2 + p0) * 0.5)
+				});
+				if (dev > subdivTol) {
+					work.push_back({ t.a, mab, mca, t.depth + 1 });
+					work.push_back({ mab, t.b, mbc, t.depth + 1 });
+					work.push_back({ mca, mbc, t.c,  t.depth + 1 });
+					work.push_back({ mab, mbc, mca, t.depth + 1 });
+					continue;
+				}
+			}
+			geometry.AddFace(p0, p1, p2);
 		}
 	}
 
@@ -176,6 +277,11 @@ namespace webifc::geometry{
 			this->nurbs->knots_v[this->nurbs->degree_v],
 			this->nurbs->knots_v[this->nurbs->knots_v.size() - this->nurbs->degree_v - 1]
 		};
+		spdlog::debug("[Nurbs::init] degree=({},{}) grid={}x{} u_range=[{},{}] v_range=[{},{}]",
+			this->bspline_surface.UDegree, this->bspline_surface.VDegree,
+			this->num_u, this->num_v,
+			this->range_knots_u.x, this->range_knots_u.y,
+			this->range_knots_v.x, this->range_knots_v.y);
 
 		// Compute sample surface points.
 		this->ptc = tinynurbs::surfacePoint(*this->nurbs, EPS_TINY, EPS_TINY);
@@ -238,29 +344,6 @@ namespace webifc::geometry{
 		return result;
 	}
 
-	Nurbs::uv_points_t Nurbs::get_uv_points() const{
-		Nurbs::uv_points_t points;
-		for (auto const& bound : this->bounds) {
-			for (auto const& point : bound.curve.points) {
-				auto uv {this->inverse_evaluation(point)};
-				points.emplace_back(uv.x, uv.y);
-			}
-		}
-		std::sort(points.begin(), points.end(),[](auto const& left, auto const& right){
-			  if (left[0] != right[0]) return left[0] < right[0];
-        return left[1] < right[1];
-		});
-		auto last_it2 = std::unique(points.begin(), points.end(), [](auto const& a, auto const& b){
-				double EPS{1E-5};
-				return std::abs(a[0] - b[0]) < EPS && std::abs(a[1] - b[1]) < EPS;
-		});
-		points.erase(last_it2, points.end());
-		std::sort(points.begin(), points.end(),[](auto const& left, auto const& right){
-		  return left[1] < right[1];
-		});
-		return points;
-	}
-
 	auto Nurbs::get_approximation(glm::dvec3 const& pt, uv_point_t const& range_u, uv_point_t const& range_v) const{
 		double fU{0.0};
 		double fV{0.0};
@@ -300,25 +383,17 @@ namespace webifc::geometry{
 	{
 		spdlog::debug("[InverseMethod()]");
 		glm::highp_dvec3 pt00{};
-		double fU {(range_knots_u.x + range_knots_u.y) * 0.5};
-		double fV {(range_knots_v.x + range_knots_v.y) * 0.5};
-		// auto [max_distance, fU, fV, new_range_u, new_range_v] {this->get_approximation(pt, this->range_knots_u, this->range_knots_v)};
-		// if(max_distance <= maxError) return {fU, fV};
-		// auto previous_distance{max_distance};
-		// while(max_distance > maxError){
-		// 	auto [next_max_distance, next_fU, next_fV, range_u, range_v] {this->get_approximation(pt, new_range_u, new_range_v)};
-		// 	fU = next_fU;
-		// 	fV = next_fV;
-		// 	if(max_distance <= maxError) return {fU, fV};
-		// 	if((previous_distance - next_max_distance) < 0.010) break;
-		// 	previous_distance = next_max_distance;
-		// 	new_range_u = range_u;
-		// 	new_range_v = range_v;
-		// 	max_distance = next_max_distance;
-		// }
+		// Seed the search with a 10x10 grid-sampled global nearest point instead of
+		// the UV midpoint. Starting at the midpoint caused the rotational hill-climb
+		// below to settle in local minima for curved or off-center surfaces, producing
+		// bound projections on the wrong side of the patch and mesh tears after CDT.
+		auto const seed {this->get_approximation(pt, this->range_knots_u, this->range_knots_v)};
+		double fU {std::get<1>(seed)};
+		double fV {std::get<2>(seed)};
+		auto max_distance {std::get<0>(seed)};
+		if (max_distance <= maxError) return {fU, fV};
 
 		double divisor {100.0};
-		auto max_distance = std::numeric_limits<double>::max();
 		while (max_distance > maxError && divisor < 10000)
 		{
 			for (double r = 1; r < 5; r++)
@@ -362,43 +437,6 @@ namespace webifc::geometry{
 			divisor *= 3;
 		}
 		return {fU, fV};
-	}
-
-	std::vector<uint32_t> Nurbs::get_triangulation_uv_points(Nurbs::uv_points_t const& uv_points) const{
-		std::vector<uint32_t> result;
-		if(uv_points.empty()) return result;
-		auto const num_points {uv_points.size()};
-		CDT::Triangulation<double> triangulator{};
-		std::vector<CDT::V2d<double>> points;
-		points.resize(num_points);
-		std::transform(uv_points.begin(), uv_points.end(), points.begin(), [](auto const& uv_point){
-			return CDT::V2d<double>{uv_point.x, uv_point.y};
-		});
-
-		try
-		{
-			triangulator.insertVertices(points);
-			triangulator.eraseSuperTriangle();
-			result.reserve(triangulator.triangles.size() * 3);
-			for(auto const& triangle : triangulator.triangles){
-				auto const & vertice0_id{triangle.vertices[0]};
-				auto const & vertice1_id{triangle.vertices[1]};
-				auto const & vertice2_id{triangle.vertices[2]};
-				auto const& vertice0 {glm::dvec2{uv_points[vertice0_id][0], uv_points[vertice0_id][1]}};
-				auto const& vertice1 {glm::dvec2{uv_points[vertice1_id][0], uv_points[vertice1_id][1]}};
-				auto const& vertice2 {glm::dvec2{uv_points[vertice2_id][0], uv_points[vertice2_id][1]}};
-				auto const area{areaOfTriangle(vertice0, vertice1, vertice2)};
-				constexpr double EPS {1E-2};
-				constexpr double EPS2 {EPS*EPS};
-				if(area < EPS2)
-					continue;
-				result.emplace_back(std::move(vertice0_id));
-				result.emplace_back(std::move(vertice1_id));
-				result.emplace_back(std::move(vertice2_id));
-			}
-		}
-		catch(...){ return {};}
-		return result;
 	}
 
 	std::vector<double> Nurbs::get_zscores(std::vector<double> const& knots) const{
