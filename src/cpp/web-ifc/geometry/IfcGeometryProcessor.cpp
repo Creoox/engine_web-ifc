@@ -670,8 +670,6 @@ namespace webifc::geometry
                     bounds3D[i] = _geometryLoader.GetBound(boundID);
                 }
 
-                TriangulateBounds(geometry, bounds3D, expressID);
-
                 _loader.MoveToArgumentOffset(expressID, 1);
                 auto surfRef = _loader.GetRefArgument();
 
@@ -1347,6 +1345,51 @@ namespace webifc::geometry
         return IfcComposedMesh();
     }
 
+    // Synthesize knots/multiplicities for a plain IFCBSPLINESURFACE (no-knots variant).
+    // IFC provides only degree, control points, and a CurveType tag; we derive the
+    // knot vector implied by that tag. Without this, Nurbs::init() rejects the surface
+    // because knot validation sees empty vectors.
+    static void synthesizeBSplineKnots(std::string_view curveType, int degree, size_t numCtrlPts,
+                                       std::vector<glm::f64>& knots, std::vector<uint32_t>& mults)
+    {
+        if (numCtrlPts < static_cast<size_t>(degree + 1)) return;
+        size_t const n = numCtrlPts - 1;
+        size_t const p = static_cast<size_t>(degree);
+
+        if (curveType == "PIECEWISE_BEZIER_KNOTS" && p > 0 && (n - p) % p == 0)
+        {
+            size_t const segments = (n - p) / p;
+            knots.reserve(segments + 2);
+            mults.reserve(segments + 2);
+            for (size_t i = 0; i <= segments + 1; ++i) {
+                knots.push_back(static_cast<glm::f64>(i));
+                mults.push_back((i == 0 || i == segments + 1) ? static_cast<uint32_t>(p + 1)
+                                                              : static_cast<uint32_t>(p));
+            }
+        }
+        else if (curveType == "UNIFORM_KNOTS")
+        {
+            size_t const total = n + p + 2;
+            knots.reserve(total);
+            mults.reserve(total);
+            for (size_t i = 0; i < total; ++i) {
+                knots.push_back(static_cast<glm::f64>(i));
+                mults.push_back(1);
+            }
+        }
+        else
+        {
+            // QUASI_UNIFORM_KNOTS, UNSPECIFIED, or unrecognized: clamped uniform.
+            size_t const unique = n - p + 2;
+            knots.reserve(unique);
+            mults.reserve(unique);
+            for (size_t i = 0; i < unique; ++i) {
+                knots.push_back(static_cast<glm::f64>(i));
+                mults.push_back((i == 0 || i == unique - 1) ? static_cast<uint32_t>(p + 1) : 1);
+            }
+        }
+    }
+
     IfcSurface IfcGeometryProcessor::GetSurface(uint32_t expressID)
     {
         spdlog::debug("[GetSurface({})]", expressID);
@@ -1402,6 +1445,15 @@ namespace webifc::geometry
             _loader.MoveToArgumentOffset(expressID, 6);
             auto selfIntersect = _loader.GetStringArgument();
 
+            std::vector<uint32_t> UMultiplicity;
+            std::vector<uint32_t> VMultiplicity;
+            std::vector<glm::f64> UKnots;
+            std::vector<glm::f64> VKnots;
+            size_t const numU = ctrolPts.size();
+            size_t const numV = ctrolPts.empty() ? 0 : ctrolPts[0].size();
+            synthesizeBSplineKnots(curveType, Udegree, numU, UKnots, UMultiplicity);
+            synthesizeBSplineKnots(curveType, Vdegree, numV, VKnots, VMultiplicity);
+
             surface.BSplineSurface.Active = true;
             surface.BSplineSurface.UDegree = Udegree;
             surface.BSplineSurface.VDegree = Vdegree;
@@ -1409,6 +1461,10 @@ namespace webifc::geometry
             surface.BSplineSurface.ClosedU = closedU;
             surface.BSplineSurface.ClosedV = closedV;
             surface.BSplineSurface.CurveType = curveType;
+            surface.BSplineSurface.UMultiplicity = UMultiplicity;
+            surface.BSplineSurface.VMultiplicity = VMultiplicity;
+            surface.BSplineSurface.UKnots = UKnots;
+            surface.BSplineSurface.VKnots = VKnots;
 
             return surface;
         }
@@ -1643,7 +1699,7 @@ namespace webifc::geometry
             surface.BSplineSurface.VMultiplicity = VMultiplicity;
             surface.BSplineSurface.UKnots = UKnots;
             surface.BSplineSurface.VKnots = VKnots;
-            surface.BSplineSurface.WeightPoints = weightPts;
+            surface.BSplineSurface.Weights = weightPts;
 
             return surface;
 

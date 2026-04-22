@@ -181,7 +181,7 @@ namespace webifc::geometry{
 			bounds{bounds},
 			bspline_surface{surface.BSplineSurface},
 			num_u{this->bspline_surface.ControlPoints.size()},
-			num_v{this->bspline_surface.ControlPoints.front().size()},
+			num_v{this->bspline_surface.ControlPoints.empty() ? 0 : this->bspline_surface.ControlPoints.front().size()},
 			scaling{scaling} {
 			this->init();
 	}
@@ -309,6 +309,10 @@ namespace webifc::geometry{
 		// Scale error tolerances.
 		this->minError /= this->scaling;
 		this->maxError /= this->scaling;
+
+		this->closedU = (this->bspline_surface.ClosedU == "T");
+		this->closedV = (this->bspline_surface.ClosedV == "T");
+
 		_initialized = true;
 	}
 
@@ -323,6 +327,10 @@ namespace webifc::geometry{
 	}
 
 	std::vector<double> Nurbs::get_knots(std::vector<double>const & bs_knots, std::vector<uint32_t> const & bs_mults) const{
+		if (bs_knots.size() != bs_mults.size()) {
+			spdlog::error("Knot/multiplicity size mismatch: knots={}, mults={}", bs_knots.size(), bs_mults.size());
+			return {};
+		}
 		std::vector<double> result;
 		auto knots_no_expanded {this->check_knots(bs_knots)};
 		auto const num_srf_knots {std::accumulate(bs_mults.begin(), bs_mults.end(), 0.0)};
@@ -413,10 +421,10 @@ namespace webifc::geometry{
 						{
 							double ffU = fU + incU;
 							double ffV = fV + incV;
-							if (ffU < range_knots_u.x)ffU = range_knots_u.y - (range_knots_u.x - ffU);
-							else if (ffU > range_knots_u.y) ffU = range_knots_u.x + (ffU - range_knots_u.y);
-							if (ffV < range_knots_v.x) ffV = range_knots_v.y - (range_knots_v.x - ffV);
-							else if (ffV > range_knots_v.y) ffV = range_knots_v.x + (ffV - range_knots_v.y);
+							if (ffU < range_knots_u.x) ffU = closedU ? range_knots_u.y - (range_knots_u.x - ffU) : range_knots_u.x;
+							else if (ffU > range_knots_u.y) ffU = closedU ? range_knots_u.x + (ffU - range_knots_u.y) : range_knots_u.y;
+							if (ffV < range_knots_v.x) ffV = closedV ? range_knots_v.y - (range_knots_v.x - ffV) : range_knots_v.x;
+							else if (ffV > range_knots_v.y) ffV = closedV ? range_knots_v.x + (ffV - range_knots_v.y) : range_knots_v.y;
 							pt00 = tinynurbs::surfacePoint(*this->nurbs, ffU, ffV);
 							auto const di {glm::distance(pt00, pt)};
 							if (di < max_distance)

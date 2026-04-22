@@ -103,7 +103,6 @@ namespace webifc::geometry {
 			std::vector<uint32_t> VMultiplicity;
 			std::vector<glm::f64> UKnots;
 			std::vector<glm::f64> VKnots;
-			std::vector<std::vector<glm::f64>> WeightPoints;
 		};
 
 		struct Revolution
