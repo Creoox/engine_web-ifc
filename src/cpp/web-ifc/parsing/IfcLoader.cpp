@@ -475,7 +475,7 @@ namespace webifc::parsing {
       IfcTokenType t = GetTokenType();
      	if (t == IfcTokenType::EMPTY)
      	{
-     		return 0;
+			return UINT32_MAX;  // 0 is a valid reference ID, so we return UINT32_MAX to indicate an empty reference
      	}
      	else if (t == IfcTokenType::REF)
      	{
@@ -484,7 +484,7 @@ namespace webifc::parsing {
      	else
      	{
      		spdlog::error("[GetOptionalRefArgument()] unexpected token type, expected REF or EMPTY", GetCurrentLineExpressID());
-     		return 0;
+     		return UINT32_MAX;
      	}
    }
    

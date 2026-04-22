@@ -842,7 +842,7 @@ namespace webifc::geometry
 
                 // Retrieve profile, placement, directrix, and fixed reference direction
                 IfcProfile profile = _geometryLoader.GetProfile(profileID);
-                glm::dmat4 placement = placementID ? _geometryLoader.GetLocalPlacement(placementID) : glm::dmat4(1.0);
+                glm::dmat4 placement = placementID != UINT32_MAX ? _geometryLoader.GetLocalPlacement(placementID) : glm::dmat4(1.0);
                 IfcCurve directrix = _geometryLoader.GetCurve(directrixRef, 3);
                 glm::dvec3 fixedReference = _geometryLoader.GetCartesianPoint3D(fixedReferenceID);
 
@@ -929,41 +929,73 @@ namespace webifc::geometry
 
                 _loader.MoveToArgumentOffset(expressID, 0);
                 uint32_t profileID = _loader.GetRefArgument();
-                uint32_t placementID = _loader.GetRefArgument();
+                uint32_t placementID = _loader.GetOptionalRefArgument();
                 uint32_t axis1PlacementID = _loader.GetRefArgument();
                 double angle = angleConversion(_loader.GetDoubleArgument(), _cache.GetAngleUnits());
 
                 IfcProfile profile = _geometryLoader.GetProfile(profileID);
-                glm::dmat4 placement = _geometryLoader.GetLocalPlacement(placementID);
-                glm::dvec3 axis = _geometryLoader.GetAxis1Placement(axis1PlacementID)[0];
+                glm::dvec3 axisDir = glm::normalize(_geometryLoader.GetAxis1Placement(axis1PlacementID)[0]);
+                glm::dvec3 axisPos = _geometryLoader.GetAxis1Placement(axis1PlacementID)[1];
 
-                bool closed = false;
+                uint32_t numRots = std::max<uint32_t>(2, _settings._circleSegments);
 
-                glm::dvec3 pos = _geometryLoader.GetAxis1Placement(axis1PlacementID)[1];
+                // Revolve a closed 2D profile around (axisPos, axisDir) by `angle` radians. The previous implementation built a tiny-radius
+                // directrix via BuildArc(pos, ...) where `pos` lies on the axis, so Sweep ran against a degenerate arc and produced
+                // missing/pinched geometry. Direct revolution keeps each profile point at its original 3D location at angle 0 and rotates
+                // only the perpendicular-to-axis component around the axis. Side surface only; end caps would need a separate step if
+                // the revolution is partial and not bounded by other adjacent solids.
+                auto revolve = [&](const std::vector<glm::dvec3>& profilePts) -> IfcGeometry {
+                    IfcGeometry out;
+                    if (profilePts.size() < 2 || numRots < 2) return out;
 
-                IfcCurve directrix = BuildArc(_cache.GetLinearScalingFactor(), pos, axis, angle, _settings._circleSegments);
-                if (glm::distance(directrix.points[0], directrix.points[directrix.points.size() - 1]) < EPS_BIG)
-                {
-                    closed = true;
-                }
+                    std::vector<std::vector<glm::dvec3>> rings(numRots);
+                    for (auto const& p : profilePts) {
+                        glm::dvec3 rel = p - axisPos;
+                        double along = glm::dot(rel, axisDir);
+                        glm::dvec3 parallel = along * axisDir;
+                        glm::dvec3 perp = rel - parallel;
+                        double r = glm::length(perp);
+                        glm::dvec3 u = (r > 1e-12) ? perp / r : glm::dvec3(0);
+                        glm::dvec3 v = glm::cross(axisDir, u);
+                        for (uint32_t k = 0; k < numRots; ++k) {
+                            double t = static_cast<double>(k) / static_cast<double>(numRots - 1);
+                            double theta = t * angle;
+                            glm::dvec3 pt = axisPos + parallel + r * (std::cos(theta) * u + std::sin(theta) * v);
+                            rings[k].push_back(pt);
+                        }
+                    }
+
+                    for (uint32_t k = 0; k + 1 < numRots; ++k) {
+                        auto const& r0 = rings[k];
+                        auto const& r1 = rings[k + 1];
+                        size_t const n = std::min(r0.size(), r1.size());
+                        for (size_t i = 0; i + 1 < n; ++i) {
+                            out.AddFace(r0[i], r0[i + 1], r1[i]);
+                            out.AddFace(r1[i], r0[i + 1], r1[i + 1]);
+                        }
+                    }
+                    return out;
+                };
 
                 IfcGeometry geom;
-
                 if (!profile.isComposite)
                 {
-                    geom = Sweep(_cache.GetLinearScalingFactor(), closed, profile, directrix, axis, false);
+                    geom = revolve(profile.curve.points);
                 }
                 else
                 {
-                    for (uint32_t i = 0; i < profile.profiles.size(); i++)
+                    for (auto const& subProfile : profile.profiles)
                     {
-                        IfcGeometry geom_t = Sweep(_cache.GetLinearScalingFactor(), closed, profile.profiles[i], directrix, axis, false, false);
+                        IfcGeometry geom_t = revolve(subProfile.curve.points);
                         geom.AddPart(geom_t);
                         geom.AddGeometry(geom_t);
                     }
                 }
 
-                mesh.transformation = placement;
+                if (placementID != UINT32_MAX)
+                {
+                    mesh.transformation = _geometryLoader.GetLocalPlacement(placementID);
+                }
                 geom.entityID = expressID;
                 _expressIDToGeometry[expressID] = geom;
                 mesh.expressID = expressID;
@@ -1003,7 +1035,7 @@ namespace webifc::geometry
                     }
                 }
 
-                if (placementID)
+                if (placementID != UINT32_MAX)
                 {
                     mesh.transformation = _geometryLoader.GetLocalPlacement(placementID);
                 }

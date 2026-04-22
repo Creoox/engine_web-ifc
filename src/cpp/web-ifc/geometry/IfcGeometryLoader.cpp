@@ -3440,7 +3440,7 @@ namespace webifc::geometry
 
       glm::dmat3 placement(1);
 
-      if (placementID)
+      if (placementID != UINT32_MAX)
       {
         placement = GetAxis2Placement2D(placementID);
       }
@@ -3483,7 +3483,7 @@ namespace webifc::geometry
 
       glm::dmat3 placement = glm::dmat3(1.0);
 
-      if (placementID)
+      if (placementID != UINT32_MAX)
       {
         placement = GetAxis2Placement2D(placementID);
       }
