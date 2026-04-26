@@ -11,6 +11,7 @@
 
 #include "IfcGeometryProcessor.h"
 #include <unordered_set>
+#include <fstream>
 #include <glm/gtx/transform.hpp>
 #include "representation/geometry.h"
 #include "operations/geometryutils.h"
@@ -18,6 +19,13 @@
 #include "operations/mesh_utils.h"
 #include "operations/meshCleanup.h"
 #include "operations/boolean-utils/fuzzy-bools.h"
+
+#if __has_include(<manifold/manifold.h>)
+#define WEBIFC_HAS_MANIFOLD 1
+#include <manifold/manifold.h>
+#else
+#define WEBIFC_HAS_MANIFOLD 0
+#endif
 
 namespace webifc::geometry
 {
@@ -2329,10 +2337,137 @@ namespace webifc::geometry
         return out;
     }
 
+#if WEBIFC_HAS_MANIFOLD
+    // Snap a metre-scale coordinate to a fixed sub-nanometre grid so that ULP-scale numerical noise
+    // (~1e-15..1e-16 at metre scale) collapses to exact coincidence. Real CAD features are mm-scale
+    // or coarser, so a 1 nm grid is far below anything geometrically meaningful in IFC. Without this,
+    // an opening whose extrusion overshoots a wall by 1 ULP produces a 1 ULP-thick residual membrane
+    // in manifold's Boolean output -- manifold is exact and treats the gap as real geometry.
+    static constexpr double kManifoldSnapGrid = 1.0e-9;
+    static inline double SnapForManifold(double v) {
+        return std::round(v / kManifoldSnapGrid) * kManifoldSnapGrid;
+    }
+
+    static manifold::MeshGL64 ToManifoldMesh(const fuzzybools::Geometry& g)
+    {
+        manifold::MeshGL64 mesh;
+        mesh.numProp = 3;
+        mesh.vertProperties.reserve(static_cast<size_t>(g.numPoints) * 3);
+        for (uint32_t i = 0; i < g.numPoints; ++i) {
+            glm::dvec3 p = g.GetPoint(i);
+            mesh.vertProperties.push_back(SnapForManifold(p.x));
+            mesh.vertProperties.push_back(SnapForManifold(p.y));
+            mesh.vertProperties.push_back(SnapForManifold(p.z));
+        }
+        mesh.triVerts.reserve(g.indexData.size());
+        for (uint32_t idx : g.indexData) mesh.triVerts.push_back(static_cast<uint64_t>(idx));
+
+        // Manifold requires CCW winding viewed from outside (positive signed volume for a closed solid).
+        // fuzzybools doesn't enforce this convention, so detect inverted input via the divergence-theorem
+        // volume integral and flip per-triangle winding before handoff. Subtract a reference point to keep
+        // the sum origin-independent.
+        if (g.numFaces > 0) {
+            glm::dvec3 ref = g.GetPoint(g.indexData[0]);
+            double signedVol = 0.0;
+            for (uint32_t i = 0; i < g.numFaces; ++i) {
+                glm::dvec3 a = g.GetPoint(g.indexData[3 * i + 0]) - ref;
+                glm::dvec3 b = g.GetPoint(g.indexData[3 * i + 1]) - ref;
+                glm::dvec3 c = g.GetPoint(g.indexData[3 * i + 2]) - ref;
+                signedVol += glm::dot(a, glm::cross(b, c)) / 6.0;
+            }
+            if (signedVol < 0.0) {
+                spdlog::debug("[ToManifoldMesh] numFaces={} signedVol={} (negative => CW input, flipping)", g.numFaces, signedVol);
+                for (size_t t = 0; t < mesh.triVerts.size(); t += 3) {
+                    std::swap(mesh.triVerts[t + 1], mesh.triVerts[t + 2]);
+                }
+            }
+        }
+
+        mesh.Merge();
+        return mesh;
+    }
+
+    static fuzzybools::Geometry FromManifold(const manifold::Manifold& m)
+    {
+        fuzzybools::Geometry out;
+        if (m.IsEmpty()) return out;
+        manifold::MeshGL64 mesh = m.GetMeshGL64();
+        const size_t nTri = mesh.NumTri();
+        for (size_t t = 0; t < nTri; ++t) {
+            auto v0 = mesh.GetVertPos(mesh.triVerts[3 * t + 0]);
+            auto v1 = mesh.GetVertPos(mesh.triVerts[3 * t + 1]);
+            auto v2 = mesh.GetVertPos(mesh.triVerts[3 * t + 2]);
+            out.AddFace(glm::dvec3(v0.x, v0.y, v0.z),
+                        glm::dvec3(v1.x, v1.y, v1.z),
+                        glm::dvec3(v2.x, v2.y, v2.z));
+        }
+        return out;
+    }
+
+    // Diagnostic: dump a manifold MeshGL64 as a wavefront OBJ. Positions only, 1-indexed faces, full
+    // double precision so coincident planes are byte-comparable in the file. Intended for one-shot
+    // CSG investigations; remove or gate behind a flag once diagnosis is complete.
+    static void DumpManifoldMeshToObj(const manifold::MeshGL64& mesh, const std::string& path)
+    {
+        std::ofstream out(path);
+        if (!out.is_open()) {
+            spdlog::warn("[DumpManifoldMeshToObj] failed to open {}", path);
+            return;
+        }
+        out << std::scientific;
+        out.precision(17);
+        const size_t nVert = static_cast<size_t>(mesh.NumVert());
+        const size_t nTri = static_cast<size_t>(mesh.NumTri());
+        for (size_t v = 0; v < nVert; ++v) {
+            const size_t off = v * mesh.numProp;
+            out << "v " << mesh.vertProperties[off + 0]
+                << " "  << mesh.vertProperties[off + 1]
+                << " "  << mesh.vertProperties[off + 2] << "\n";
+        }
+        for (size_t t = 0; t < nTri; ++t) {
+            out << "f " << (mesh.triVerts[3 * t + 0] + 1)
+                << " "  << (mesh.triVerts[3 * t + 1] + 1)
+                << " "  << (mesh.triVerts[3 * t + 2] + 1) << "\n";
+        }
+    }
+#endif
+
     IfcGeometry IfcGeometryProcessor::Subtract(IfcGeometry firstOperand, IfcGeometry secondOperand)
     {
         const uint32_t inputFaces = firstOperand.numFaces + secondOperand.numFaces;
-        fuzzybools::Geometry result = fuzzybools::Subtract(firstOperand, secondOperand);
+        fuzzybools::Geometry result;
+        bool gotResult = false;
+
+#if WEBIFC_HAS_MANIFOLD
+        try {
+            manifold::Manifold a(ToManifoldMesh(firstOperand));
+            manifold::Manifold b(ToManifoldMesh(secondOperand));
+            if (a.Status() == manifold::Manifold::Error::NoError && b.Status() == manifold::Manifold::Error::NoError) {
+                manifold::Manifold diff = a.Boolean(b, manifold::OpType::Subtract);
+                if (diff.Status() == manifold::Manifold::Error::NoError) {
+#ifdef _DEBUG
+                    static int kManifoldDumpCounter = 0;
+                    const int n = kManifoldDumpCounter++;
+                    const std::string base = "manifold_dump_" + std::to_string(n);
+                    DumpManifoldMeshToObj(a.GetMeshGL64(),    base + "_a.obj");
+                    DumpManifoldMeshToObj(b.GetMeshGL64(),    base + "_b.obj");
+                    DumpManifoldMeshToObj(diff.GetMeshGL64(), base + "_diff.obj");
+                    spdlog::info("[Subtract] dumped manifold meshes to {}_(a|b|diff).obj (cwd)", base);
+#endif
+                    result = FromManifold(diff);
+                    result.mBoolOpCount = std::max(firstOperand.mBoolOpCount, secondOperand.mBoolOpCount) + 1;
+                    gotResult = true;
+                }
+            }
+        } catch (...) {
+            gotResult = false;
+        }
+#endif
+
+        if (!gotResult) {
+            result = fuzzybools::Subtract(firstOperand, secondOperand);
+        }
+
         if (inputFaces > 0 && result.numFaces > kPathologicalFactor * inputFaces)
         {
             CheapCollapseAfterBoolean(result);
