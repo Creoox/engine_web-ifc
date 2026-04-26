@@ -1900,10 +1900,7 @@ namespace webifc::geometry
         }
     }
 
-    IfcGeometry IfcGeometryProcessor::BoolProcess(const std::vector<IfcGeometry> &firstGeoms, std::vector<IfcGeometry> &secondGeoms, std::string op, IfcGeometrySettings _settings)
-    {
-        return _boolEngine.BoolProcess(firstGeoms, secondGeoms, op, _settings);
-    }
+
     /**
      * This function traverses an IfcComposedMesh, transforming each child
      * IfcGeometry into world coordinates to perform Boolean operations
@@ -2165,7 +2162,7 @@ namespace webifc::geometry
         }
     }
 
-    IfcGeometry booleanManager::BoolProcess(const std::vector<IfcGeometry> &firstGeoms, std::vector<IfcGeometry> &secondGeoms, std::string op, IfcGeometrySettings _settings)
+    IfcGeometry IfcGeometryProcessor::BoolProcess(const std::vector<IfcGeometry> &firstGeoms, std::vector<IfcGeometry> &secondGeoms, std::string op, IfcGeometrySettings _settings)
     {
         spdlog::debug("[BoolProcess({})]");
         IfcGeometry finalResult;
@@ -2318,7 +2315,7 @@ namespace webifc::geometry
         g.hasPlanes = false;
     }
 
-    IfcGeometry booleanManager::Union(IfcGeometry firstOperand, IfcGeometry secondOperand)
+    IfcGeometry IfcGeometryProcessor::Union(IfcGeometry firstOperand, IfcGeometry secondOperand)
     {
         const uint32_t inputFaces = firstOperand.numFaces + secondOperand.numFaces;
         fuzzybools::Geometry result = fuzzybools::Union(firstOperand, secondOperand);
@@ -2332,7 +2329,7 @@ namespace webifc::geometry
         return out;
     }
 
-    IfcGeometry booleanManager::Subtract(IfcGeometry firstOperand, IfcGeometry secondOperand)
+    IfcGeometry IfcGeometryProcessor::Subtract(IfcGeometry firstOperand, IfcGeometry secondOperand)
     {
         const uint32_t inputFaces = firstOperand.numFaces + secondOperand.numFaces;
         fuzzybools::Geometry result = fuzzybools::Subtract(firstOperand, secondOperand);
@@ -2348,12 +2345,12 @@ namespace webifc::geometry
 
     IfcGeometryProcessor *IfcGeometryProcessor::Clone(const webifc::parsing::IfcLoader &newLoader) const
     {
-        IfcGeometryProcessor *newProcessor = new IfcGeometryProcessor(_settings, _expressIDToGeometry, _transformation, newLoader, _boolEngine, _schemaManager, _isCoordinated, _expressIdCyl, _expressIdRect, _coordinationMatrix, _predefinedCylinder, _predefinedCube);
+        IfcGeometryProcessor *newProcessor = new IfcGeometryProcessor(_settings, _expressIDToGeometry, _transformation, newLoader, _schemaManager, _isCoordinated, _expressIdCyl, _expressIdRect, _coordinationMatrix, _predefinedCylinder, _predefinedCube);
         return newProcessor;
     }
 
-    IfcGeometryProcessor::IfcGeometryProcessor(const IfcGeometrySettings &settings, std::unordered_map<uint32_t, IfcGeometry> expressIDToGeometry, glm::dmat4 transformation, const parsing::IfcLoader &loader, booleanManager boolEngine, const schema::IfcSchemaManager &schemaManager, bool isCoordinated, uint32_t expressIdCyl, uint32_t expressIdRect, glm::dmat4 coordinationMatrix, IfcGeometry predefinedCylinder, IfcGeometry predefinedCube)
-        : _settings(settings), _expressIDToGeometry(expressIDToGeometry), _transformation(transformation), _loader(loader), _cache(cache::IfcCache(loader)), _boolEngine(boolEngine), _schemaManager(schemaManager), _isCoordinated(isCoordinated), _expressIdCyl(expressIdCyl), _expressIdRect(expressIdRect), _coordinationMatrix(coordinationMatrix), _predefinedCylinder(predefinedCylinder), _predefinedCube(predefinedCube), _geometryLoader(geometry::IfcGeometryLoader(loader,_cache,settings._circleSegments))
+    IfcGeometryProcessor::IfcGeometryProcessor(const IfcGeometrySettings &settings, std::unordered_map<uint32_t, IfcGeometry> expressIDToGeometry, glm::dmat4 transformation, const parsing::IfcLoader &loader, const schema::IfcSchemaManager &schemaManager, bool isCoordinated, uint32_t expressIdCyl, uint32_t expressIdRect, glm::dmat4 coordinationMatrix, IfcGeometry predefinedCylinder, IfcGeometry predefinedCube)
+        : _settings(settings), _expressIDToGeometry(expressIDToGeometry), _transformation(transformation), _loader(loader), _cache(cache::IfcCache(loader)), _schemaManager(schemaManager), _isCoordinated(isCoordinated), _expressIdCyl(expressIdCyl), _expressIdRect(expressIdRect), _coordinationMatrix(coordinationMatrix), _predefinedCylinder(predefinedCylinder), _predefinedCube(predefinedCube), _geometryLoader(geometry::IfcGeometryLoader(loader,_cache,settings._circleSegments))
     {
     }
 

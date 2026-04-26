@@ -7,7 +7,7 @@ namespace bimGeometry
 {
     // Sequentially apply a list of second operands to a running first operand. 
     // Kept here because a couple of places compose CSG chains outside of IfcGeometryProcessor (not the main boolean path, which
-    // is in booleanManager::BoolProcess).
+    // is in IfcGeometryProcessor::BoolProcess).
     static fuzzybools::Geometry BoolProcess(fuzzybools::Geometry firstOperand, std::vector<fuzzybools::Geometry>& secondGeoms, std::string op)
     {
         fuzzybools::Geometry finalResult;

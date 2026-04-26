@@ -21,9 +21,6 @@ namespace fuzzybools
 
 namespace webifc::geometry
 {
-
-  // this class performs the processing of raw geometry data from the geometry loader to produce meshes
-
   struct IfcGeometrySettings
   {
     bool _coordinateToOrigin = false;
@@ -39,14 +36,7 @@ namespace webifc::geometry
     std::set<std::string> _representationTypesEnabled; // empty = load all
   };
 
-  class booleanManager
-  {
-  public:
-    IfcGeometry BoolProcess(const std::vector<IfcGeometry> &firstGeoms, std::vector<IfcGeometry> &secondGeoms, std::string op, IfcGeometrySettings _settings);
-    IfcGeometry Union(IfcGeometry firstOperator, IfcGeometry secondOperator);
-    IfcGeometry Subtract(IfcGeometry firstOperator, IfcGeometry secondOperator);
-  };
-
+  // this class performs the processing of raw geometry data from the geometry loader to produce meshes
   class IfcGeometryProcessor
   {
   public:
@@ -55,6 +45,9 @@ namespace webifc::geometry
     IfcGeometryLoader& GetLoader();
     IfcFlatMesh GetFlatMesh(uint32_t expressID, bool applyLinearScalingFactor = true);
     IfcComposedMesh GetMesh(uint32_t expressID);
+    IfcGeometry BoolProcess(const std::vector<IfcGeometry>& firstGeoms, std::vector<IfcGeometry>& secondGeoms, std::string op, IfcGeometrySettings _settings);
+    IfcGeometry Union(IfcGeometry firstOperator, IfcGeometry secondOperator);
+    IfcGeometry Subtract(IfcGeometry firstOperator, IfcGeometry secondOperator);
     void SetTransformation(const std::array<double, 16> &val);
     std::array<double, 16> GetFlatCoordinationMatrix() const;
     glm::dmat4 GetCoordinationMatrix() const;
@@ -62,19 +55,17 @@ namespace webifc::geometry
     IfcGeometryProcessor *Clone(const webifc::parsing::IfcLoader &loader) const;
 
   protected:
-    IfcGeometryProcessor(const IfcGeometrySettings &settings, std::unordered_map<uint32_t, IfcGeometry> expressIDToGeometry, glm::dmat4 transformation, const parsing::IfcLoader &loader, booleanManager boolEngine, const schema::IfcSchemaManager &schemaManager, bool isCoordinated, uint32_t expressIdCyl, uint32_t expressIdRect, glm::dmat4 coordinationMatrix, IfcGeometry predefinedCylinder, IfcGeometry predefinedCube);
+    IfcGeometryProcessor(const IfcGeometrySettings &settings, std::unordered_map<uint32_t, IfcGeometry> expressIDToGeometry, glm::dmat4 transformation, const parsing::IfcLoader &loader, const schema::IfcSchemaManager &schemaManager, bool isCoordinated, uint32_t expressIdCyl, uint32_t expressIdRect, glm::dmat4 coordinationMatrix, IfcGeometry predefinedCylinder, IfcGeometry predefinedCube);
     IfcGeometrySettings _settings;
     std::optional<glm::dvec4> GetStyleItemFromExpressId(uint32_t expressID);
     void AddFaceToGeometry(uint32_t expressID, IfcGeometry &geometry);
     IfcGeometry GetBrep(uint32_t expressID);
-    IfcGeometry BoolProcess(const std::vector<IfcGeometry> &firstGroups, std::vector<IfcGeometry> &secondGroups, std::string op, IfcGeometrySettings _settings);
     std::unordered_map<uint32_t, IfcGeometry> _expressIDToGeometry;
     IfcSurface GetSurface(uint32_t expressID);
     IfcGeometryLoader _geometryLoader;
     glm::dmat4 _transformation = glm::dmat4(1.0);
     const parsing::IfcLoader &_loader;
     webifc::cache::IfcCache _cache;
-    booleanManager _boolEngine;
     const schema::IfcSchemaManager &_schemaManager;
     bool _isCoordinated = false;
     uint32_t _expressIdCyl = 0;
