@@ -1333,7 +1333,14 @@ namespace webifc::geometry
             case schema::IFCTEXTLITERALWITHEXTENT:
                 // TODO: save string of the text literal in IfcComposedMesh
                 return mesh;
+            case schema::IFCCONNECTEDFACESET:
+            case schema::IFCCLOSEDSHELL:
+            case schema::IFCOPENSHELL:
+                _expressIDToGeometry[expressID] = GetBrep(expressID);
+                mesh.hasGeometry = true;
+                return mesh;
             default:
+                mesh.hasGeometry = false;
                 if (lineType != 0) {
                     std::string lineTypeString = _schemaManager.IfcTypeCodeToType(lineType);
                     spdlog::error("[GetMesh()] unexpected mesh type {} for entity ID {}", lineTypeString, expressID);
