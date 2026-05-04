@@ -4,6 +4,8 @@
 
 #include <spdlog/spdlog.h>
 #include <iomanip>
+#include <algorithm>
+#include <tuple>
 #include "IfcGeometryLoader.h"
 #include "operations/curve-utils.h"
 #include "operations/geometryutils.h"
@@ -3252,7 +3254,287 @@ namespace webifc::geometry
 
         break;
     }
+    case schema::IFCCOSINESPIRAL:
+    {
+        // IfcCosineSpiral SUBTYPE OF IfcSpiral
+        //   Position     : IfcAxis2Placement       (offset 0, inherited)
+        //   CosineTerm   : IfcLengthMeasure        (offset 1)
+        //   ConstantTerm : OPTIONAL IfcLengthMeasure (offset 2)
+        // Per IFC 4.3 ADD2: kappa(s) = cos(pi*s/A)/A + 1/B (B optional, dropped if absent)
 
+        _loader.MoveToArgumentOffset(expressID, 0);
+        uint32_t positionID = _loader.GetRefArgument();
+        double A = _loader.GetDoubleArgument();
+
+        bool hasB = false;
+        double B = 0.0;
+        auto tB = _loader.GetTokenType();
+        if (tB == parsing::IfcTokenType::REAL)
+        {
+            _loader.StepBack();
+            B = _loader.GetDoubleArgument();
+            hasB = std::abs(B) > 1e-12;
+        }
+
+        if (std::abs(A) < 1e-12)
+        {
+            spdlog::error("[ComputeCurve()] IFCCOSINESPIRAL: invalid CosineTerm {}", expressID);
+            break;
+        }
+
+        auto kappa = [=](double s) -> double {
+            double k = std::cos(CONST_PI * s / A) / A;
+            if (hasB) k += 1.0 / B;
+            return k;
+        };
+
+        ComputeSpiralFromCurvature(positionID, curve, params, kappa, 0.0, 2.0 * std::abs(A));
+        break;
+    }
+    case schema::IFCSINESPIRAL:
+    {
+        // IfcSineSpiral SUBTYPE OF IfcSpiral
+        //   Position     : IfcAxis2Placement       (offset 0)
+        //   SineTerm     : IfcLengthMeasure        (offset 1)
+        //   LinearTerm   : OPTIONAL IfcLengthMeasure (offset 2)
+        //   ConstantTerm : OPTIONAL IfcLengthMeasure (offset 3)
+        // Per IFC 4.3 ADD2: kappa(s) = sin(2*pi*s/A)/A + sign(L)*s/L^2 + 1/C
+        // (L, C optional - terms dropped if absent)
+
+        _loader.MoveToArgumentOffset(expressID, 0);
+        uint32_t positionID = _loader.GetRefArgument();
+        double A = _loader.GetDoubleArgument();
+
+        bool hasL = false; double L = 0.0;
+        auto tL = _loader.GetTokenType();
+        if (tL == parsing::IfcTokenType::REAL)
+        {
+            _loader.StepBack();
+            L = _loader.GetDoubleArgument();
+            hasL = std::abs(L) > 1e-12;
+        }
+
+        bool hasC = false; double C = 0.0;
+        auto tC = _loader.GetTokenType();
+        if (tC == parsing::IfcTokenType::REAL)
+        {
+            _loader.StepBack();
+            C = _loader.GetDoubleArgument();
+            hasC = std::abs(C) > 1e-12;
+        }
+
+        if (std::abs(A) < 1e-12)
+        {
+            spdlog::error("[ComputeCurve()] IFCSINESPIRAL: invalid SineTerm {}", expressID);
+            break;
+        }
+
+        auto kappa = [=](double s) -> double {
+            double k = std::sin(2.0 * CONST_PI * s / A) / A;
+            if (hasL) k += s / (std::abs(L) * L); // sign(L)*s/L^2
+            if (hasC) k += 1.0 / C;
+            return k;
+        };
+
+        ComputeSpiralFromCurvature(positionID, curve, params, kappa, 0.0, std::abs(A));
+        break;
+    }
+    case schema::IFCSECONDORDERPOLYNOMIALSPIRAL:
+    {
+        // IfcSecondOrderPolynomialSpiral SUBTYPE OF IfcSpiral
+        //   Position      : IfcAxis2Placement     (offset 0)
+        //   QuadraticTerm : IfcLengthMeasure      (offset 1)
+        //   LinearTerm    : OPTIONAL IfcLengthMeasure (offset 2)
+        //   ConstantTerm  : OPTIONAL IfcLengthMeasure (offset 3)
+        // kappa(s) = s^2 / Q^3 + sign(L)*s/L^2 + 1/C  (L, C optional)
+        // Note: Q^3 preserves sign of Q; for L^2 we apply sign(L) explicitly.
+
+        _loader.MoveToArgumentOffset(expressID, 0);
+        uint32_t positionID = _loader.GetOptionalRefArgument();
+        double Q = _loader.GetDoubleArgument();
+
+        bool hasL = false; double L = 0.0;
+        auto tL = _loader.GetTokenType();
+        if (tL == parsing::IfcTokenType::REAL)
+        {
+            _loader.StepBack();
+            L = _loader.GetDoubleArgument();
+            hasL = std::abs(L) > 1e-12;
+        }
+
+        bool hasC = false; double C = 0.0;
+        auto tC = _loader.GetTokenType();
+        if (tC == parsing::IfcTokenType::REAL)
+        {
+            _loader.StepBack();
+            C = _loader.GetDoubleArgument();
+            hasC = std::abs(C) > 1e-12;
+        }
+
+        if (std::abs(Q) < 1e-12)
+        {
+            spdlog::error("[ComputeCurve()] IFCSECONDORDERPOLYNOMIALSPIRAL: invalid QuadraticTerm {}", expressID);
+            break;
+        }
+
+        auto kappa = [=](double s) -> double {
+            double k = (s * s) / (Q * Q * Q);
+            if (hasL) k += s / (std::abs(L) * L);
+            if (hasC) k += 1.0 / C;
+            return k;
+        };
+
+        ComputeSpiralFromCurvature(positionID, curve, params, kappa, 0.0, std::abs(Q));
+        break;
+    }
+    case schema::IFCTHIRDORDERPOLYNOMIALSPIRAL:
+    {
+        // IfcThirdOrderPolynomialSpiral SUBTYPE OF IfcSpiral
+        //   Position      : IfcAxis2Placement     (offset 0)
+        //   CubicTerm     : IfcLengthMeasure      (offset 1)
+        //   QuadraticTerm : OPTIONAL IfcLengthMeasure (offset 2)
+        //   LinearTerm    : OPTIONAL IfcLengthMeasure (offset 3)
+        //   ConstantTerm  : OPTIONAL IfcLengthMeasure (offset 4)
+        // kappa(s) = sign(K)*s^3/|K|^4 + s^2/Q^3 + sign(L)*s/L^2 + 1/C
+
+        _loader.MoveToArgumentOffset(expressID, 0);
+        uint32_t positionID = _loader.GetRefArgument();
+        double K = _loader.GetDoubleArgument();
+
+        auto readOpt = [&](double &v, bool &has) {
+            auto t = _loader.GetTokenType();
+            if (t == parsing::IfcTokenType::REAL)
+            {
+                _loader.StepBack();
+                v = _loader.GetDoubleArgument();
+                has = std::abs(v) > 1e-12;
+            }
+            else { has = false; v = 0.0; }
+        };
+
+        bool hasQ, hasL, hasC; double Q, L, C;
+        readOpt(Q, hasQ); readOpt(L, hasL); readOpt(C, hasC);
+
+        if (std::abs(K) < 1e-12)
+        {
+            spdlog::error("[ComputeCurve()] IFCTHIRDORDERPOLYNOMIALSPIRAL: invalid CubicTerm {}", expressID);
+            break;
+        }
+
+        double sign_K = (K >= 0) ? 1.0 : -1.0;
+        double absK = std::abs(K);
+        double absK4 = absK * absK * absK * absK;
+
+        auto kappa = [=](double s) -> double {
+            double k = sign_K * (s * s * s) / absK4;
+            if (hasQ) k += (s * s) / (Q * Q * Q);
+            if (hasL) k += s / (std::abs(L) * L);
+            if (hasC) k += 1.0 / C;
+            return k;
+        };
+
+        ComputeSpiralFromCurvature(positionID, curve, params, kappa, 0.0, std::abs(K));
+        break;
+    }
+    case schema::IFCSEVENTHORDERPOLYNOMIALSPIRAL:
+    {
+        // IfcSeventhOrderPolynomialSpiral SUBTYPE OF IfcSpiral
+        //   Position      : IfcAxis2Placement     (offset 0)
+        //   SepticTerm    : IfcLengthMeasure      (offset 1, required)
+        //   SexticTerm, QuinticTerm, QuarticTerm, CubicTerm, QuadraticTerm,
+        //   LinearTerm, ConstantTerm              (offsets 2..8, all optional)
+        // kappa(s) = sum over n=0..7 of contribution(T_n, s, n)
+        // where contribution(T, s, n) = sign(T)*s^n / |T|^(n+1).
+
+        _loader.MoveToArgumentOffset(expressID, 0);
+        uint32_t positionID = _loader.GetRefArgument();
+        double T7 = _loader.GetDoubleArgument(); // SepticTerm
+
+        auto readOpt = [&](double &v, bool &has) {
+            auto t = _loader.GetTokenType();
+            if (t == parsing::IfcTokenType::REAL)
+            {
+                _loader.StepBack();
+                v = _loader.GetDoubleArgument();
+                has = std::abs(v) > 1e-12;
+            }
+            else { has = false; v = 0.0; }
+        };
+
+        bool h6, h5, h4, h3, h2, h1, h0;
+        double T6, T5, T4, T3, T2, T1, T0;
+        readOpt(T6, h6); readOpt(T5, h5); readOpt(T4, h4); readOpt(T3, h3);
+        readOpt(T2, h2); readOpt(T1, h1); readOpt(T0, h0);
+
+        if (std::abs(T7) < 1e-12)
+        {
+            spdlog::error("[ComputeCurve()] IFCSEVENTHORDERPOLYNOMIALSPIRAL: invalid SepticTerm {}", expressID);
+            break;
+        }
+
+        // Contribution of term T at order n: sign(T) * s^n / |T|^(n+1).
+        auto contrib = [](double T, double s, int n) -> double {
+            if (std::abs(T) < 1e-12) return 0.0;
+            double sign_T = (T >= 0) ? 1.0 : -1.0;
+            return sign_T * std::pow(s, n) / std::pow(std::abs(T), n + 1);
+        };
+
+        auto kappa = [=](double s) -> double {
+            double k = contrib(T7, s, 7);
+            if (h6) k += contrib(T6, s, 6);
+            if (h5) k += contrib(T5, s, 5);
+            if (h4) k += contrib(T4, s, 4);
+            if (h3) k += contrib(T3, s, 3);
+            if (h2) k += contrib(T2, s, 2);
+            if (h1) k += contrib(T1, s, 1);
+            if (h0) k += 1.0 / T0;
+            return k;
+        };
+
+        ComputeSpiralFromCurvature(positionID, curve, params, kappa, 0.0, std::abs(T7));
+        break;
+    }
+    case schema::IFCSEGMENTEDREFERENCECURVE:
+    {
+        // IfcSegmentedReferenceCurve ----------------------------------------
+        //   std::vector<IfcSegment>   Segments;       (inherited from IfcCompositeCurve)
+        //   IfcLogical                SelfIntersect;  (inherited from IfcCompositeCurve)
+        //   IfcBoundedCurve           BaseCurve;
+        //   IfcPlacement              EndPoint;       optional
+        //
+        // Subtype of IfcCompositeCurve. In IFC 4.3 alignments this typically adds cant on top of an IfcGradientCurve BaseCurve.
+        // Segments are IfcCurveSegments whose Placement (IfcAxis2PlacementLinear) references the BaseCurve via an
+        // IfcPointByDistanceExpression -- the existing IFCCURVESEGMENT handler and GetLocalPlacement resolve each 
+        // segment's geometry into world coordinates via IfcCurve::getPlacementAtDistance, so iterating the segments here
+        // (mirroring IFCCOMPOSITECURVE) yields the 3D polyline approximation the caller requested via GetCurve(..., 3, false).
+        // BaseCurve and EndPoint are intentionally not read at this layer.
+
+        _loader.MoveToArgumentOffset(expressID, 0);
+        auto segments = _loader.GetSetArgument();
+        auto selfIntersects = _loader.GetStringArgument();
+
+        if (selfIntersects == "T")
+        {
+            spdlog::error("[ComputeCurve()] Self intersecting segmented reference curve {}", expressID);
+        }
+
+        for (size_t ii = 0; ii < segments.size(); ++ii)
+        {
+            uint32_t segmentId = _loader.GetRefArgument(segments[ii]);
+            ComputeCurve(segmentId, curve, params);
+
+            #ifdef DEBUG_DUMP_SVG
+            dump::DumpCurveToHtml(curve.points, "dumpCurve.html");
+            #endif
+        }
+
+        if (curve.points.empty())
+        {
+            spdlog::error("IFCSEGMENTEDREFERENCECURVE (ID: {}) produced no points from segments.", expressID);
+        }
+
+        break;
+    }
     default:
         if (lineType != 0) {
             std::string lineTypeString = _loader.GetSchemaManager().IfcTypeCodeToType(lineType);
@@ -3264,6 +3546,110 @@ namespace webifc::geometry
     // #ifdef DEBUG_DUMP_SVG
     //     io::DumpSVGCurve(curve.points, "partial_curve.html");
     // #endif
+  }
+
+  void IfcGeometryLoader::ComputeSpiralFromCurvature(uint32_t positionID, IfcCurve& curve, const ComputeCurveParams& params, const std::function<double(double)>& kappa, double defaultS1, double defaultS2) const
+  {
+	  glm::dmat3 placement = glm::dmat3(1);
+	  if (!params.ignorePlacement)
+	  {
+		  if (positionID != UINT32_MAX)
+		  {
+			  placement = GetAxis2Placement2D(positionID);
+		  }
+	  }
+
+	  double s1 = defaultS1, s2 = defaultS2;
+	  bool sense = true;
+	  if (params.hasTrim
+		  && (params.trimStart.trimType == TRIM_BY_PARAMETER || params.trimStart.trimType == TRIM_BY_LENGTH)
+		  && (params.trimEnd.trimType == TRIM_BY_PARAMETER || params.trimEnd.trimType == TRIM_BY_LENGTH))
+	  {
+		  s1 = params.trimStart.value;
+		  s2 = params.trimEnd.value;
+		  if (params.trimSense == TRIM_SENSE_REVERSE)
+		  {
+			  std::swap(s1, s2);
+			  sense = false;
+		  }
+	  }
+	  if (s1 > s2) std::swap(s1, s2);
+
+	  // Returns (position, theta, total_angular_variation) at s in the spiral's local frame. total_angular_variation is the integral of |kappa(u)| from 0 to s 
+      // -- i.e. the total amount the tangent has rotated, which equals |theta(s) - theta(0)| for monotonic curvature and is strictly larger for 
+      // oscillating curvature (e.g. IfcSineSpiral).
+	  auto integrate_to = [&](double s) -> std::tuple<glm::dvec2, double, double> {
+		  if (std::abs(s) < 1e-9) return { glm::dvec2(0, 0), 0.0, 0.0 };
+		  const int fine_steps = 1000;
+		  double fine_ds = s / fine_steps;
+		  double curr_s = 0.0, curr_theta = 0.0, curr_var = 0.0;
+		  glm::dvec2 curr_pos(0, 0);
+		  for (int i = 0; i < fine_steps; ++i)
+		  {
+			  double k_avg = 0.5 * (kappa(curr_s) + kappa(curr_s + fine_ds));
+			  double dtheta = k_avg * fine_ds;
+			  double theta_mid = curr_theta + dtheta / 2.0;
+			  curr_pos += glm::dvec2(fine_ds * std::cos(theta_mid),
+				  fine_ds * std::sin(theta_mid));
+			  curr_theta += dtheta;
+			  curr_var += std::abs(dtheta);
+			  curr_s += fine_ds;
+		  }
+		  return { curr_pos, curr_theta, curr_var };
+		  };
+
+	  auto [start_pos, start_theta, start_var] = integrate_to(s1);
+	  auto [end_pos, end_theta, end_var] = integrate_to(s2);
+
+	  glm::dvec2 current_pos = start_pos;
+	  double current_theta = start_theta;
+	  double current_s = s1;
+
+	  // Adaptive segment count: scale by total tangent rotation between s1 and s2, using the same per-segment angular resolution as a full circle.
+	  // Almost-straight sections collapse to 2 points; oscillating curvatures (sine spiral) still get enough samples because we use total variation
+	  // rather than net |theta(s2) - theta(s1)|.
+	  double delta_var = std::abs(end_var - start_var);
+	  int target = (int)std::ceil(static_cast<double>(_circleSegments) * delta_var / (2.0 * CONST_PI));
+	  const int numSegments = std::clamp(target, 2, 4 * static_cast<int>(_circleSegments));
+	  double ds = (s2 - s1) / (numSegments - 1);
+	  for (int i = 0; i < numSegments; ++i)
+	  {
+		  curve.Add(placement * glm::dvec3(current_pos, 1));
+		  if (i == numSegments - 1) break;
+		  double k_avg = 0.5 * (kappa(current_s) + kappa(current_s + ds));
+		  double dtheta = k_avg * ds;
+		  double theta_mid = current_theta + dtheta / 2.0;
+		  current_pos += glm::dvec2(ds * std::cos(theta_mid), ds * std::sin(theta_mid));
+		  current_theta += dtheta;
+		  current_s += ds;
+	  }
+
+	  // Override last point with the more accurate (already-integrated) endpoint.
+	  curve.points.back() = placement * glm::dvec3(end_pos, 1);
+
+	  glm::dmat2 rotation_part(
+		  placement[0][0], placement[0][1],
+		  placement[1][0], placement[1][1]
+	  );
+
+	  double tangentSign = 1.0;
+	  double final_theta = end_theta;
+	  if (!sense)
+	  {
+		  std::reverse(curve.points.begin(), curve.points.end());
+		  final_theta = start_theta;
+		  tangentSign = -1.0;
+	  }
+
+	  glm::dvec2 localEnd(std::cos(final_theta), std::sin(final_theta));
+	  glm::dvec2 worldEnd = rotation_part * localEnd;
+	  curve.endTangent = tangentSign * glm::normalize(glm::dvec3(worldEnd.x, worldEnd.y, 0));
+
+	  double start_t = sense ? start_theta : end_theta;
+	  glm::dvec2 localStart(std::cos(start_t), std::sin(start_t));
+	  glm::dvec2 worldStart = rotation_part * localStart;
+	  curve.segmentStartTangents.push_back(
+		  tangentSign * glm::normalize(glm::dvec3(worldStart.x, worldStart.y, 0)));
   }
 
   void IfcGeometryLoader::convertAngleUnits(double &Degrees, double &Rad) const
