@@ -414,7 +414,7 @@ namespace webifc::parsing {
       if (_tokenStream->Read<char>() != IfcTokenType::REF)
      	{
      		spdlog::error("[GetRefArgument()] unexpected token type, expected REF {}", GetCurrentLineExpressID());
-     		return 0;
+     		return 0;  // TODO: return UINT32_MAX, since 0 is a valid entity ID in the STEP file format
      	}
      	return _tokenStream->Read<uint32_t>();
    }

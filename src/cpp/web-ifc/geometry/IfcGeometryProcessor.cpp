@@ -1,7 +1,7 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
-
+#pragma warning (disable: 5061)
 #include <spdlog/spdlog.h>
 
 #if defined(DEBUG_DUMP_SVG) || defined(DUMP_CSG_MESHES) || defined(_DEBUG)
@@ -748,6 +748,13 @@ namespace webifc::geometry
             }
             case schema::IFCSURFACECURVESWEPTAREASOLID:
             {
+                // IfcSurfaceCurveSweptAreaSolid -------------------------------------------------
+                //     IfcProfileDef						SweptArea;
+                //     IfcAxis2Placement3D					Position;					//optional
+                //     IfcCurve								Directrix;
+                //     IfcCurveMeasureSelect				StartParam;	    			//optional
+                //     IfcCurveMeasureSelect				EndParam;					//optional
+                //     IfcSurface							ReferenceSurface;
 
                 // TODO: closed sweeps not implemented
                 // TODO: the plane is not being used now
@@ -766,19 +773,60 @@ namespace webifc::geometry
                 auto directrixRef = _loader.GetRefArgument();
                 bool closed = false;
 
-                if (_loader.GetTokenType() == parsing::IfcTokenType::REAL)
-                {
+                auto tokenTypeStartParam = _loader.GetTokenType();
+                if (tokenTypeStartParam == parsing::IfcTokenType::REAL){
                     _loader.StepBack();
                     startParam = _loader.GetDoubleArgument();
                 }
+                else if (tokenTypeStartParam == parsing::IfcTokenType::LABEL) {
+                    // #182=IFCSURFACECURVESWEPTAREASOLID(#171,#181,#175,IFCPARAMETERVALUE(0.),IFCPARAMETERVALUE(89.999999999999943),#179);
+                    _loader.StepBack();
+                    std::string_view startParamLabel = _loader.GetStringArgument();
+                    if (startParamLabel == "IFCPARAMETERVALUE"){
+                        _loader.GetTokenType(); // consume the wrapper SET_BEGIN
+                        startParam = _loader.GetDoubleArgument();
+                    }
+                    else{
+                        spdlog::warn("[{}] unrecognised StartParam type {} in entity #{}", __FUNCTION__, startParamLabel, expressID);
+                    }
+                    _loader.GetTokenType(); // consume the wrapper SET_END
+                }
+                else {
+                    spdlog::warn("[{}] unexpected StartParam token type {} in entity #{}", __FUNCTION__, (int)tokenTypeStartParam, expressID);
+                }
 
-                if (_loader.GetTokenType() == parsing::IfcTokenType::REAL)
-                {
+                auto tokenTypeEndParam = _loader.GetTokenType();
+                if (tokenTypeEndParam == parsing::IfcTokenType::REAL){
                     _loader.StepBack();
                     endParam = _loader.GetDoubleArgument();
                 }
+                else if (tokenTypeEndParam == parsing::IfcTokenType::LABEL) {
+                    // typed measure, e.g. IFCPARAMETERVALUE(89.999...)
+                    _loader.StepBack();
+                    std::string_view endParamLabel = _loader.GetStringArgument();
+                    if (endParamLabel == "IFCPARAMETERVALUE"){
+                        _loader.GetTokenType(); // consume the wrapper SET_BEGIN
+                        endParam = _loader.GetDoubleArgument();
+                    }
+                    else{
+                        spdlog::warn("[{}] unrecognised EndParam type {} in entity #{}", __FUNCTION__, endParamLabel, expressID);
+                    }
+                    _loader.GetTokenType(); // consume the wrapper SET_END
+                }
+                else {
+                    spdlog::warn("[{}] unexpected EndParam token type {} in entity #{}", __FUNCTION__, (int)tokenTypeEndParam, expressID);
+                }
 
-                auto surfaceID = _loader.GetRefArgument();
+                uint32_t surfaceID = UINT32_MAX;
+                if (_loader.GetTokenType() == parsing::IfcTokenType::REF)
+                {
+                    _loader.StepBack();
+                    surfaceID = _loader.GetRefArgument();
+                }
+                else
+                {
+                    spdlog::error("[{}] ReferenceSurface is a non optional attribute of IFCSURFACECURVESWEPTAREASOLID, but not set in entity #{}", __FUNCTION__, expressID);
+                }
 
                 if (profileID)
                 {
@@ -809,7 +857,7 @@ namespace webifc::geometry
                     closed = true;
                 }
 
-                if (surfaceID)
+                if (surfaceID != UINT32_MAX)
                 {
                     surface = GetSurface(surfaceID);
                 }
@@ -1295,6 +1343,7 @@ namespace webifc::geometry
                 return mesh;
             }
             case schema::IFCCIRCLE:
+            case schema::IFCELLIPSE:
             case schema::IFCCOMPOSITECURVE:
             case schema::IFCPOLYLINE:
             case schema::IFCINDEXEDPOLYCURVE:

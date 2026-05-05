@@ -1206,8 +1206,9 @@ namespace webifc::geometry
       return {};
     }
     default:
-      spdlog::error("[GetColor()] unexpected style type {}: {}", expressID, lineType);
-      break;
+        std::string lineTypeString = _loader.GetSchemaManager().IfcTypeCodeToType(lineType);
+        spdlog::error("[GetColor()] unexpected style type at entity #{}: {}", expressID, lineTypeString);
+        break;
     }
 
     return {};
@@ -1261,8 +1262,9 @@ namespace webifc::geometry
       return bound;
     }
     default:
-      spdlog::error("[(GetBounds)] unexpected bound type {}: {}", expressID, lineType);
-      break;
+        std::string lineTypeString = _loader.GetSchemaManager().IfcTypeCodeToType(lineType);
+        spdlog::error("[GetBounds()] unexpected bound type at entity #{}: {}", expressID, lineTypeString);
+        break;
     }
 
     return IfcBound3D();
@@ -1384,8 +1386,9 @@ namespace webifc::geometry
       return curve;
     }
     default:
-      spdlog::error("[GetLoop()] unexpected loop type {}: {}", expressID, lineType);
-      break;
+        std::string lineTypeString = _loader.GetSchemaManager().IfcTypeCodeToType(lineType);
+        spdlog::error("[GetLoop()] unexpected loop type at entity #{}: {}", expressID, lineTypeString);
+        break;
     }
 
     IfcCurve curve;
@@ -1511,8 +1514,9 @@ namespace webifc::geometry
       return curve;
     }
     default:
-      spdlog::error("[GetEdge())] unexpected edgecurve type {}: {}", expressID, lineType);
-      break;
+        std::string lineTypeString = _loader.GetSchemaManager().IfcTypeCodeToType(lineType);
+        spdlog::error("[GetEdge()] unexpected edgecurve type at entity #{}: {}", expressID, lineTypeString);
+        break;
     }
     return IfcCurve();
   }
@@ -1873,7 +1877,8 @@ namespace webifc::geometry
         }
         else
         {
-          spdlog::error("[ComputeCurve()] Unsupported trimmingselect 2D IFCLINE {}: {}", expressID, lineType);
+            std::string lineTypeString = _loader.GetSchemaManager().IfcTypeCodeToType(lineType);
+            spdlog::error("[ComputeCurve()] Unsupported trimmingselect 2D IFCLINE at entity #{}: {}", expressID, lineTypeString);
         }
       }
       else if (params.dimensions == 3 && params.hasTrim)
@@ -1933,7 +1938,8 @@ namespace webifc::geometry
         }
         else
         {
-          spdlog::error("[ComputeCurve()] Unsupported trimmingselect 3D IFCLINE {}: {}", expressID, lineType);
+            std::string lineTypeString = _loader.GetSchemaManager().IfcTypeCodeToType(lineType);
+            spdlog::error("[ComputeCurve()] Unsupported trimmingselect 3D IFCLINE at entity #{}: {}", expressID, lineTypeString);
         }
       }
       break;
@@ -3040,7 +3046,8 @@ namespace webifc::geometry
         double A_sq = A * A;
         double sign_A = (A >= 0) ? 1.0 : -1.0;  // negative A are allowed in IFC!
         if (A_sq < 1e-9) {
-            spdlog::error("[ComputeCurve()] IFCCLOTHOID: invalid A parameter {}: {}", A, lineType);
+            std::string lineTypeString = _loader.GetSchemaManager().IfcTypeCodeToType(lineType);
+            spdlog::error("[ComputeCurve()] IFCCLOTHOID: invalid A parameter at entity #{}: {}", expressID, lineTypeString);
             break;
         }
 
@@ -4850,8 +4857,9 @@ namespace webifc::geometry
           glm::dvec3(pos, 1));
     }
     default:
-      spdlog::error("[GetAxis2DPlacement()] unexpected 2D placement type {}: {}", expressID, lineType);
-      break;
+        std::string lineTypeString = _loader.GetSchemaManager().IfcTypeCodeToType(lineType);
+        spdlog::error("[GetAxis2DPlacement()] unexpected 2D placement type at entity #{}: {}", expressID, lineTypeString);
+        break;
     }
     return glm::dmat3();
   }
@@ -5212,7 +5220,8 @@ namespace webifc::geometry
 		return result;
 	}
 	default:
-		spdlog::error("[GetLocalPlacement()] unexpected placement type {}: {}", expressID, lineType);
+        std::string lineTypeString = _loader.GetSchemaManager().IfcTypeCodeToType(lineType);
+        spdlog::error("[GetLocalPlacement()] unexpected placement type at entity #{}: {}", expressID, lineTypeString);
 		break;
 	}
 
