@@ -596,7 +596,12 @@ namespace webifc::geometry
                     identifierStr = std::string(_loader.GetStringArgument());
                 }
 
-                if (!_settings._representationTypesEnabled.empty()) {
+                if (!_settings._representationTypesDisabled.empty()) {
+                    if (_settings._representationTypesDisabled.find(identifierStr) != _settings._representationTypesDisabled.end()) {
+                        return mesh;
+                    }
+                }
+                else if (!_settings._representationTypesEnabled.empty()) {
                     if (_settings._representationTypesEnabled.find(identifierStr) == _settings._representationTypesEnabled.end()) {
                         return mesh;
                     }

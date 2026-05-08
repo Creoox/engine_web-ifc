@@ -34,6 +34,7 @@ namespace webifc::geometry
     double TOLERANCE_BOUNDING_BOX = 1.0E-02;
     uint16_t _CSG_MAX_NUM_FACES = 20000;
     std::set<std::string> _representationTypesEnabled; // empty = load all
+    std::set<std::string> _representationTypesDisabled; // preferred blacklist; disabled identifiers only
   };
 
   // this class performs the processing of raw geometry data from the geometry loader to produce meshes
