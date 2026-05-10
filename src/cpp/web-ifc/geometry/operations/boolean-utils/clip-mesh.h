@@ -9,14 +9,17 @@
 #include <cstring>
 
 #include "util.h"
+#include "boolean-budget.h"
 #include "is-inside-mesh.h"
 #include "geometry.h"
 #include "bvh.h"
 
 namespace fuzzybools
 {
-    static void doubleClipSingleMesh(Geometry& mesh, BVH& bvh1, BVH& bvh2, Geometry& result)
+    static void doubleClipSingleMesh(Geometry& mesh, BVH& bvh1, BVH& bvh2, Geometry& result, const BooleanBudget& budget)
     {  
+        budget.CheckDeadline("clipSubtract start");
+
         #ifdef CSG_DEBUG_OUTPUT
             std::vector<std::vector<glm::dvec2>> edgesPrinted;
         #endif
@@ -60,8 +63,15 @@ namespace fuzzybools
             result.planes.push_back(plane);
         }
 
+        uint64_t iteration = 0;
         for (uint32_t i = 0; i < mesh.data; i++)
         {
+            if ((iteration++ & 1023ULL) == 0)
+            {
+                budget.CheckDeadline("clipSubtract main loop");
+                budget.CheckFaceCount(result.numFaces, "clipSubtract main loop");
+            }
+
             bool doit = false;
             Face tri = mesh.GetFace(i);
             glm::dvec3 a = mesh.GetPoint(tri.i0);
@@ -254,24 +264,41 @@ namespace fuzzybools
 
         for (uint32_t i = mesh.data; i < mesh.numFaces; i++)
         {
+            if ((iteration++ & 1023ULL) == 0)
+            {
+                budget.CheckDeadline("clipSubtract tail loop");
+                budget.CheckFaceCount(result.numFaces, "clipSubtract tail loop");
+            }
+
             Face tri = mesh.GetFace(i);
             glm::dvec3 a = mesh.GetPoint(tri.i0);
             glm::dvec3 b = mesh.GetPoint(tri.i1);
             glm::dvec3 c = mesh.GetPoint(tri.i2);
             result.AddFace(a, b, c, tri.pId);
         }
+
+        budget.CheckFaceCount(result.numFaces, "clipSubtract complete");
     }
 
-    static void doubleClipSingleMesh2(Geometry& mesh, BVH& bvh1, BVH& bvh2, Geometry& result)
+    static void doubleClipSingleMesh2(Geometry& mesh, BVH& bvh1, BVH& bvh2, Geometry& result, const BooleanBudget& budget)
     {
+        budget.CheckDeadline("clipJoin start");
+
         for(auto &plane: mesh.planes)
         {
             result.hasPlanes = true;
             result.planes.push_back(plane);
         }
 
+        uint64_t iteration = 0;
         for (uint32_t i = 0; i < mesh.data; i++)
         {
+            if ((iteration++ & 1023ULL) == 0)
+            {
+                budget.CheckDeadline("clipJoin main loop");
+                budget.CheckFaceCount(result.numFaces, "clipJoin main loop");
+            }
+
             Face tri = mesh.GetFace(i);
             glm::dvec3 a = mesh.GetPoint(tri.i0);
             glm::dvec3 b = mesh.GetPoint(tri.i1);
@@ -373,30 +400,50 @@ namespace fuzzybools
 
         for (uint32_t i = mesh.data; i < mesh.numFaces; i++)
         {
+            if ((iteration++ & 1023ULL) == 0)
+            {
+                budget.CheckDeadline("clipJoin tail loop");
+                budget.CheckFaceCount(result.numFaces, "clipJoin tail loop");
+            }
+
             Face tri = mesh.GetFace(i);
             glm::dvec3 a = mesh.GetPoint(tri.i0);
             glm::dvec3 b = mesh.GetPoint(tri.i1);
             glm::dvec3 c = mesh.GetPoint(tri.i2);
             result.AddFace(a, b, c, tri.pId);
         }
+
+        budget.CheckFaceCount(result.numFaces, "clipJoin complete");
+    }
+
+    static Geometry clipJoin(Geometry& mesh, BVH bvh1, BVH bvh2, const BooleanBudget& budget)
+    {
+        Geometry resultingMesh;
+
+        doubleClipSingleMesh2(mesh, bvh1, bvh2, resultingMesh, budget);
+
+        return resultingMesh;
     }
 
     static Geometry clipJoin(Geometry& mesh, BVH bvh1, BVH bvh2)
     {
+        auto budget = BooleanBudget::Unlimited(mesh.numFaces);
+        return clipJoin(mesh, bvh1, bvh2, budget);
+    }
+
+    static Geometry clipSubtract(Geometry& mesh, BVH bvh1, BVH bvh2, const BooleanBudget& budget)
+    {
+
         Geometry resultingMesh;
 
-        doubleClipSingleMesh2(mesh, bvh1, bvh2, resultingMesh);
+        doubleClipSingleMesh(mesh, bvh1, bvh2, resultingMesh, budget);
 
         return resultingMesh;
     }
 
     static Geometry clipSubtract(Geometry& mesh, BVH bvh1, BVH bvh2)
     {
-
-        Geometry resultingMesh;
-
-        doubleClipSingleMesh(mesh, bvh1, bvh2, resultingMesh);
-
-        return resultingMesh;
+        auto budget = BooleanBudget::Unlimited(mesh.numFaces);
+        return clipSubtract(mesh, bvh1, bvh2, budget);
     }
 }

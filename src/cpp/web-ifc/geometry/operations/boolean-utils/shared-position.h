@@ -16,6 +16,7 @@
 #include "geometry.h"
 #include "aabb.h"
 #include "bvh.h"
+#include "boolean-budget.h"
 #include "util.h"
 #include "svg.h"
 #include "math.h"
@@ -922,16 +923,20 @@ namespace fuzzybools
             their planes, points, and segments are inserted into the shared set.
             isUnion controls how irrelevant (non-overlapping) faces are handled later.
         */
-        void Construct(const Geometry &A, const Geometry &B, bool isUnion)
+        void Construct(const Geometry &A, const Geometry &B, bool isUnion, const BooleanBudget& budget)
         {
+            budget.CheckDeadline("SharedPosition Construct start");
+
             auto boxA = A.GetAABB();
             auto boxB = B.GetAABB();
 
-            AddGeometry(A, B, boxB, true, isUnion, 0);
-            AddGeometry(B, A, boxA, false, isUnion, A.planes.size());
+            AddGeometry(A, B, boxB, true, isUnion, 0, budget);
+            AddGeometry(B, A, boxA, false, isUnion, A.planes.size(), budget);
 
             _linkedA = &A;
             _linkedB = &B;
+
+            budget.CheckDeadline("SharedPosition Construct complete");
         }
 
         /*
@@ -943,14 +948,20 @@ namespace fuzzybools
             planes, points, and segments added to the shared set, and a BVH is
             built over the relevant faces for later inside/outside queries.
         */
-        void AddGeometry(const Geometry &geom, const Geometry &secondGeom, const AABB &relevantBounds, bool isA, bool isUnion, uint32_t offsetPlane)
+        void AddGeometry(const Geometry &geom, const Geometry &secondGeom, const AABB &relevantBounds, bool isA, bool isUnion, uint32_t offsetPlane, const BooleanBudget& budget)
         {
 #ifdef CSG_DEBUG_OUTPUT
             Geometry relevant;
 #endif
 
+            uint64_t iteration = 0;
             for (size_t i = 0; i < geom.numFaces; i++)
             {
+                if ((iteration++ & 1023ULL) == 0)
+                {
+                    budget.CheckDeadline(isA ? "SharedPosition AddGeometry A" : "SharedPosition AddGeometry B");
+                }
+
                 Face f = geom.GetFace(i);
 
                 auto faceBox = geom.GetFaceBox(i);
@@ -973,6 +984,11 @@ namespace fuzzybools
 
                 for (size_t j = 0; j < secondGeom.numFaces; j++)
                 {
+                    if ((iteration++ & 1023ULL) == 0)
+                    {
+                        budget.CheckDeadline(isA ? "SharedPosition AddGeometry A overlap" : "SharedPosition AddGeometry B overlap");
+                    }
+
                     auto faceBox2 = secondGeom.GetFaceBox(j);
 
                     if (faceBox.intersects(faceBox2))
@@ -1296,8 +1312,10 @@ namespace fuzzybools
             to the intersection region. Only triangles that lie on the boundary
             of at least one mesh are added to the output geometry.
         */
-        void TriangulatePlane(Geometry &geom, Plane &p)
+        void TriangulatePlane(Geometry &geom, Plane &p, const BooleanBudget& budget)
         {
+            budget.CheckDeadline("Normalize TriangulatePlane start");
+
             // grab all points on the plane
             auto pointsOnPlane = GetPointsOnPlane(p);
 
@@ -1315,8 +1333,14 @@ namespace fuzzybools
             std::vector<glm::dvec2> projectedPoints;
             projectedPoints.reserve(pointsOnPlane.size());
 
+            uint64_t iteration = 0;
             for (auto &pointId : pointsOnPlane)
             {
+                if ((iteration++ & 1023ULL) == 0)
+                {
+                    budget.CheckDeadline("Normalize TriangulatePlane project points");
+                }
+
                 pointToProjectedPoint[pointId] = projectedPoints.size();
                 projectedPointToPoint[projectedPoints.size()] = pointId;
                 projectedPoints.push_back(basis.project(points[pointId].location3D));
@@ -1329,11 +1353,21 @@ namespace fuzzybools
 
             for (auto &line : p.lines)
             {
+                if ((iteration++ & 1023ULL) == 0)
+                {
+                    budget.CheckDeadline("Normalize TriangulatePlane lines");
+                }
+
                 // these segments might intersect internally, lets resolve that so we get a valid chain
                 auto segments = GetNonIntersectingSegments(line);
 
                 for (auto &segment : segments)
                 {
+                    if ((iteration++ & 1023ULL) == 0)
+                    {
+                        budget.CheckDeadline("Normalize TriangulatePlane segments");
+                    }
+
                     if (pointToProjectedPoint.count(segment.first) == 0)
                     {
                         bool expectedOnPlane = p.IsPointOnPlane(points[segment.first].location3D);
@@ -1390,14 +1424,25 @@ namespace fuzzybools
 
             for (auto &point : projectedPoints)
             {
+                if ((iteration++ & 1023ULL) == 0)
+                {
+                    budget.CheckDeadline("Normalize TriangulatePlane CDT vertices");
+                }
+
                 cdt_verts.emplace_back(CDT::V2d<double>::make(point.x, point.y));
             }
 
             for (auto &edge : edges)
             {
+                if ((iteration++ & 1023ULL) == 0)
+                {
+                    budget.CheckDeadline("Normalize TriangulatePlane CDT edges");
+                }
+
                 cdt_edges.emplace_back((uint32_t)edge.first, (uint32_t)edge.second);
             }
 
+            budget.CheckDeadline("Normalize TriangulatePlane CDT remap");
             auto mapping = CDT::RemoveDuplicatesAndRemapEdges(cdt_verts, cdt_edges).mapping;
             // mapping[] is OLD->NEW (CDT.h line 64). After the call cdt_verts
             // is compacted and cdt_edges is already remapped to new indices,
@@ -1419,9 +1464,12 @@ namespace fuzzybools
             }
 
             cdt.insertVertices(cdt_verts);
+            budget.CheckDeadline("Normalize TriangulatePlane CDT insert vertices");
             cdt.insertEdges(cdt_edges);
+            budget.CheckDeadline("Normalize TriangulatePlane CDT insert edges");
 
             cdt.eraseSuperTriangle();
+            budget.CheckDeadline("Normalize TriangulatePlane CDT erase super triangle");
 
             auto triangles = cdt.triangles;
 
@@ -1435,6 +1483,12 @@ namespace fuzzybools
 
             for (auto &tri : triangles)
             {
+                if ((iteration++ & 1023ULL) == 0)
+                {
+                    budget.CheckDeadline("Normalize TriangulatePlane triangles");
+                    budget.CheckFaceCount(geom.numFaces, "Normalize TriangulatePlane triangles");
+                }
+
 #ifdef CSG_DEBUG_OUTPUT
                 // edgesTriangles.insert(std::make_pair(tri.vertices[0], tri.vertices[1]));
                 // edgesTriangles.insert(std::make_pair(tri.vertices[1], tri.vertices[2]));
@@ -1540,6 +1594,7 @@ namespace fuzzybools
 
                 // TODO: why is this swapped? winding doesnt matter much, but still
                 geom.AddFace(ptB, ptA, ptC, p.refPlane);
+                budget.CheckFaceCount(geom.numFaces, "Normalize TriangulatePlane output");
 
 #ifdef CSG_DEBUG_OUTPUT
                 // edges3DTriangles.push_back({ glm::dvec2(ptA.z+ ptA.x/2, ptA.y+ ptA.x/2), glm::dvec2(ptB.z+ ptB.x/2, ptB.y+ ptB.x/2) });
@@ -1595,8 +1650,10 @@ namespace fuzzybools
         matching (or newly created) line. Note: templine and the plane's line
         may differ because AddLine can return an equivalent but non-identical line.
     */
-    inline void AddSegments(Plane &p, SharedPosition &sp, Line &templine, const std::vector<std::pair<double, double>> &segments)
+    inline void AddSegments(Plane &p, SharedPosition &sp, Line &templine, const std::vector<std::pair<double, double>> &segments, const BooleanBudget& budget)
     {
+        budget.CheckDeadline("Normalize AddSegments start");
+
         // NOTE: this is a design flaw, the addline may return a line that is
         // EQUIVALENT BUT NOT IDENTICAL
         // hence line distances mentioned in "segments" DO apply to templine
@@ -1613,8 +1670,14 @@ namespace fuzzybools
             }
         }
 
+        uint64_t iteration = 0;
         for (auto &seg : segments)
         {
+            if ((iteration++ & 1023ULL) == 0)
+            {
+                budget.CheckDeadline("Normalize AddSegments");
+            }
+
             auto pos = templine.GetPosOnLine(seg.first);
 
             if (!p.aabb.contains(pos))
@@ -1676,12 +1739,20 @@ namespace fuzzybools
         distances (projected onto lineA) are sorted and deduplicated.
         Returns a sorted vector of distances along lineA.
     */
-    inline std::vector<double> ComputeInitialIntersections(Plane &p, SharedPosition &sp, const Line &lineA)
+    inline std::vector<double> ComputeInitialIntersections(Plane &p, SharedPosition &sp, const Line &lineA, const BooleanBudget& budget)
     {
+        budget.CheckDeadline("Normalize ComputeInitialIntersections start");
+
         double size = 1.0E+08; // TODO: this is bad
 
+        uint64_t iteration = 0;
         for (auto &point : sp.points)
         {
+            if ((iteration++ & 1023ULL) == 0)
+            {
+                budget.CheckDeadline("Normalize ComputeInitialIntersections points");
+            }
+
             const auto d2 = glm::distance2(lineA.origin, point.location3D);
             size = std::max(size, d2);
         }
@@ -1697,12 +1768,22 @@ namespace fuzzybools
         // line B is expected to have the segments already filled, line A is not
         for (auto &line : p.lines)
         {
+            if ((iteration++ & 1023ULL) == 0)
+            {
+                budget.CheckDeadline("Normalize ComputeInitialIntersections lines");
+            }
+
             // skip collinear
             if (lineA.IsCollinear(line))
                 continue;
 
             for (const auto &seg : line.GetSegments())
             {
+                if ((iteration++ & 1023ULL) == 0)
+                {
+                    budget.CheckDeadline("Normalize ComputeInitialIntersections segments");
+                }
+
                 auto result = LineLineIntersection(
                     Astart,
                     Aend,
@@ -1780,12 +1861,23 @@ namespace fuzzybools
         the intersection point is added to the shared position and registered on
         both lines and their associated planes.
     */
-    inline void AddLineLineIntersections(Plane &p, SharedPosition &sp, Line &lineA, Line &lineB)
+    inline void AddLineLineIntersections(Plane &p, SharedPosition &sp, Line &lineA, Line &lineB, const BooleanBudget& budget)
     {
+        uint64_t iteration = 0;
         for (auto segA : lineA.GetSegments())
         {
+            if ((iteration++ & 1023ULL) == 0)
+            {
+                budget.CheckDeadline("Normalize AddLineLineIntersections A");
+            }
+
             for (auto segB : lineB.GetSegments())
             {
+                if ((iteration++ & 1023ULL) == 0)
+                {
+                    budget.CheckDeadline("Normalize AddLineLineIntersections B");
+                }
+
                 if (!p.HasOverlap(segA, segB))
                 {
                     auto result = LineLineIntersection(
@@ -1837,14 +1929,20 @@ namespace fuzzybools
         bounding boxes don't overlap are skipped, avoiding unnecessary
         segment-vs-segment tests.
     */
-    inline void AddLineLineIsects(Plane &p, SharedPosition &sp)
+    inline void AddLineLineIsects(Plane &p, SharedPosition &sp, const BooleanBudget& budget)
     {
         const size_t total = p.lines.size();
 
         // Pre-compute line bounding boxes for spatial pre-filter.
         // Lines whose AABBs don't overlap cannot have intersecting segments.
         std::vector<AABB> lineAABBs(total);
+        uint64_t iteration = 0;
         for (size_t i = 0; i < total; i++) {
+            if ((iteration++ & 1023ULL) == 0)
+            {
+                budget.CheckDeadline("Normalize AddLineLineIsects AABBs");
+            }
+
             auto &line = p.lines[i];
             if (line.points.size() >= 2) {
                 Vec3 dir = glm::normalize(line.direction);
@@ -1855,10 +1953,20 @@ namespace fuzzybools
 
         for (size_t lineAIndex = 0; lineAIndex < total; lineAIndex++)
         {
+            if ((iteration++ & 1023ULL) == 0)
+            {
+                budget.CheckDeadline("Normalize AddLineLineIsects outer");
+            }
+
             for (size_t lineBIndex = lineAIndex + 1; lineBIndex < total; lineBIndex++)
             {
+                if ((iteration++ & 1023ULL) == 0)
+                {
+                    budget.CheckDeadline("Normalize AddLineLineIsects inner");
+                }
+
                 if (!lineAABBs[lineAIndex].intersects(lineAABBs[lineBIndex])) continue;
-                AddLineLineIntersections(p, sp, p.lines[lineAIndex], p.lines[lineBIndex]);
+                AddLineLineIntersections(p, sp, p.lines[lineAIndex], p.lines[lineBIndex], budget);
             }
         }
     }
@@ -1878,14 +1986,21 @@ namespace fuzzybools
           7. Re-adds irrelevant (non-overlapping) faces from both inputs.
         Returns the merged Geometry ready for inside/outside classification.
     */
-    inline Geometry Normalize(const Geometry &A, const Geometry &B, SharedPosition &sp, bool UNION)
+    inline Geometry Normalize(const Geometry &A, const Geometry &B, SharedPosition &sp, bool UNION, const BooleanBudget& budget)
     {
+        budget.CheckDeadline("Normalize start");
 
         // construct all contours, derive lines
         auto contoursA = sp.A.GetContourSegments();
 
+        uint64_t iteration = 0;
         for (auto &[planeId, contours] : contoursA)
         {
+            if ((iteration++ & 1023ULL) == 0)
+            {
+                budget.CheckDeadline("Normalize contours A");
+            }
+
             std::vector<std::vector<glm::dvec2>> edges;
 
             Plane &p = sp.planes[planeId];
@@ -1902,6 +2017,11 @@ namespace fuzzybools
 
             for (auto &segment : contours)
             {
+                if ((iteration++ & 1023ULL) == 0)
+                {
+                    budget.CheckDeadline("Normalize contour segments A");
+                }
+
                 auto lineId = sp.planes[planeId].AddLine(sp.points[segment.first], sp.points[segment.second]);
             }
         }
@@ -1910,6 +2030,11 @@ namespace fuzzybools
 
         for (auto &[planeId, contours] : contoursB)
         {
+            if ((iteration++ & 1023ULL) == 0)
+            {
+                budget.CheckDeadline("Normalize contours B");
+            }
+
             std::vector<std::vector<glm::dvec2>> edges;
 
             Plane &p = sp.planes[planeId];
@@ -1926,6 +2051,11 @@ namespace fuzzybools
 
             for (auto &segment : contours)
             {
+                if ((iteration++ & 1023ULL) == 0)
+                {
+                    budget.CheckDeadline("Normalize contour segments B");
+                }
+
                 auto lineId = sp.planes[planeId].AddLine(sp.points[segment.first], sp.points[segment.second]);
             }
         }
@@ -1933,8 +2063,18 @@ namespace fuzzybools
         // put all points on lines/planes
         for (auto &p : sp.points)
         {
+            if ((iteration++ & 1023ULL) == 0)
+            {
+                budget.CheckDeadline("Normalize point-plane refs");
+            }
+
             for (auto &plane : sp.planes)
             {
+                if ((iteration++ & 1023ULL) == 0)
+                {
+                    budget.CheckDeadline("Normalize point-plane refs inner");
+                }
+
                 if (plane.IsPointOnPlane(p.location3D))
                 {
                     sp.AddRefPlaneToPoint(p.id, plane.id);
@@ -1945,7 +2085,12 @@ namespace fuzzybools
 
         for (auto &plane : sp.planes)
         {
-            AddLineLineIsects(plane, sp);
+            if ((iteration++ & 1023ULL) == 0)
+            {
+                budget.CheckDeadline("Normalize initial line intersections");
+            }
+
+            AddLineLineIsects(plane, sp, budget);
         }
 
         // intersect planes
@@ -1955,8 +2100,18 @@ namespace fuzzybools
         // number of plane pairs from N*(N-1) to N*(N-1)/2.
         for (size_t planeAIndex = 0; planeAIndex < sp.planes.size(); planeAIndex++)
         {
+            if ((iteration++ & 1023ULL) == 0)
+            {
+                budget.CheckDeadline("Normalize plane-pair outer");
+            }
+
             for (size_t planeBIndex = planeAIndex + 1; planeBIndex < sp.planes.size(); planeBIndex++)
             {
+                if ((iteration++ & 1023ULL) == 0)
+                {
+                    budget.CheckDeadline("Normalize plane-pair inner");
+                }
+
                 auto &planeA = sp.planes[planeAIndex];
                 auto &planeB = sp.planes[planeBIndex];
 
@@ -2006,8 +2161,8 @@ namespace fuzzybools
                 }
 
                 // get all intersection points with the shared line and both planes
-                auto isectA = ComputeInitialIntersections(planeA, sp, intersectionLine);
-                auto isectB = ComputeInitialIntersections(planeB, sp, intersectionLine);
+                auto isectA = ComputeInitialIntersections(planeA, sp, intersectionLine, budget);
+                auto isectB = ComputeInitialIntersections(planeB, sp, intersectionLine, budget);
 
                 // from these, figure out the shared segments on the current line produced by these two planes
                 auto segments = sp.BuildSegments(isectA, isectB);
@@ -2019,21 +2174,36 @@ namespace fuzzybools
                 }
                 else
                 {
-                    AddSegments(planeA, sp, intersectionLine, segments);
-                    AddSegments(planeB, sp, intersectionLine, segments);
+                    AddSegments(planeA, sp, intersectionLine, segments, budget);
+                    AddSegments(planeB, sp, intersectionLine, segments, budget);
                 }
             }
         }
 
         for (auto &plane : sp.planes)
         {
-            AddLineLineIsects(plane, sp);
+            if ((iteration++ & 1023ULL) == 0)
+            {
+                budget.CheckDeadline("Normalize final line intersections");
+            }
+
+            AddLineLineIsects(plane, sp, budget);
         }
 
         for (auto &p : sp.points)
         {
+            if ((iteration++ & 1023ULL) == 0)
+            {
+                budget.CheckDeadline("Normalize final point-plane refs");
+            }
+
             for (auto &plane : sp.planes)
             {
+                if ((iteration++ & 1023ULL) == 0)
+                {
+                    budget.CheckDeadline("Normalize final point-plane refs inner");
+                }
+
                 if (plane.IsPointOnPlane(p.location3D))
                 {
                     sp.AddRefPlaneToPoint(p.id, plane.id);
@@ -2048,6 +2218,11 @@ namespace fuzzybools
         Geometry geom;
         for (auto &plane : sp.planes)
         {
+            if ((iteration++ & 1023ULL) == 0)
+            {
+                budget.CheckDeadline("Normalize triangulate planes");
+                budget.CheckFaceCount(geom.numFaces, "Normalize triangulate planes");
+            }
 
 #ifdef CSG_DEBUG_OUTPUT
             // std::vector<std::vector<glm::dvec2>> edges;
@@ -2079,7 +2254,8 @@ namespace fuzzybools
             // DumpSVGLines(edges, L"contour.html");
 #endif
 
-            sp.TriangulatePlane(geom, plane);
+            sp.TriangulatePlane(geom, plane, budget);
+            budget.CheckFaceCount(geom.numFaces, "Normalize triangulate plane result");
 
 #ifdef CSG_DEBUG_OUTPUT
             // DumpGeometry(geom, L"triangulated.obj");
@@ -2109,6 +2285,12 @@ namespace fuzzybools
         // re-add irrelevant faces that should be tested
         for (auto &faceIndex : sp.A.irrelevantFaces_toTest)
         {
+            if ((iteration++ & 1023ULL) == 0)
+            {
+                budget.CheckDeadline("Normalize re-add A test faces");
+                budget.CheckFaceCount(geom.numFaces, "Normalize re-add A test faces");
+            }
+
             const Face &f = sp._linkedA->GetFace(faceIndex);
 
             auto a = sp._linkedA->GetPoint(f.i0);
@@ -2116,10 +2298,17 @@ namespace fuzzybools
             auto c = sp._linkedA->GetPoint(f.i2);
 
             geom.AddFace(a, b, c, f.pId);
+            budget.CheckFaceCount(geom.numFaces, "Normalize re-add A test faces");
         }
 
         for (auto &faceIndex : sp.B.irrelevantFaces_toTest)
         {
+            if ((iteration++ & 1023ULL) == 0)
+            {
+                budget.CheckDeadline("Normalize re-add B test faces");
+                budget.CheckFaceCount(geom.numFaces, "Normalize re-add B test faces");
+            }
+
             const Face &f = sp._linkedB->GetFace(faceIndex);
 
             auto a = sp._linkedB->GetPoint(f.i0);
@@ -2127,6 +2316,7 @@ namespace fuzzybools
             auto c = sp._linkedB->GetPoint(f.i2);
 
             geom.AddFace(a, b, c, f.pId + offsetA);
+            budget.CheckFaceCount(geom.numFaces, "Normalize re-add B test faces");
         }
 
         geom.data = geom.numFaces;
@@ -2134,6 +2324,12 @@ namespace fuzzybools
         // re-add irrelevant faces
         for (auto &faceIndex : sp.A.irrelevantFaces)
         {
+            if ((iteration++ & 1023ULL) == 0)
+            {
+                budget.CheckDeadline("Normalize re-add A irrelevant faces");
+                budget.CheckFaceCount(geom.numFaces, "Normalize re-add A irrelevant faces");
+            }
+
             const Face &f = sp._linkedA->GetFace(faceIndex);
 
             auto a = sp._linkedA->GetPoint(f.i0);
@@ -2141,12 +2337,19 @@ namespace fuzzybools
             auto c = sp._linkedA->GetPoint(f.i2);
 
             geom.AddFace(a, b, c, f.pId);
+            budget.CheckFaceCount(geom.numFaces, "Normalize re-add A irrelevant faces");
         }
 
         if (UNION)
         {
             for (auto &faceIndex : sp.B.irrelevantFaces)
             {
+                if ((iteration++ & 1023ULL) == 0)
+                {
+                    budget.CheckDeadline("Normalize re-add B irrelevant faces");
+                    budget.CheckFaceCount(geom.numFaces, "Normalize re-add B irrelevant faces");
+                }
+
                 const Face &f = sp._linkedB->GetFace(faceIndex);
 
                 auto a = sp._linkedB->GetPoint(f.i0);
@@ -2154,9 +2357,12 @@ namespace fuzzybools
                 auto c = sp._linkedB->GetPoint(f.i2);
 
                 geom.AddFace(a, b, c, f.pId + offsetA);
+                budget.CheckFaceCount(geom.numFaces, "Normalize re-add B irrelevant faces");
             }
         }
 
+        budget.CheckDeadline("Normalize complete");
+        budget.CheckFaceCount(geom.numFaces, "Normalize complete");
         return geom;
     }
 }

@@ -30,11 +30,27 @@ namespace bimGeometry
                 secondGeom.buildPlanes();
                 if (op == "DIFFERENCE")
                 {
-                    firstOperand = fuzzybools::Subtract(firstOperand, secondGeom);
+                    auto budget = fuzzybools::MakeDefaultBooleanBudget(static_cast<uint64_t>(firstOperand.numFaces) + static_cast<uint64_t>(secondGeom.numFaces));
+                    try
+                    {
+                        firstOperand = fuzzybools::Subtract(firstOperand, secondGeom, budget);
+                    }
+                    catch (const fuzzybools::BooleanAbortedException&)
+                    {
+                        continue;
+                    }
                 }
                 else if (op == "UNION")
                 {
-                    firstOperand = fuzzybools::Union(firstOperand, secondGeom);
+                    auto budget = fuzzybools::MakeDefaultBooleanBudget(static_cast<uint64_t>(firstOperand.numFaces) + static_cast<uint64_t>(secondGeom.numFaces));
+                    try
+                    {
+                        firstOperand = fuzzybools::Union(firstOperand, secondGeom, budget);
+                    }
+                    catch (const fuzzybools::BooleanAbortedException&)
+                    {
+                        continue;
+                    }
                 }
             }
         }

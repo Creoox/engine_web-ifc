@@ -10,6 +10,8 @@
 #endif
 
 #include "IfcGeometryProcessor.h"
+#include <algorithm>
+#include <chrono>
 #include <unordered_set>
 #include <glm/gtx/transform.hpp>
 #include "representation/geometry.h"
@@ -23,6 +25,27 @@ namespace webifc::geometry
 {
 
     double BOOLSTATUS = 0;
+
+    static double ComputeBooleanBudgetSeconds(const IfcGeometrySettings& settings, uint64_t inputFaces)
+    {
+        return std::clamp(
+            IfcGeometrySettings::CSG_BUDGET_FLOOR_S + static_cast<double>(inputFaces) * IfcGeometrySettings::CSG_BUDGET_PER_FACE_S,
+            IfcGeometrySettings::CSG_BUDGET_FLOOR_S,
+            settings._CSG_BUDGET_CEILING_S);
+    }
+
+    static fuzzybools::BooleanBudget MakeBooleanBudget(const IfcGeometrySettings& settings, uint64_t inputFaces)
+    {
+        return fuzzybools::BooleanBudget::FromSeconds(
+            inputFaces,
+            ComputeBooleanBudgetSeconds(settings, inputFaces),
+            IfcGeometrySettings::CSG_INPROGRESS_FACE_FACTOR);
+    }
+
+    static int64_t ElapsedMilliseconds(std::chrono::steady_clock::time_point start)
+    {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+    }
 
     IfcGeometryProcessor::IfcGeometryProcessor(webifc::parsing::IfcLoader &loader, const webifc::schema::IfcSchemaManager &schemaManager, uint16_t circleSegments, bool coordinateToOrigin, double TOLERANCE_PLANE_INTERSECTION, double TOLERANCE_PLANE_DEVIATION, double TOLERANCE_BACK_DEVIATION_DISTANCE, double TOLERANCE_INSIDE_OUTSIDE_PERIMETER, double TOLERANCE_SCALAR_EQUALITY, double PLANE_REFIT_ITERATIONS)
         : _loader(loader), _cache(loader), _schemaManager(schemaManager), _geometryLoader(loader, _cache, circleSegments)
@@ -2379,8 +2402,27 @@ namespace webifc::geometry
 
     IfcGeometry IfcGeometryProcessor::Union(IfcGeometry firstOperand, IfcGeometry secondOperand)
     {
-        const uint32_t inputFaces = firstOperand.numFaces + secondOperand.numFaces;
-        fuzzybools::Geometry result = fuzzybools::Union(firstOperand, secondOperand);
+        const uint64_t inputFaces = static_cast<uint64_t>(firstOperand.numFaces) + static_cast<uint64_t>(secondOperand.numFaces);
+        auto budget = MakeBooleanBudget(_settings, inputFaces);
+        const auto startedAt = std::chrono::steady_clock::now();
+        fuzzybools::Geometry result;
+
+        try
+        {
+            result = fuzzybools::Union(firstOperand, secondOperand, budget);
+        }
+        catch (const fuzzybools::BooleanAbortedException& e)
+        {
+            spdlog::warn(
+                "CSG Union aborted entity={} facesA={} facesB={} elapsedMs={} reason=\"{}\" -- returning operand A",
+                firstOperand.entityID,
+                firstOperand.numFaces,
+                secondOperand.numFaces,
+                ElapsedMilliseconds(startedAt),
+                e.what());
+            return firstOperand;
+        }
+
         if (inputFaces > 0 && result.numFaces > kPathologicalFactor * inputFaces)
         {
             CheapCollapseAfterBoolean(result);
@@ -2393,8 +2435,27 @@ namespace webifc::geometry
 
     IfcGeometry IfcGeometryProcessor::Subtract(IfcGeometry firstOperand, IfcGeometry secondOperand)
     {
-        const uint32_t inputFaces = firstOperand.numFaces + secondOperand.numFaces;
-        fuzzybools::Geometry result = fuzzybools::Subtract(firstOperand, secondOperand);
+        const uint64_t inputFaces = static_cast<uint64_t>(firstOperand.numFaces) + static_cast<uint64_t>(secondOperand.numFaces);
+        auto budget = MakeBooleanBudget(_settings, inputFaces);
+        const auto startedAt = std::chrono::steady_clock::now();
+        fuzzybools::Geometry result;
+
+        try
+        {
+            result = fuzzybools::Subtract(firstOperand, secondOperand, budget);
+        }
+        catch (const fuzzybools::BooleanAbortedException& e)
+        {
+            spdlog::warn(
+                "CSG Subtract aborted entity={} facesA={} facesB={} elapsedMs={} reason=\"{}\" -- returning operand A",
+                firstOperand.entityID,
+                firstOperand.numFaces,
+                secondOperand.numFaces,
+                ElapsedMilliseconds(startedAt),
+                e.what());
+            return firstOperand;
+        }
+
         if (inputFaces > 0 && result.numFaces > kPathologicalFactor * inputFaces)
         {
             CheapCollapseAfterBoolean(result);

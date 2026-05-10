@@ -33,6 +33,10 @@ namespace webifc::geometry
     double TOLERANCE_INSIDE_OUTSIDE_PERIMETER = 1.0E-10;
     double TOLERANCE_BOUNDING_BOX = 1.0E-02;
     uint16_t _CSG_MAX_NUM_FACES = 20000;
+    static constexpr double CSG_BUDGET_FLOOR_S = 10.0;
+    static constexpr double CSG_BUDGET_PER_FACE_S = 0.001;
+    static constexpr uint32_t CSG_INPROGRESS_FACE_FACTOR = 50;
+    double _CSG_BUDGET_CEILING_S = 600.0;
     std::set<std::string> _representationTypesEnabled; // empty = load all
     std::set<std::string> _representationTypesDisabled; // preferred blacklist; disabled identifiers only
   };
