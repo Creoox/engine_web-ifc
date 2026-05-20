@@ -54,7 +54,8 @@ webifc::geometry::IfcGeometryProcessor *webifc::manager::ModelManager::GetGeomet
     if (!_geometryProcessors.contains(modelID))
     {
         auto loader = GetIfcLoader(modelID);
-        webifc::geometry::IfcGeometryProcessor *processor = new webifc::geometry::IfcGeometryProcessor(*loader, _schemaManager, GetSettings(modelID).CIRCLE_SEGMENTS, GetSettings(modelID).COORDINATE_TO_ORIGIN, GetSettings(modelID).TOLERANCE_PLANE_INTERSECTION, GetSettings(modelID).TOLERANCE_PLANE_DEVIATION, GetSettings(modelID).TOLERANCE_BACK_DEVIATION_DISTANCE, GetSettings(modelID).TOLERANCE_INSIDE_OUTSIDE_PERIMETER, GetSettings(modelID).TOLERANCE_SCALAR_EQUALITY, GetSettings(modelID).PLANE_REFIT_ITERATIONS);
+        const auto& settings = GetSettings(modelID);
+        webifc::geometry::IfcGeometryProcessor *processor = new webifc::geometry::IfcGeometryProcessor(*loader, _schemaManager, settings.CIRCLE_SEGMENTS, settings.COORDINATE_TO_ORIGIN, settings.TOLERANCE_PLANE_INTERSECTION, settings.TOLERANCE_PLANE_DEVIATION, settings.TOLERANCE_BACK_DEVIATION_DISTANCE, settings.TOLERANCE_INSIDE_OUTSIDE_PERIMETER, settings.TOLERANCE_SCALAR_EQUALITY, settings.PLANE_REFIT_ITERATIONS, settings.MAX_CURVE_SEGMENT_LENGTH, settings.MAX_CURVE_SAGITTA_ERROR, settings.MAX_ADAPTIVE_CURVE_SEGMENTS, settings.MIN_ARC_SEGMENTS);
         _geometryProcessors[modelID] = processor;
     }
     return _geometryProcessors.at(modelID);

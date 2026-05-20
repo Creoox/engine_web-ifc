@@ -9,6 +9,7 @@
 #include <set>
 #include <cstdint>
 #include "representation/geometry.h"
+#include "operations/curve-tessellation.h"
 #include "../parsing/IfcLoader.h"
 #include "../cache/IfcCache.h"
 #include "../schema/IfcSchemaManager.h"
@@ -27,6 +28,10 @@ namespace webifc::geometry
     bool _optimize_profiles = true;
     bool _exportPolylines = false;
     uint16_t _circleSegments = 12;
+    double _maxCurveSegmentLength = 0.0;
+    double _maxCurveSagittaError = 0.0;
+    uint32_t _maxAdaptiveCurveSegments = 4096;
+    uint16_t _minArcSegments = 3;
     double TOLERANCE_PLANE_INTERSECTION = 1.0E-04;
     double TOLERANCE_PLANE_DEVIATION = 1.0E-04;
     double TOLERANCE_BACK_DEVIATION_DISTANCE = 1.0E-04;
@@ -39,13 +44,25 @@ namespace webifc::geometry
     double _CSG_BUDGET_CEILING_S = 600.0;
     std::set<std::string> _representationTypesEnabled; // empty = load all
     std::set<std::string> _representationTypesDisabled; // preferred blacklist; disabled identifiers only
+
+    CurveTessellationSettings GetCurveTessellationSettings(double lengthUnitScale = 1.0) const
+    {
+      CurveTessellationSettings tessellation(_circleSegments);
+      tessellation.maxSegmentLength = _maxCurveSegmentLength;
+      tessellation.maxSagittaError = _maxCurveSagittaError;
+      tessellation.maxAdaptiveSegments = _maxAdaptiveCurveSegments;
+      tessellation.minArcSegments = _minArcSegments;
+      tessellation.lengthUnitScale = lengthUnitScale;
+      return tessellation;
+    }
   };
 
   // this class performs the processing of raw geometry data from the geometry loader to produce meshes
   class IfcGeometryProcessor
   {
   public:
-    IfcGeometryProcessor(webifc::parsing::IfcLoader &loader, const webifc::schema::IfcSchemaManager &schemaManager, uint16_t circleSegments, bool coordinateToOrigin, double TOLERANCE_PLANE_INTERSECTION, double TOLERANCE_PLANE_DEVIATION, double TOLERANCE_BACK_DEVIATION_DISTANCE, double TOLERANCE_INSIDE_OUTSIDE_PERIMETER, double TOLERANCE_SCALAR_EQUALITY, double PLANE_REFIT_ITERATIONS);
+    IfcGeometryProcessor(webifc::parsing::IfcLoader &loader, const webifc::schema::IfcSchemaManager &schemaManager, uint16_t circleSegments, bool coordinateToOrigin, double TOLERANCE_PLANE_INTERSECTION, double TOLERANCE_PLANE_DEVIATION, double TOLERANCE_BACK_DEVIATION_DISTANCE, double TOLERANCE_INSIDE_OUTSIDE_PERIMETER, double TOLERANCE_SCALAR_EQUALITY, double PLANE_REFIT_ITERATIONS, double maxCurveSegmentLength = 0.0, double maxCurveSagittaError = 0.0, uint32_t maxAdaptiveCurveSegments = 4096, uint16_t minArcSegments = 3);
+    IfcGeometryProcessor(webifc::parsing::IfcLoader &loader, const webifc::schema::IfcSchemaManager &schemaManager, uint16_t circleSegments, bool coordinateToOrigin, double TOLERANCE_PLANE_INTERSECTION, double TOLERANCE_PLANE_DEVIATION, double TOLERANCE_BACK_DEVIATION_DISTANCE, double TOLERANCE_INSIDE_OUTSIDE_PERIMETER, double TOLERANCE_SCALAR_EQUALITY, double PLANE_REFIT_ITERATIONS, uint16_t BOOLEAN_UNION_THRESHOLD);
     IfcGeometry &GetGeometry(uint32_t expressID);
     IfcGeometryLoader& GetLoader();
     IfcFlatMesh GetFlatMesh(uint32_t expressID, bool applyLinearScalingFactor = true);

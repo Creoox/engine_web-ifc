@@ -19,6 +19,10 @@ namespace webifc::manager
     {
         bool COORDINATE_TO_ORIGIN = false;
         uint16_t CIRCLE_SEGMENTS = 12;
+        double MAX_CURVE_SEGMENT_LENGTH = 0.0;
+        double MAX_CURVE_SAGITTA_ERROR = 0.0;
+        uint32_t MAX_ADAPTIVE_CURVE_SEGMENTS = 4096;
+        uint16_t MIN_ARC_SEGMENTS = 3;
         uint32_t TAPE_SIZE = 67108864; // probably no need for anyone other than web-ifc devs to change this
         uint32_t MEMORY_LIMIT = 2147483648;
         uint16_t LINEWRITER_BUFFER = 10000;

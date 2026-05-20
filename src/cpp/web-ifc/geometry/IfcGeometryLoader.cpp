@@ -5,6 +5,7 @@
 #include <spdlog/spdlog.h>
 #include <iomanip>
 #include <algorithm>
+#include <cmath>
 #include <tuple>
 #include "IfcGeometryLoader.h"
 #include "operations/curve-utils.h"
@@ -17,8 +18,20 @@
 namespace webifc::geometry
 {
   IfcGeometryLoader::IfcGeometryLoader(const webifc::parsing::IfcLoader &loader, webifc::cache::IfcCache &cache, uint16_t circleSegments)
-      : _loader(loader), _cache(cache),  _circleSegments(circleSegments)
+      : IfcGeometryLoader(loader, cache, CurveTessellationSettings(circleSegments))
   {
+  }
+
+  IfcGeometryLoader::IfcGeometryLoader(const webifc::parsing::IfcLoader &loader, webifc::cache::IfcCache &cache, const CurveTessellationSettings& tessellation)
+      : _loader(loader), _cache(cache),  _circleSegments(tessellation.circleSegments), _curveTessellation(tessellation)
+  {
+  }
+
+  CurveTessellationSettings IfcGeometryLoader::GetCurveTessellationSettings() const
+  {
+      CurveTessellationSettings tessellation = _curveTessellation;
+      tessellation.lengthUnitScale = _cache.GetLinearScalingFactor();
+      return tessellation;
   }
 
   IfcCrossSections IfcGeometryLoader::GetCrossSections2D(uint32_t expressID) const
@@ -2019,7 +2032,7 @@ namespace webifc::geometry
             if (sg.type == "IFCARCINDEX")
             {
               auto pts = ReadIfcCartesianPointList2D(ptsRef);
-              IfcCurve arc = BuildArc3Pt(pts[sg.indexs[0] - 1], pts[sg.indexs[1] - 1], pts[sg.indexs[2] - 1], _circleSegments);
+              IfcCurve arc = BuildArc3Pt(pts[sg.indexs[0] - 1], pts[sg.indexs[1] - 1], pts[sg.indexs[2] - 1], GetCurveTessellationSettings());
               for (auto &pt : arc.points)
               {
                 curve.Add(pt);
@@ -2058,7 +2071,7 @@ namespace webifc::geometry
             if (sg.type == "IFCARCINDEX")
             {
               auto pts = ReadIfcCartesianPointList3D(ptsRef);
-              IfcCurve arc = Build3DArc3Pt(pts[sg.indexs[0] - 1], pts[sg.indexs[1] - 1], pts[sg.indexs[2] - 1], _circleSegments, EPS_MINISCULE);
+              IfcCurve arc = Build3DArc3Pt(pts[sg.indexs[0] - 1], pts[sg.indexs[1] - 1], pts[sg.indexs[2] - 1], GetCurveTessellationSettings(), EPS_MINISCULE);
               for (auto &pt : arc.points)
               {
                 // Fragments -> Issue #89 -> requires not to skip overlapped points, this is why "removeCoincident" is set to false
@@ -2267,7 +2280,9 @@ namespace webifc::geometry
             }
         }
         curve.arcSegments.push_back(curve.points.size());
-        int numPointsCurrentArc = std::max(static_cast<int>(_circleSegments * openingAngleRad / (2 * CONST_PI)) + 1, 4);
+        double tessellationRadius = std::max(std::abs(radius1), std::abs(radius2));
+        int numSegmentsCurrentArc = ComputeArcSegments(tessellationRadius, openingAngleRad, GetCurveTessellationSettings(), 3);
+        int numPointsCurrentArc = numSegmentsCurrentArc + 1;
 
         double deltaAngle = openingAngleRad / (numPointsCurrentArc - 1);
         double angle = startRad;

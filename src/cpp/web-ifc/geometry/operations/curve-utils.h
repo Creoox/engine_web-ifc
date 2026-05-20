@@ -4,10 +4,13 @@
 
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include "../representation/IfcCurve.h"
+#include "curve-tessellation.h"
 
 namespace webifc::geometry {
 
@@ -16,18 +19,18 @@ inline bool isConvexOrColinear(glm::dvec2 a, glm::dvec2 b, glm::dvec2 c)
 	return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x) >= 0;
 }
 
-inline IfcCurve Build3DArc3Pt(const glm::dvec3 &p1, const glm::dvec3 &p2, const glm::dvec3 &p3, uint16_t circleSegments, double EPS_MINSIZE)
+inline IfcCurve Build3DArc3Pt(const glm::dvec3 &p1, const glm::dvec3 &p2, const glm::dvec3 &p3, const CurveTessellationSettings& tessellation, double EPS_MINSIZE)
 {
     spdlog::debug("[Build3DArc3Pt({})]");
     // Calculate the center of the circle
     glm::dvec3 v1 = p2 - p1;
     glm::dvec3 v2 = p3 - p1;
-    glm::dvec3 normal = glm::normalize(glm::cross(v1, v2));
+    glm::dvec3 planeNormal = glm::cross(v1, v2);
     glm::dvec3 mid1 = 0.5 * (p1 + p2);
     glm::dvec3 mid2 = 0.5 * (p1 + p3);
     glm::dvec3 center;
 
-    if (glm::length(glm::cross(v1, v2)) < EPS_MINSIZE)
+    if (glm::length(planeNormal) < EPS_MINSIZE)
     {
         // Points are collinear, so there's no unique circle.
         // You can handle this case differently or return an error.
@@ -63,6 +66,23 @@ inline IfcCurve Build3DArc3Pt(const glm::dvec3 &p1, const glm::dvec3 &p2, const 
 
     // Calculate the radius
     double radius = glm::distance(center, p1);
+    glm::dvec3 normal = glm::normalize(planeNormal);
+    int targetPointCount = std::max<int>(3, tessellation.circleSegments);
+
+    if (std::isfinite(radius) && radius > CURVE_TESSELLATION_EPSILON)
+    {
+        glm::dvec3 basisX = glm::normalize(p1 - center);
+        glm::dvec3 basisY = glm::normalize(glm::cross(normal, basisX));
+        auto angleInPlane = [&](const glm::dvec3& point) {
+            glm::dvec3 v = glm::normalize(point - center);
+            return std::atan2(glm::dot(v, basisY), glm::dot(v, basisX));
+        };
+
+        double sweepRad = SweepAngleThroughMidpoint(angleInPlane(p1), angleInPlane(p2), angleInPlane(p3));
+        int segmentCount = ComputeArcSegments(radius, sweepRad, tessellation, std::max<int>(2, tessellation.minArcSegments));
+        segmentCount = std::max(segmentCount, std::max<int>(2, tessellation.circleSegments - 1));
+        targetPointCount = segmentCount + 1;
+    }
 
     // Using geometrical subdivision to create points on the arc
     std::vector<glm::dvec3> pointList;
@@ -70,7 +90,7 @@ inline IfcCurve Build3DArc3Pt(const glm::dvec3 &p1, const glm::dvec3 &p2, const 
     pointList.push_back(p2);
     pointList.push_back(p3);
 
-    while (pointList.size() < (size_t)circleSegments)
+    while (pointList.size() < (size_t)targetPointCount)
     {
         std::vector<glm::dvec3> tempPointList;
         for (size_t j = 0; j < pointList.size() - 1; j++)
@@ -94,7 +114,12 @@ inline IfcCurve Build3DArc3Pt(const glm::dvec3 &p1, const glm::dvec3 &p2, const 
     return curve;
 }
 
-	inline IfcCurve BuildArc3Pt(const glm::dvec2 &p1, const glm::dvec2 &p2, const glm::dvec2 &p3,uint16_t circleSegments)
+inline IfcCurve Build3DArc3Pt(const glm::dvec3 &p1, const glm::dvec3 &p2, const glm::dvec3 &p3, uint16_t circleSegments, double EPS_MINSIZE)
+{
+    return Build3DArc3Pt(p1, p2, p3, CurveTessellationSettings(circleSegments), EPS_MINSIZE);
+}
+
+	inline IfcCurve BuildArc3Pt(const glm::dvec2 &p1, const glm::dvec2 &p2, const glm::dvec2 &p3, const CurveTessellationSettings& tessellation)
 	{
 		spdlog::debug("[BuildArc3Pt({})]");
 		double f1 = (p1.x * p1.x - p2.x * p2.x + p1.y * p1.y - p2.y * p2.y);
@@ -136,6 +161,17 @@ inline IfcCurve Build3DArc3Pt(const glm::dvec3 &p1, const glm::dvec3 &p2, const 
 		pCen.y = cenY;
 
 		double radius = sqrt(pow(cenX - p1.x, 2) + pow(cenY - p1.y, 2));
+		int targetPointCount = std::max<int>(3, tessellation.circleSegments);
+		if (std::isfinite(radius) && radius > CURVE_TESSELLATION_EPSILON)
+		{
+			double startRad = std::atan2(p1.y - cenY, p1.x - cenX);
+			double midRad = std::atan2(p2.y - cenY, p2.x - cenX);
+			double endRad = std::atan2(p3.y - cenY, p3.x - cenX);
+			double sweepRad = SweepAngleThroughMidpoint(startRad, midRad, endRad);
+			int segmentCount = ComputeArcSegments(radius, sweepRad, tessellation, std::max<int>(2, tessellation.minArcSegments));
+			segmentCount = std::max(segmentCount, std::max<int>(2, tessellation.circleSegments - 1));
+			targetPointCount = segmentCount + 1;
+		}
 
 			// Using geometrical subdivision to avoid complex calculus with angles
 
@@ -144,7 +180,7 @@ inline IfcCurve Build3DArc3Pt(const glm::dvec3 &p1, const glm::dvec3 &p2, const 
 		pointList.push_back(p2);
 		pointList.push_back(p3);
 
-		while (pointList.size() < (size_t)circleSegments)
+		while (pointList.size() < (size_t)targetPointCount)
 		{
 			std::vector<glm::dvec2> tempPointList;
 			for (uint32_t j = 0; j < pointList.size() - 1; j++)
@@ -163,6 +199,11 @@ inline IfcCurve Build3DArc3Pt(const glm::dvec3 &p1, const glm::dvec3 &p2, const 
 		IfcCurve curve;
 		for (uint32_t j = 0; j < pointList.size(); j++) curve.Add(pointList.at(j));
 			return curve;
+	}
+
+	inline IfcCurve BuildArc3Pt(const glm::dvec2 &p1, const glm::dvec2 &p2, const glm::dvec2 &p3,uint16_t circleSegments)
+	{
+		return BuildArc3Pt(p1, p2, p3, CurveTessellationSettings(circleSegments));
 	}
 
 

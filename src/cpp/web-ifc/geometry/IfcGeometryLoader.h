@@ -18,6 +18,7 @@
 #include "representation/geometry.h"
 #include "representation/IfcGeometry.h"
 #include "representation/IfcCurve.h"
+#include "operations/curve-tessellation.h"
 
 namespace webifc::geometry
 {
@@ -26,6 +27,7 @@ namespace webifc::geometry
 	{
 	public:
 		IfcGeometryLoader(const webifc::parsing::IfcLoader& loader, webifc::cache::IfcCache& cache, uint16_t circleSegments);
+		IfcGeometryLoader(const webifc::parsing::IfcLoader& loader, webifc::cache::IfcCache& cache, const CurveTessellationSettings& tessellation);
 		std::array<glm::dvec3, 2> GetAxis1Placement(const uint32_t expressID) const;
 		glm::dmat3 GetAxis2Placement2D(const uint32_t expressID) const;
 		glm::dmat4 GetLocalPlacement(const uint32_t expressID) const;
@@ -95,6 +97,7 @@ namespace webifc::geometry
 		// numerically integrated curvature.
 		void ComputeSpiralFromCurvature(uint32_t positionID, IfcCurve& curve, const ComputeCurveParams& params, const std::function<double(double)>& kappa,
 			double defaultS1, double defaultS2) const;
+		CurveTessellationSettings GetCurveTessellationSettings() const;
 		void convertAngleUnits(double& Degrees, double& Rad) const;
 		double ReadLenghtMeasure() const;
 		void ReadCurveMeasureSelect(IfcTrimmingSelect& trim) const;
@@ -102,5 +105,6 @@ namespace webifc::geometry
 		const webifc::parsing::IfcLoader& _loader;
 		webifc::cache::IfcCache& _cache;
 		uint16_t _circleSegments;
+		CurveTessellationSettings _curveTessellation;
 	};
 }

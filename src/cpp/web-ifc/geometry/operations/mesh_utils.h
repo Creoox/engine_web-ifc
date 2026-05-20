@@ -22,6 +22,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include "curve-tessellation.h"
 
 namespace webifc::geometry
 {
@@ -112,7 +113,7 @@ namespace webifc::geometry
         return { *minIt, *maxIt };
     }
 
-    inline void TriangulateRevolution( IfcGeometry& geometry, const std::vector<IfcBound3D>& bounds, const IfcSurface& surface, double circleSegments)
+    inline void TriangulateRevolution( IfcGeometry& geometry, const std::vector<IfcBound3D>& bounds, const IfcSurface& surface, const CurveTessellationSettings& tessellation)
     {
         spdlog::debug("[TriangulateRevolution()]");
 
@@ -159,6 +160,9 @@ namespace webifc::geometry
         }
         double totalArc = arcLen.back();
         if (totalArc < 1e-12) return;
+        double maxRadius = 0.0;
+        for (const auto& p : merid)
+            maxRadius = std::max(maxRadius, std::abs(p.r));
 
         // Interpolate profile at arc-length s -> (radius, height)
         auto profileAt = [&](double s) -> MeridPt
@@ -264,7 +268,7 @@ namespace webifc::geometry
             }
         double arcDeg = maxU - minU;
         if (arcDeg < 1e-9) return;
-        int uSteps = std::max(static_cast<int>(circleSegments * arcDeg / 360.0), 4);
+        int uSteps = ComputeArcSegments(maxRadius, glm::radians(arcDeg), tessellation, 4);
         double uStep = arcDeg / uSteps;
 
         // === Scanline: sorted V crossings of boundary at u=const ===
@@ -460,7 +464,7 @@ namespace webifc::geometry
         }
     }
 
-    inline void TriangulateCylindricalSurface( IfcGeometry& geometry, const std::vector<IfcBound3D>& bounds, const IfcSurface& surface, double numCircleSegments)
+    inline void TriangulateCylindricalSurface( IfcGeometry& geometry, const std::vector<IfcBound3D>& bounds, const IfcSurface& surface, const CurveTessellationSettings& tessellation)
     {
         spdlog::debug("[TriangulateCylindricalSurface()]");
 
@@ -541,7 +545,7 @@ namespace webifc::geometry
                 maxU = std::max(maxU, uv.x);
             }
         double arcDeg = maxU - minU;
-        int uSteps = std::max(static_cast<int>(numCircleSegments * arcDeg / 360.0), 4);
+        int uSteps = ComputeArcSegments(radius, glm::radians(arcDeg), tessellation, 4);
         double maxEdgeAngle = arcDeg / uSteps;
 
         // ── Step 3: Build CDT vertices and constrained edges ─────────────────

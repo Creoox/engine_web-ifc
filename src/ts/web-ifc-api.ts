@@ -59,6 +59,10 @@ export const INTEGER = 10;
  * Settings for the IFCLoader
  * @property {boolean} COORDINATE_TO_ORIGIN - If true, the model will be translated to the origin.
  * @property {number} CIRCLE_SEGMENTS - Number of segments used to approximate circles.
+ * @property {number} MAX_CURVE_SEGMENT_LENGTH - Maximum curve segment length after unit scaling; 0 disables length-based refinement.
+ * @property {number} MAX_CURVE_SAGITTA_ERROR - Maximum arc chord error after unit scaling; 0 disables sagitta-based refinement.
+ * @property {number} MAX_ADAPTIVE_CURVE_SEGMENTS - Upper cap for adaptive arc subdivision.
+ * @property {number} MIN_ARC_SEGMENTS - Minimum number of segments for open arcs.
  * @property {number} MEMORY_LIMIT - Maximum memory (in bytes) to be reserved for IFC data in memory.
  * @property {number} TAPE_SIZE - Size of the internal buffer tape for the loader (in bytes or units).
  * @property {number} LINEWRITER_BUFFER - Number of lines to write to memory at a time when writing an IFC file.
@@ -73,6 +77,10 @@ export const INTEGER = 10;
 export interface LoaderSettings {
   COORDINATE_TO_ORIGIN?: boolean;
   CIRCLE_SEGMENTS?: number;
+  MAX_CURVE_SEGMENT_LENGTH?: number;
+  MAX_CURVE_SAGITTA_ERROR?: number;
+  MAX_ADAPTIVE_CURVE_SEGMENTS?: number;
+  MIN_ARC_SEGMENTS?: number;
   MEMORY_LIMIT?: number;
   TAPE_SIZE?: number;
   LINEWRITER_BUFFER?: number;
@@ -443,6 +451,10 @@ export class IfcAPI {
     let s: LoaderSettings = {
       COORDINATE_TO_ORIGIN: false,
       CIRCLE_SEGMENTS: 12,
+      MAX_CURVE_SEGMENT_LENGTH: 0,
+      MAX_CURVE_SAGITTA_ERROR: 0,
+      MAX_ADAPTIVE_CURVE_SEGMENTS: 4096,
+      MIN_ARC_SEGMENTS: 3,
       TAPE_SIZE: 67108864,
       MEMORY_LIMIT: 2147483648,
       LINEWRITER_BUFFER: 10000,

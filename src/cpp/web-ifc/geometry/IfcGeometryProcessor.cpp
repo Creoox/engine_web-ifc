@@ -26,6 +26,16 @@ namespace webifc::geometry
 
     double BOOLSTATUS = 0;
 
+    static CurveTessellationSettings MakeCurveTessellationSettings(uint16_t circleSegments, double maxCurveSegmentLength, double maxCurveSagittaError, uint32_t maxAdaptiveCurveSegments, uint16_t minArcSegments)
+    {
+        CurveTessellationSettings tessellation(circleSegments);
+        tessellation.maxSegmentLength = maxCurveSegmentLength;
+        tessellation.maxSagittaError = maxCurveSagittaError;
+        tessellation.maxAdaptiveSegments = maxAdaptiveCurveSegments;
+        tessellation.minArcSegments = minArcSegments;
+        return tessellation;
+    }
+
     static double ComputeBooleanBudgetSeconds(const IfcGeometrySettings& settings, uint64_t inputFaces)
     {
         return std::clamp(
@@ -47,16 +57,26 @@ namespace webifc::geometry
         return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
     }
 
-    IfcGeometryProcessor::IfcGeometryProcessor(webifc::parsing::IfcLoader &loader, const webifc::schema::IfcSchemaManager &schemaManager, uint16_t circleSegments, bool coordinateToOrigin, double TOLERANCE_PLANE_INTERSECTION, double TOLERANCE_PLANE_DEVIATION, double TOLERANCE_BACK_DEVIATION_DISTANCE, double TOLERANCE_INSIDE_OUTSIDE_PERIMETER, double TOLERANCE_SCALAR_EQUALITY, double PLANE_REFIT_ITERATIONS)
-        : _loader(loader), _cache(loader), _schemaManager(schemaManager), _geometryLoader(loader, _cache, circleSegments)
+    IfcGeometryProcessor::IfcGeometryProcessor(webifc::parsing::IfcLoader &loader, const webifc::schema::IfcSchemaManager &schemaManager, uint16_t circleSegments, bool coordinateToOrigin, double TOLERANCE_PLANE_INTERSECTION, double TOLERANCE_PLANE_DEVIATION, double TOLERANCE_BACK_DEVIATION_DISTANCE, double TOLERANCE_INSIDE_OUTSIDE_PERIMETER, double TOLERANCE_SCALAR_EQUALITY, double PLANE_REFIT_ITERATIONS, double maxCurveSegmentLength, double maxCurveSagittaError, uint32_t maxAdaptiveCurveSegments, uint16_t minArcSegments)
+        : _loader(loader), _cache(loader), _schemaManager(schemaManager), _geometryLoader(loader, _cache, MakeCurveTessellationSettings(circleSegments, maxCurveSegmentLength, maxCurveSagittaError, maxAdaptiveCurveSegments, minArcSegments))
     {
         _settings._coordinateToOrigin = coordinateToOrigin;
         _settings._circleSegments = circleSegments;
+        _settings._maxCurveSegmentLength = maxCurveSegmentLength;
+        _settings._maxCurveSagittaError = maxCurveSagittaError;
+        _settings._maxAdaptiveCurveSegments = maxAdaptiveCurveSegments;
+        _settings._minArcSegments = minArcSegments;
         _settings.TOLERANCE_PLANE_INTERSECTION = TOLERANCE_PLANE_INTERSECTION;
         _settings.TOLERANCE_PLANE_DEVIATION = TOLERANCE_PLANE_DEVIATION;
         _settings.TOLERANCE_BACK_DEVIATION_DISTANCE = TOLERANCE_BACK_DEVIATION_DISTANCE;
         _settings.TOLERANCE_INSIDE_OUTSIDE_PERIMETER = TOLERANCE_INSIDE_OUTSIDE_PERIMETER;
         SetEpsilons(TOLERANCE_SCALAR_EQUALITY, PLANE_REFIT_ITERATIONS);
+    }
+
+    IfcGeometryProcessor::IfcGeometryProcessor(webifc::parsing::IfcLoader &loader, const webifc::schema::IfcSchemaManager &schemaManager, uint16_t circleSegments, bool coordinateToOrigin, double TOLERANCE_PLANE_INTERSECTION, double TOLERANCE_PLANE_DEVIATION, double TOLERANCE_BACK_DEVIATION_DISTANCE, double TOLERANCE_INSIDE_OUTSIDE_PERIMETER, double TOLERANCE_SCALAR_EQUALITY, double PLANE_REFIT_ITERATIONS, uint16_t BOOLEAN_UNION_THRESHOLD)
+        : IfcGeometryProcessor(loader, schemaManager, circleSegments, coordinateToOrigin, TOLERANCE_PLANE_INTERSECTION, TOLERANCE_PLANE_DEVIATION, TOLERANCE_BACK_DEVIATION_DISTANCE, TOLERANCE_INSIDE_OUTSIDE_PERIMETER, TOLERANCE_SCALAR_EQUALITY, PLANE_REFIT_ITERATIONS)
+    {
+        (void)BOOLEAN_UNION_THRESHOLD;
     }
 
     IfcGeometryLoader& IfcGeometryProcessor::GetLoader()
@@ -709,11 +729,11 @@ namespace webifc::geometry
                 }
                 else if (surface.CylinderSurface.Active)
                 {
-                    TriangulateCylindricalSurface(geometry, bounds3D, surface, _settings._circleSegments);
+                    TriangulateCylindricalSurface(geometry, bounds3D, surface, _settings.GetCurveTessellationSettings(_cache.GetLinearScalingFactor()));
                 }
                 else if (surface.RevolutionSurface.Active)
                 {
-                    TriangulateRevolution(geometry, bounds3D, surface, _settings._circleSegments);
+                    TriangulateRevolution(geometry, bounds3D, surface, _settings.GetCurveTessellationSettings(_cache.GetLinearScalingFactor()));
                 }
                 else if (surface.ExtrusionSurface.Active)
                 {
@@ -2215,11 +2235,11 @@ namespace webifc::geometry
             }
             else if (surface.CylinderSurface.Active)
             {
-                TriangulateCylindricalSurface(geometry, bounds3D, surface, _settings._circleSegments);
+                TriangulateCylindricalSurface(geometry, bounds3D, surface, _settings.GetCurveTessellationSettings(_cache.GetLinearScalingFactor()));
             }
             else if (surface.RevolutionSurface.Active)
             {
-                TriangulateRevolution(geometry, bounds3D, surface, _settings._circleSegments);
+                TriangulateRevolution(geometry, bounds3D, surface, _settings.GetCurveTessellationSettings(_cache.GetLinearScalingFactor()));
             }
             else if (surface.ExtrusionSurface.Active)
             {
@@ -2473,7 +2493,7 @@ namespace webifc::geometry
     }
 
     IfcGeometryProcessor::IfcGeometryProcessor(const IfcGeometrySettings &settings, std::unordered_map<uint32_t, IfcGeometry> expressIDToGeometry, glm::dmat4 transformation, const parsing::IfcLoader &loader, const schema::IfcSchemaManager &schemaManager, bool isCoordinated, uint32_t expressIdCyl, uint32_t expressIdRect, glm::dmat4 coordinationMatrix, IfcGeometry predefinedCylinder, IfcGeometry predefinedCube)
-        : _settings(settings), _expressIDToGeometry(expressIDToGeometry), _transformation(transformation), _loader(loader), _cache(cache::IfcCache(loader)), _schemaManager(schemaManager), _isCoordinated(isCoordinated), _expressIdCyl(expressIdCyl), _expressIdRect(expressIdRect), _coordinationMatrix(coordinationMatrix), _predefinedCylinder(predefinedCylinder), _predefinedCube(predefinedCube), _geometryLoader(geometry::IfcGeometryLoader(loader,_cache,settings._circleSegments))
+        : _settings(settings), _expressIDToGeometry(expressIDToGeometry), _transformation(transformation), _loader(loader), _cache(cache::IfcCache(loader)), _schemaManager(schemaManager), _isCoordinated(isCoordinated), _expressIdCyl(expressIdCyl), _expressIdRect(expressIdRect), _coordinationMatrix(coordinationMatrix), _predefinedCylinder(predefinedCylinder), _predefinedCube(predefinedCube), _geometryLoader(geometry::IfcGeometryLoader(loader,_cache,settings.GetCurveTessellationSettings()))
     {
     }
 
