@@ -236,11 +236,13 @@ namespace webifc::geometry
       std::vector<uint32_t> CrossSectionIDs;
 
       std::map<double, glm::dmat4> mapCrossSectionPositions;  // explicit placements from CrossSectionPositions
+      std::map<double, size_t> mapDistanceToCrossSectionIndex;
       std::unordered_map<uint32_t, std::set<double> > mapCurveToDistanceAlong;
       std::vector<glm::dmat4> vecCrossSectionPositionsFallback;
 
-      for ( uint32_t offset : CrossSectionPositionOffsets)
+      for (size_t positionIndex = 0; positionIndex < CrossSectionPositionOffsets.size(); ++positionIndex)
       {
+        uint32_t offset = CrossSectionPositionOffsets[positionIndex];
         auto CrossSectionPositionID = _loader.GetRefArgument(offset);
         // IfcAxis2PlacementLinear
         //    IfcPoint							Location;
@@ -314,6 +316,10 @@ namespace webifc::geometry
 
                     mapCurveToDistanceAlong[BasisCurveID].insert(DistanceAlong);
                     mapCrossSectionPositions.insert({ DistanceAlong, glm::dmat4(1) });
+                    if (CrossSectionsOffsets.size() > 0)
+                    {
+                        mapDistanceToCrossSectionIndex[DistanceAlong] = std::min(positionIndex, CrossSectionsOffsets.size() - 1);
+                    }
                 }
             }
             else
@@ -344,27 +350,72 @@ namespace webifc::geometry
           return sections;
       }
 	  
-      std::set<double> distancesWithCrossSection;
-      auto it = mapCurveToDistanceAlong.find(DirectrixId);
-      if( it != mapCurveToDistanceAlong.end())
-      {
-          distancesWithCrossSection = it->second;
-      }
-      else
-      {
-		  // take any other curve if DirectrixId not found
-          distancesWithCrossSection = mapCurveToDistanceAlong.begin()->second;
-      }
-
 	  getPlacementsOnCurvePoints(DirectrixId, mapCrossSectionPositions);
 
-      uint32_t crossSectionIndex = 0;
-      uint32_t currentCrossSectionID = _loader.GetRefArgument(CrossSectionsOffsets[crossSectionIndex]);
+      std::vector<uint32_t> crossSectionIDs;
+      crossSectionIDs.reserve(CrossSectionsOffsets.size());
+      for (auto offset : CrossSectionsOffsets)
+      {
+          crossSectionIDs.push_back(_loader.GetRefArgument(offset));
+      }
+
+      auto getCrossSectionAtDistance = [&](double distance, uint32_t& crossSectionID) -> IfcProfile
+      {
+          if (mapDistanceToCrossSectionIndex.empty() || crossSectionIDs.empty())
+          {
+              return IfcProfile();
+          }
+
+          auto exactProfileIt = mapDistanceToCrossSectionIndex.find(distance);
+          if (exactProfileIt != mapDistanceToCrossSectionIndex.end())
+          {
+              size_t profileIndex = std::min(exactProfileIt->second, crossSectionIDs.size() - 1);
+              crossSectionID = crossSectionIDs[profileIndex];
+              return GetProfile(crossSectionID);
+          }
+
+          auto upperIt = mapDistanceToCrossSectionIndex.upper_bound(distance);
+          if (upperIt == mapDistanceToCrossSectionIndex.begin())
+          {
+              size_t profileIndex = std::min(upperIt->second, crossSectionIDs.size() - 1);
+              crossSectionID = crossSectionIDs[profileIndex];
+              return GetProfile(crossSectionID);
+          }
+
+          auto lowerIt = std::prev(upperIt);
+          size_t lowerIndex = std::min(lowerIt->second, crossSectionIDs.size() - 1);
+          crossSectionID = crossSectionIDs[lowerIndex];
+          IfcProfile lowerProfile = GetProfile(crossSectionID);
+
+          if (upperIt == mapDistanceToCrossSectionIndex.end())
+          {
+              return lowerProfile;
+          }
+
+          size_t upperIndex = std::min(upperIt->second, crossSectionIDs.size() - 1);
+          uint32_t upperCrossSectionID = crossSectionIDs[upperIndex];
+          IfcProfile upperProfile = GetProfile(upperCrossSectionID);
+
+          double span = upperIt->first - lowerIt->first;
+          if (span <= EPS_SMALL || lowerProfile.curve.points.size() != upperProfile.curve.points.size())
+          {
+              return lowerProfile;
+          }
+
+          double t = glm::clamp((distance - lowerIt->first) / span, 0.0, 1.0);
+          for (size_t i = 0; i < lowerProfile.curve.points.size(); ++i)
+          {
+              lowerProfile.curve.points[i] = lowerProfile.curve.points[i] * (1.0 - t) + upperProfile.curve.points[i] * t;
+          }
+          return lowerProfile;
+      };
+
       for (auto& it : mapCrossSectionPositions)
       {
           double distance = it.first;
           glm::dmat4 placement = it.second;
-          IfcProfile currentProfile = GetProfile(currentCrossSectionID);
+          uint32_t currentCrossSectionID = 0;
+          IfcProfile currentProfile = getCrossSectionAtDistance(distance, currentCrossSectionID);
 
 #ifdef DEBUG_DUMP_SVG
           dump::DumpCurveToHtml(currentProfile.curve.points, "dumpCurve.html");
@@ -382,17 +433,6 @@ namespace webifc::geometry
           //profiles.push_back(currentProfile);
           curves.push_back(currentProfile.curve);
           CrossSectionIDs.push_back(currentCrossSectionID);
-
-          if (distancesWithCrossSection.find(distance) != distancesWithCrossSection.end())
-          {
-              // go to next cross section
-              ++crossSectionIndex;
-              if (crossSectionIndex >= CrossSectionsOffsets.size())
-              {
-                  crossSectionIndex = CrossSectionsOffsets.size() - 1;
-              }
-              currentCrossSectionID = _loader.GetRefArgument(CrossSectionsOffsets[crossSectionIndex]);
-          }
       }
 
       sections.curves = curves;
