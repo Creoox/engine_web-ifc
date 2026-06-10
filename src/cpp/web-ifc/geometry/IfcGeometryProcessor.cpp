@@ -183,6 +183,21 @@ namespace webifc::geometry
 
     IfcComposedMesh IfcGeometryProcessor::GetMesh(uint32_t expressID)
     {
+        // Guard against unbounded recursion from cyclic or pathologically nested references in malformed IFC files.
+        constexpr uint32_t MAX_GETMESH_RECURSION_DEPTH = 500;
+        struct RecursionGuard
+        {
+            uint32_t &depth;
+            explicit RecursionGuard(uint32_t &d) : depth(d) { ++depth; }
+            ~RecursionGuard() { --depth; }
+        } recursionGuard(_getMeshRecursionDepth);
+
+        if (_getMeshRecursionDepth > MAX_GETMESH_RECURSION_DEPTH)
+        {
+            spdlog::error("[GetMesh()] recursion depth limit ({}) exceeded for entity ID {}", MAX_GETMESH_RECURSION_DEPTH, expressID);
+            return IfcComposedMesh();
+        }
+
         spdlog::debug("[GetMesh({})]", expressID);
         auto lineType = _loader.GetLineType(expressID);
         auto &relVoids = _cache.GetRelVoids();

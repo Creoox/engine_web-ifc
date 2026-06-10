@@ -93,6 +93,7 @@ namespace webifc::geometry
     uint32_t _expressIdCyl = 0;
     uint32_t _expressIdRect = 0;
     glm::dmat4 _coordinationMatrix = glm::dmat4(1.0);
+    uint32_t _getMeshRecursionDepth = 0;
     void AddComposedMeshToFlatMesh(IfcFlatMesh &flatMesh, const IfcComposedMesh &composedMesh, const glm::dmat4 &parentMatrix = glm::dmat4(1), const glm::dvec4 &color = glm::dvec4(1, 1, 1, 1), bool hasColor = false);
     std::vector<uint32_t> Read2DArrayOfThreeIndices();
     void ReadIndexedPolygonalFace(uint32_t expressID, std::vector<IfcBound3D> &bounds, const std::vector<glm::dvec3> &points);
