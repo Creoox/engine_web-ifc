@@ -1,4 +1,4 @@
-﻿#include <queue>
+#include <queue>
 #include <array>
 #include <cstdio>
 #include <tuple>

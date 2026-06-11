@@ -3,6 +3,8 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 #pragma warning (disable: 5061)
 #include <spdlog/spdlog.h>
+#include <cstdlib>
+#include <functional>
 
 #if defined(DEBUG_DUMP_SVG) || defined(DUMP_CSG_MESHES) || defined(_DEBUG)
 #include "../../test/io_helpers.h"
@@ -320,6 +322,46 @@ namespace webifc::geometry
                 uint32_t firstOperandID = _loader.GetRefArgument();
                 uint32_t secondOperandID = _loader.GetRefArgument();
 
+                // Nested DIFFERENCE chain flatten: ((A - b1) - b2) - b3 resolves
+                // recursively, running the boolean kernel once per level and
+                // compounding classification damage at every level. Collect the
+                // whole chain of subtractors here and let BoolProcess apply them
+                // against the base solid in a single kernel pass (disjoint
+                // subtractors concatenate; see chain collapse in BoolProcess).
+                std::vector<uint32_t> chainSecondIDs;
+                {
+                    uint32_t walkID = firstOperandID;
+                    while (_loader.IsValidExpressID(walkID))
+                    {
+                        uint32_t walkType = _loader.GetLineType(walkID);
+                        uint32_t innerFirst = 0;
+                        uint32_t innerSecond = 0;
+                        if (walkType == schema::IFCBOOLEANRESULT)
+                        {
+                            _loader.MoveToArgumentOffset(walkID, 0);
+                            std::string_view innerOp = _loader.GetStringArgument();
+                            if (innerOp != "DIFFERENCE")
+                                break;
+                            innerFirst = _loader.GetRefArgument();
+                            innerSecond = _loader.GetRefArgument();
+                        }
+                        else if (walkType == schema::IFCBOOLEANCLIPPINGRESULT)
+                        {
+                            _loader.MoveToArgumentOffset(walkID, 1);
+                            innerFirst = _loader.GetRefArgument();
+                            innerSecond = _loader.GetRefArgument();
+                        }
+                        else
+                        {
+                            break;
+                        }
+                        chainSecondIDs.push_back(innerSecond);
+                        walkID = innerFirst;
+                    }
+                    if (!chainSecondIDs.empty())
+                        firstOperandID = walkID;
+                }
+
                 auto firstMesh = GetMesh(firstOperandID);
                 auto secondMesh = GetMesh(secondOperandID);
 
@@ -328,6 +370,18 @@ namespace webifc::geometry
 
                 auto flatFirstMeshes = flatten(firstMesh, _expressIDToGeometry, normalizeMat);
                 auto flatSecondMeshes = flatten(secondMesh, _expressIDToGeometry, normalizeMat);
+                for (uint32_t chainSid : chainSecondIDs)
+                {
+                    IfcComposedMesh chainMesh = GetMesh(chainSid);
+                    chainMesh.expressID = chainSid;
+                    auto flatChain = flatten(chainMesh, _expressIDToGeometry, normalizeMat);
+                    for (auto& geom : flatChain)
+                    {
+                        if (geom.entityID == UINT32_MAX)
+                            geom.entityID = chainSid;
+                    }
+                    flatSecondMeshes.insert(flatSecondMeshes.end(), flatChain.begin(), flatChain.end());
+                }
 
                 IfcGeometry resultMesh = BoolProcess(flatFirstMeshes, flatSecondMeshes, "DIFFERENCE", _settings);
 
@@ -356,6 +410,42 @@ namespace webifc::geometry
 
                 uint32_t firstOperandID = _loader.GetRefArgument();
                 uint32_t secondOperandID = _loader.GetRefArgument();
+
+                std::vector<uint32_t> chainSecondIDs;
+                if (op == "DIFFERENCE")
+                {
+                    // See the chain-flatten comment in IFCBOOLEANCLIPPINGRESULT.
+                    uint32_t walkID = firstOperandID;
+                    while (_loader.IsValidExpressID(walkID))
+                    {
+                        uint32_t walkType = _loader.GetLineType(walkID);
+                        uint32_t innerFirst = 0;
+                        uint32_t innerSecond = 0;
+                        if (walkType == schema::IFCBOOLEANRESULT)
+                        {
+                            _loader.MoveToArgumentOffset(walkID, 0);
+                            std::string_view innerOp = _loader.GetStringArgument();
+                            if (innerOp != "DIFFERENCE")
+                                break;
+                            innerFirst = _loader.GetRefArgument();
+                            innerSecond = _loader.GetRefArgument();
+                        }
+                        else if (walkType == schema::IFCBOOLEANCLIPPINGRESULT)
+                        {
+                            _loader.MoveToArgumentOffset(walkID, 1);
+                            innerFirst = _loader.GetRefArgument();
+                            innerSecond = _loader.GetRefArgument();
+                        }
+                        else
+                        {
+                            break;
+                        }
+                        chainSecondIDs.push_back(innerSecond);
+                        walkID = innerFirst;
+                    }
+                    if (!chainSecondIDs.empty())
+                        firstOperandID = walkID;
+                }
 
                 IfcComposedMesh firstMesh = GetMesh(firstOperandID);
                 IfcComposedMesh secondMesh = GetMesh(secondOperandID);
@@ -387,6 +477,19 @@ namespace webifc::geometry
                     if (geom.entityID == UINT32_MAX) {
                         geom.entityID = secondOperandID;
                     }
+                }
+                for (uint32_t chainSid : chainSecondIDs)
+                {
+                    IfcComposedMesh chainMesh = GetMesh(chainSid);
+                    chainMesh.expressID = chainSid;
+                    auto flatChain = flatten(chainMesh, _expressIDToGeometry, normalizeMat);
+                    for (auto& geom : flatChain)
+                    {
+                        numFacesGeoms += geom.numFaces;
+                        if (geom.entityID == UINT32_MAX)
+                            geom.entityID = chainSid;
+                    }
+                    flatSecondMeshes.insert(flatSecondMeshes.end(), flatChain.begin(), flatChain.end());
                 }
 
                 if (numFacesGeoms > _settings._CSG_MAX_NUM_FACES) {
@@ -2057,7 +2160,7 @@ namespace webifc::geometry
             {
                 std::vector<IfcGeometry> transformedGeoms = transformIfcGeometry(meshGeom, newMat, transformationBreaksWinding);
                 IfcGeometry geometryResult = BoolProcess(transformedGeoms, secondGroups, op, _settings);
-                
+
                 std::vector<IfcGeometry> localGeom = transformIfcGeometry(geometryResult, invMat, transformationBreaksWindingInverse);
                 IfcGeometry localGeomMerged;
                 for (const auto& geom : localGeom)
@@ -2341,6 +2444,95 @@ namespace webifc::geometry
             }
         }
 
+        // Subtractor chain collapse: A - B1 - B2 - ... - Bn runs the fuzzy-bools
+        // pipeline n times, and every pass re-normalizes the previous result, so
+        // classification damage compounds geometrically along the chain
+        // (measured on test42: 42 open edges after step 2, 506 after step 6).
+        // Mathematically A - B1 - B2 = A - (B1 u B2), and IFC opening solids are
+        // almost always pairwise disjoint, where the union is plain shell
+        // concatenation with no kernel call at all. So: greedily batch the
+        // non-halfspace subtractors into groups whose inflated AABBs are
+        // pairwise disjoint, concatenate each group into one subtractor solid,
+        // and subtract group by group. Overlapping subtractors land in
+        // different groups and keep their sequential semantics; kernel-unioning
+        // them instead was measured to be both slow (test44: 1.1s -> 116s) and
+        // lower quality (test50: membranes 11 -> 38).
+        std::vector<IfcGeometry> unbatchedSeconds;
+        bool batchingApplied = false;
+        if (op == "DIFFERENCE" && secondGeoms.size() > 1)
+        {
+            std::vector<IfcGeometry> finalSeconds;
+            std::vector<size_t> solidIdx;
+            for (size_t i = 0; i < secondGeoms.size(); i++)
+            {
+                if (secondGeoms[i].halfSpace || secondGeoms[i].numFaces == 0)
+                    finalSeconds.push_back(secondGeoms[i]);
+                else
+                    solidIdx.push_back(i);
+            }
+            if (solidIdx.size() > 1)
+            {
+                std::vector<fuzzybools::AABB> boxes(solidIdx.size());
+                double maxDiag = 0;
+                for (size_t k = 0; k < solidIdx.size(); k++)
+                {
+                    boxes[k] = secondGeoms[solidIdx[k]].GetAABB();
+                    maxDiag = std::max(maxDiag, glm::length(boxes[k].max - boxes[k].min));
+                }
+                const double inflate = maxDiag * 1e-3;
+                std::vector<std::vector<size_t>> batches;
+                for (size_t k = 0; k < solidIdx.size(); k++)
+                {
+                    fuzzybools::AABB ik = boxes[k];
+                    ik.min -= glm::dvec3(inflate);
+                    ik.max += glm::dvec3(inflate);
+                    bool placed = false;
+                    for (auto& batch : batches)
+                    {
+                        bool disjoint = true;
+                        for (size_t m : batch)
+                        {
+                            if (ik.intersects(boxes[m])) { disjoint = false; break; }
+                        }
+                        if (disjoint)
+                        {
+                            batch.push_back(k);
+                            placed = true;
+                            break;
+                        }
+                    }
+                    if (!placed) batches.push_back({ k });
+                }
+                bool anyGrouping = false;
+                for (auto& batch : batches)
+                {
+                    if (batch.size() > 1) { anyGrouping = true; break; }
+                }
+                if (anyGrouping)
+                {
+                    batchingApplied = true;
+                    unbatchedSeconds = secondGeoms;
+                }
+                std::vector<IfcGeometry> grouped;
+                for (auto& batch : batches)
+                {
+                    if (batch.size() == 1)
+                    {
+                        grouped.push_back(std::move(secondGeoms[solidIdx[batch[0]]]));
+                        continue;
+                    }
+                    IfcGeometry concat;
+                    for (size_t m : batch) concat.AddGeometry(secondGeoms[solidIdx[m]]);
+                    grouped.push_back(std::move(concat));
+                }
+                finalSeconds.insert(finalSeconds.begin(), std::make_move_iterator(grouped.begin()), std::make_move_iterator(grouped.end()));
+                secondGeoms = std::move(finalSeconds);
+            }
+        }
+
+        auto runChain = [&](std::vector<IfcGeometry>& seconds) -> IfcGeometry
+        {
+        IfcGeometry chainResult;
         for (auto &firstGeom : firstGeoms)
         {
             IfcGeometry firstOperand = firstGeom;
@@ -2354,7 +2546,7 @@ namespace webifc::geometry
 #endif
                 }
             }
-            for (auto &secondGeom : secondGeoms)
+            for (auto &secondGeom : seconds)
             {
                 if (secondGeom.numFaces == 0)
                 {
@@ -2440,7 +2632,33 @@ namespace webifc::geometry
                 std::cout << "[BoolProcess] result.faces=" << firstOperand.numFaces << std::endl;
 #endif
             }
-            finalResult.AddGeometry(firstOperand);
+            chainResult.AddGeometry(firstOperand);
+        }
+        return chainResult;
+        };
+
+        finalResult = runChain(secondGeoms);
+
+        // Batched-subtract verification: the disjoint-batch concatenation is a
+        // semantic no-op in exact arithmetic but can interact differently with
+        // the tolerance-based classifier. If the batched result is not clean,
+        // re-run the chain with the original per-solid operand order and keep
+        // whichever result scores better (open edges weigh 1, non-manifold
+        // edges weigh 3 -- they are harder to repair downstream).
+        if (batchingApplied && finalResult.numFaces > 0 && finalResult.numFaces <= 20000)
+        {
+            auto wiBatched = meshCleanup::isMeshWatertight(finalResult);
+            if (wiBatched.numOpenEdges + wiBatched.numNonManifoldEdges > 0)
+            {
+                IfcGeometry seqResult = runChain(unbatchedSeconds);
+                auto wiSeq = meshCleanup::isMeshWatertight(seqResult);
+                const uint64_t scoreBatched = (uint64_t)wiBatched.numOpenEdges + 3ULL * wiBatched.numNonManifoldEdges;
+                const uint64_t scoreSeq = (uint64_t)wiSeq.numOpenEdges + 3ULL * wiSeq.numNonManifoldEdges;
+                if (scoreSeq < scoreBatched)
+                {
+                    finalResult = std::move(seqResult);
+                }
+            }
         }
 
         // Chain-exit dedup (stage 2): this result feeds either a parent boolean
