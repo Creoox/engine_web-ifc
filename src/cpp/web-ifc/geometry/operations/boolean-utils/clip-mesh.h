@@ -847,6 +847,102 @@ namespace fuzzybools
         return res;
     }
 
+    // Both-sides-outside membrane census (the artifact the viewer shows as
+    // sheets across openings). Rays are cast along +/- face normal with a
+    // slight jitter -- a ray with dir . n > 0 from the +n side can never
+    // re-cross the face plane, so excluding the tested face (required for
+    // true membranes, which are not volume boundaries) cannot delete a
+    // genuine crossing. Same algorithm as the fixed export pass 6.
+    static uint32_t CountMembraneArtifactFaces(Geometry& g)
+    {
+        if (g.numFaces == 0 || g.numFaces > 20000) return 0;
+        const AABB box = g.GetAABB();
+        const double diag = glm::length(box.max - box.min);
+        if (!(diag > 0.0)) return 0;
+        const double off = std::max(diag * 1e-5, 1e-6);
+        BVH bvh = MakeBVH(g);
+        auto sideOutside = [&](const Vec& c, const Vec& n, double s, uint32_t skip) -> bool {
+            Vec axis = std::abs(n.x) < 0.9 ? Vec(1, 0, 0) : Vec(0, 1, 0);
+            Vec u = glm::normalize(glm::cross(n, axis));
+            Vec w = glm::cross(n, u);
+            const Vec base = n * s;
+            const Vec dirs[2] = {
+                glm::normalize(base + u * 0.11 + w * 0.07),
+                glm::normalize(base - u * 0.13 + w * 0.17)
+            };
+            const Vec p = c + base * off;
+            int oddCount = 0;
+            for (const Vec& dir : dirs)
+            {
+                int crossings = 0;
+                std::unordered_set<uint32_t> seen;
+                bvh.IntersectRay(p, dir, [&](uint32_t i) -> bool {
+                    if (i == skip) return false;
+                    if (!seen.insert(i).second) return false;
+                    Face f2 = g.GetFace(i);
+                    Vec a2 = g.GetPoint(f2.i0);
+                    Vec b2 = g.GetPoint(f2.i1);
+                    Vec c2 = g.GetPoint(f2.i2);
+                    Vec hit;
+                    double dist, dPlane;
+                    if (intersect_ray_triangle(p, p + dir, a2, b2, c2, hit, dist, dPlane, true))
+                    {
+                        // Ignore crossings inside the offset near-field: a
+                        // coincident double-cover twin of the tested face
+                        // (stitch fan overlap, kernel double-emission) sits at
+                        // distance ~off and would flip the parity of BOTH
+                        // layers, making legitimate geometry score as
+                        // membranes. Real second surfaces are feature-scale
+                        // away. Export pass 4b removes the twins themselves.
+                        if (dist > off * 2.5)
+                        {
+                            ++crossings;
+                        }
+                    }
+                    return false;
+                });
+                if ((crossings & 1) != 0) ++oddCount;
+            }
+            // 0 = both rays even (outside), 2 = both odd (inside), 1 = unknown
+            return oddCount;
+        };
+        uint32_t cnt = 0;
+        for (uint32_t i = 0; i < g.numFaces; i++)
+        {
+            Face f = g.GetFace(i);
+            Vec a = g.GetPoint(f.i0);
+            Vec b = g.GetPoint(f.i1);
+            Vec c = g.GetPoint(f.i2);
+            Vec cr = glm::cross(b - a, c - a);
+            double len = glm::length(cr);
+            if (len < 1e-15) continue;
+            Vec n = cr / len;
+            Vec ctr = (a + b + c) / 3.0;
+            const int sPlus = sideOutside(ctr, n, 1.0, i);
+            const int sMinus = sideOutside(ctr, n, -1.0, i);
+            // A boundary face has material on exactly one side. Both sides
+            // outside = floating membrane; both sides inside = buried interior
+            // sheet (the test107 regression class). Mixed parity = unknown,
+            // benefit of the doubt.
+            if ((sPlus == 0 && sMinus == 0) || (sPlus == 2 && sMinus == 2)) ++cnt;
+        }
+        return cnt;
+    }
+
+    // Combined mesh quality score for choosing between candidate boolean
+    // results: open edges weigh 1, non-manifold edges 3 (harder to repair),
+    // membranes 10 (the user-visible artifact class the edge census cannot
+    // see). Lower is better.
+    static uint64_t MeshQualityScore(Geometry& g)
+    {
+        const AABB box = g.GetAABB();
+        const double diag = glm::length(box.max - box.min);
+        const double weldTol = std::max(1.0E-07, diag * 1e-9);
+        const auto census = CountOpenAndNonManifoldEdges(g, weldTol);
+        const uint32_t membranes = CountMembraneArtifactFaces(g);
+        return (uint64_t)census.first + 3ULL * census.second + 10ULL * membranes;
+    }
+
     static void StitchTJunctions(Geometry& g, const BooleanBudget& budget)
     {
         static const bool stitchOff = std::getenv("CSG_NOSTITCH") != nullptr;
@@ -1025,16 +1121,18 @@ namespace fuzzybools
             g = std::move(ng);
         }
 
-        const auto censusAfter = CountOpenAndNonManifoldEdges(g, weldTol);
-        // Weighted comparison: non-manifold edges are harder to repair
-        // downstream than open edges, so they weigh 3x. A stitch that closes
-        // many T-junctions at the cost of a couple of non-manifold contacts
-        // is still a net win (test42: 95 open / 1 nm -> 58 open / 7 nm).
-        const uint64_t scoreBefore = (uint64_t)censusBefore.first + 3ULL * censusBefore.second;
-        const uint64_t scoreAfter = (uint64_t)censusAfter.first + 3ULL * censusAfter.second;
-        if (scoreAfter >= scoreBefore)
+        // Keep the stitched mesh only if the full quality score (open edges,
+        // non-manifold edges, membranes) improved. Single-signal criteria were
+        // measured and rejected: census-only guards either starve chains whose
+        // intermediates need closing (test53d) or admit membrane debris the
+        // edge census cannot see (test63/64).
+        Geometry stitched = std::move(g);
+        g = snapshot;
+        const uint64_t scoreBefore = MeshQualityScore(g);
+        const uint64_t scoreAfter = MeshQualityScore(stitched);
+        if (scoreAfter < scoreBefore)
         {
-            g = snapshot;
+            g = std::move(stitched);
         }
     }
 

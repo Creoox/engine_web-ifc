@@ -2651,9 +2651,12 @@ namespace webifc::geometry
             if (wiBatched.numOpenEdges + wiBatched.numNonManifoldEdges > 0)
             {
                 IfcGeometry seqResult = runChain(unbatchedSeconds);
-                auto wiSeq = meshCleanup::isMeshWatertight(seqResult);
-                const uint64_t scoreBatched = (uint64_t)wiBatched.numOpenEdges + 3ULL * wiBatched.numNonManifoldEdges;
-                const uint64_t scoreSeq = (uint64_t)wiSeq.numOpenEdges + 3ULL * wiSeq.numNonManifoldEdges;
+                // Full quality score (open + 3*nm + 10*membranes): an edge-only
+                // census picked sequential results full of interior sheets
+                // (test53d: 11 vs 2) because the n-pass chain compounds
+                // membrane debris the census cannot see.
+                const uint64_t scoreBatched = fuzzybools::MeshQualityScore(finalResult);
+                const uint64_t scoreSeq = fuzzybools::MeshQualityScore(seqResult);
                 if (scoreSeq < scoreBatched)
                 {
                     finalResult = std::move(seqResult);
