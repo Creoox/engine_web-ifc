@@ -1515,7 +1515,9 @@ namespace fuzzybools
                     std::abs(rs3) > 1 - toleranceThinTriangle)
                 {
 #if 1 // CLIP_DIAG
-                    if (std::fabs(p.normal.z) > 0.99) printf("[TPDIAG] thin-reject z=%.1f c=(%.1f,%.1f)\n", ptA.z, ((ptA+ptB+ptC)/3.0).x, ((ptA+ptB+ptC)/3.0).y);
+                    if (messages){
+                        if (std::fabs(p.normal.z) > 0.99) printf("[TPDIAG] thin-reject z=%.1f c=(%.1f,%.1f)\n", ptA.z, ((ptA+ptB+ptC)/3.0).x, ((ptA+ptB+ptC)/3.0).y);
+                    }
 #endif
                     continue;
                 }
@@ -1534,8 +1536,11 @@ namespace fuzzybools
                 if (posA.loc != MeshLocation::BOUNDARY && posB.loc != MeshLocation::BOUNDARY)
                 {
 #if 1 // CLIP_DIAG
-                    if (std::fabs(p.normal.z) > 0.99) printf("[TPDIAG] gate1-reject z=%.1f c=(%.1f,%.1f) posA=%d posB=%d\n",
-                        triCenter.z, triCenter.x, triCenter.y, (int)posA.loc, (int)posB.loc);
+                    if (messages) {
+                        if (std::fabs(p.normal.z) > 0.99) {
+                            printf("[TPDIAG] gate1-reject z=%.1f c=(%.1f,%.1f) posA=%d posB=%d\n", triCenter.z, triCenter.x, triCenter.y, (int)posA.loc, (int)posB.loc);
+                        }
+                    }
 #endif
                     continue;
                 }
@@ -1589,7 +1594,9 @@ namespace fuzzybools
                     if (postA.loc != MeshLocation::BOUNDARY && postB.loc != MeshLocation::BOUNDARY)
                     {
 #if 1 // CLIP_DIAG
-                        if (std::fabs(p.normal.z) > 0.99) printf("[TPDIAG] gate2-reject z=%.1f c=(%.1f,%.1f)\n", triCenter.z, triCenter.x, triCenter.y);
+                        if (messages) {
+                            if (std::fabs(p.normal.z) > 0.99) printf("[TPDIAG] gate2-reject z=%.1f c=(%.1f,%.1f)\n", triCenter.z, triCenter.x, triCenter.y);
+                        }
 #endif
                         continue;
                     }
