@@ -1,5 +1,6 @@
 ﻿#include <queue>
 #include <array>
+#include <cstdio>
 #include <tuple>
 #include <filesystem>
 #include <functional>
@@ -3235,8 +3236,136 @@ void meshCleanup::removeTempFiles() {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Exact-duplicate face passes (stage-A dedup).
+//
+// Both passes canonicalise vertices at watertightDedupTolerance (1e-7, the same
+// precision isMeshWatertight uses for edge accounting) so "duplicate" means
+// coincident at accounting precision, not merely nearby at the loose general
+// tolerance. Duplicated faces are how boolean results manufacture non-manifold
+// edges: every edge of a doubled face gets 2 extra owners.
+// ---------------------------------------------------------------------------
+
+struct DupTriKey {
+	uint32_t a, b, c;
+	bool operator==(const DupTriKey& o) const { return a == o.a && b == o.b && c == o.c; }
+};
+struct DupTriKeyHash {
+	size_t operator()(const DupTriKey& k) const {
+		size_t h = std::hash<uint32_t>()(k.a);
+		h ^= std::hash<uint32_t>()(k.b) + 0x9e3779b9 + (h << 6) + (h >> 2);
+		h ^= std::hash<uint32_t>()(k.c) + 0x9e3779b9 + (h << 6) + (h >> 2);
+		return h;
+	}
+};
+
+// Canonical per-face vertex ids at watertight accounting precision.
+static std::vector<std::array<uint32_t, 3>> BuildCanonicalFaceVids(const Geometry& geom) {
+	constexpr double tol = 1.0E-07; // keep in sync with watertightDedupTolerance in isMeshWatertight
+	const double tolSq = tol * tol;
+	using GridKey = std::tuple<int64_t, int64_t, int64_t>;
+	struct GridKeyHash {
+		size_t operator()(const GridKey& k) const {
+			size_t h = std::hash<int64_t>()(std::get<0>(k));
+			h ^= std::hash<int64_t>()(std::get<1>(k)) + 0x9e3779b9 + (h << 6) + (h >> 2);
+			h ^= std::hash<int64_t>()(std::get<2>(k)) + 0x9e3779b9 + (h << 6) + (h >> 2);
+			return h;
+		}
+	};
+	std::unordered_map<GridKey, std::vector<std::pair<uint32_t, Vec>>, GridKeyHash> vtxGrid;
+	uint32_t nextVid = 0;
+	auto getCell = [&](const Vec& p) -> GridKey {
+		return { static_cast<int64_t>(std::floor(p.x / tol)),
+				static_cast<int64_t>(std::floor(p.y / tol)),
+				static_cast<int64_t>(std::floor(p.z / tol)) };
+	};
+	auto findOrAdd = [&](const Vec& p) -> uint32_t {
+		auto center = getCell(p);
+		for (int dx = -1; dx <= 1; ++dx)
+			for (int dy = -1; dy <= 1; ++dy)
+				for (int dz = -1; dz <= 1; ++dz) {
+					GridKey nk = { std::get<0>(center) + dx,
+									std::get<1>(center) + dy,
+									std::get<2>(center) + dz };
+					auto it = vtxGrid.find(nk);
+					if (it != vtxGrid.end()) {
+						for (auto& [id, pos] : it->second) {
+							Vec d = p - pos;
+							if (glm::dot(d, d) < tolSq) return id;
+						}
+					}
+				}
+		uint32_t id = nextVid++;
+		vtxGrid[center].emplace_back(id, p);
+		return id;
+	};
+	std::vector<std::array<uint32_t, 3>> fvid(geom.numFaces);
+	for (uint32_t i = 0; i < geom.numFaces; i++) {
+		Face f = geom.GetFace(i);
+		fvid[i][0] = findOrAdd(geom.GetPoint(f.i0));
+		fvid[i][1] = findOrAdd(geom.GetPoint(f.i1));
+		fvid[i][2] = findOrAdd(geom.GetPoint(f.i2));
+	}
+	return fvid;
+}
+
+// Filter indexData in place instead of rebuilding via AddFace: AddFace re-filters
+// near-zero faces on its own (computeSafeNormal / toleranceAddFace), which would
+// silently drop slivers beyond the marked set and open new boundary edges. Keeping
+// the original vertexData guarantees the only change is the removal of the marked
+// faces. (Same rationale as the index filter in MeshCleanupBeforeExport.)
+static Geometry FilterDroppedFaces(const Geometry& src, const std::vector<bool>& drop) {
+	Geometry cleaned = src;
+	std::vector<uint32_t> newIndex;
+	std::vector<uint32_t> newPlane;
+	newIndex.reserve(src.indexData.size());
+	newPlane.reserve(src.planeData.size());
+	for (uint32_t i = 0; i < src.numFaces; i++) {
+		if (drop[i]) continue;
+		newIndex.push_back(src.indexData[i * 3 + 0]);
+		newIndex.push_back(src.indexData[i * 3 + 1]);
+		newIndex.push_back(src.indexData[i * 3 + 2]);
+		if (i < src.planeData.size()) {
+			newPlane.push_back(src.planeData[i]);
+		}
+	}
+	cleaned.indexData = std::move(newIndex);
+	cleaned.planeData = std::move(newPlane);
+	cleaned.numFaces = static_cast<uint32_t>(cleaned.indexData.size() / 3);
+	return cleaned;
+}
+
+uint32_t meshCleanup::RemoveExactDuplicateFaces(fuzzybools::Geometry& input) {
+	const uint32_t nFaces = input.numFaces;
+	if (nFaces < 2) return 0;
+
+	auto fvid = BuildCanonicalFaceVids(input);
+	std::vector<bool> drop(nFaces, false);
+	std::unordered_set<DupTriKey, DupTriKeyHash> seen;
+	seen.reserve(nFaces);
+	uint32_t removed = 0;
+	for (uint32_t i = 0; i < nFaces; i++) {
+		uint32_t a = fvid[i][0], b = fvid[i][1], c = fvid[i][2];
+		if (a == b || b == c || c == a) { drop[i] = true; removed++; continue; }
+		// Rotate the smallest vid to the front; winding (cyclic order) is preserved,
+		// so only same-winding copies map to the same key.
+		if (b < a && b < c) { uint32_t t = a; a = b; b = c; c = t; }
+		else if (c < a && c < b) { uint32_t t = c; c = b; b = a; a = t; }
+		if (!seen.insert({ a, b, c }).second) { drop[i] = true; removed++; }
+	}
+	if (removed == 0) return 0;
+	input = FilterDroppedFaces(input, drop);
+	return removed;
+}
+
 // Post-boolean cleanup -- lightweight, subtractive only.
-// Called after each Subtract/Union. Only removes bad faces, never adds.
+// Called after each Subtract/Union. Only removes bad faces, never adds
+// (except the metric-gated coplanar hole patching inside the loop).
+// NOTE: no unconditional dedup here. Mid-chain mutation of results that feed
+// the next boolean destabilises fuzzy-bools outputs (validated in v5_engine1/
+// v5_engine2 runs: downstream open-edge/sliver regressions in 8 files).
+// Exact-duplicate removal runs at BoolProcess entry and exit instead, where it
+// is an idempotent fixed point at chain joints.
 void meshCleanup::PostBooleanOperationMeshCleanup(fuzzybools::Geometry& input) {
 	if (input.numFaces == 0 || input.numFaces > 2000) return;
 	auto infoEntry = isMeshWatertight(input);

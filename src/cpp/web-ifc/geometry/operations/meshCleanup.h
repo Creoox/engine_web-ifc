@@ -51,6 +51,13 @@ namespace meshCleanup
 	uint32_t RemoveThinMembranes(fuzzybools::Geometry& input, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult, double thinThresholdOverride = 0);
 	uint32_t RemoveOpposedEdgeMembranes(fuzzybools::Geometry& input, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult);
 
+	// Stage-A dedup: removes exact same-winding duplicate faces (keeps one copy) and faces whose
+	// vertices collapse at watertight accounting precision (1e-7). The kept surface is identical,
+	// so this is safe to run on operands (BoolProcess ingress) and on chain-exit results. Do NOT
+	// call it on results that feed further booleans mid-chain: fuzzy-bools outputs are chaotically
+	// sensitive to input changes (validated in v5 runs engine1-engine3).
+	uint32_t RemoveExactDuplicateFaces(fuzzybools::Geometry& input);
+
 	void PostBooleanOperationMeshCleanup(fuzzybools::Geometry& input);
 
 	void DumpDebugGeometry(const webifc::geometry::IfcGeometry& webifcGeom, const std::string& filename);

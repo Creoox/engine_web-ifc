@@ -15,6 +15,7 @@
 #include "IfcGeometryProcessor.h"
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <unordered_set>
 #include <glm/gtx/transform.hpp>
 #include "representation/geometry.h"
@@ -2290,9 +2291,69 @@ namespace webifc::geometry
         spdlog::debug("[BoolProcess({})]");
         IfcGeometry finalResult;
 
+        // Operand ingress cleanup (stage 1). Exact same-winding duplicate and
+        // collapsed faces poison inside/outside classification in fuzzy-bools;
+        // removing them keeps the surface identical, so this is always on.
+        // Half-space subtractors are synthetic closed boxes and are skipped.
+        // Dedup and heal are capped at the same 2000-face scale as the
+        // post-boolean repair: the defect evidence lives in small operands, and
+        // per-operand spatial hashing on large real-world meshes costs far more
+        // than it returns (v5 smoke set evidence).
+        for (auto &secondGeom : secondGeoms)
+        {
+            if (secondGeom.halfSpace || secondGeom.numFaces == 0 || secondGeom.numFaces > 2000)
+                continue;
+            const uint32_t removed = meshCleanup::RemoveExactDuplicateFaces(secondGeom);
+            if (removed > 0)
+            {
+#ifdef _DEBUG
+                printf("[CSG_CLEANUP] stage=ingress operand=second removedFaces=%u facesAfter=%u\n", removed, secondGeom.numFaces);
+#endif
+            }
+
+            // Subtractor solidity heal (stage 3, metric-gated): a subtractor in a
+            // DIFFERENCE is intended to be a solid by IFC semantics. If it arrives
+            // GROSSLY open (e.g. a box missing a whole side; open edges >= 25% of
+            // all edges), subtraction leaves membrane sheets in the result. Heal
+            // on a copy and commit ONLY a fully watertight result: a partially
+            // healed subtractor is still broken, just differently, and produces
+            // unpredictable cuts. The ratio gate matches the documented scenario;
+            // v5_export2 evidence: healing mildly-open subtractors (2-12% open)
+            // showed no measurable benefit (test54/54a passed at baseline anyway)
+            // and correlated with a non-manifold regression on test61.
+            if (op == "DIFFERENCE" && secondGeom.numFaces <= 2000)
+            {
+                auto subInfo = meshCleanup::isMeshWatertight(secondGeom);
+                if (!subInfo.watertight && subInfo.numOpenEdges >= 3 && subInfo.numNonManifoldEdges == 0
+                    && subInfo.numOpenEdges * 4 >= subInfo.numTotalEdges)
+                {
+                    fuzzybools::Geometry healedGeom = secondGeom;
+                    meshCleanup::MeshInfo healed = subInfo;
+                    meshCleanup::PatchCoplanarHoles(healedGeom, "ingress-subtractor", subInfo, healed);
+                    if (healed.numOpenEdges == 0 && healed.numNonManifoldEdges == 0)
+                    {
+                        static_cast<fuzzybools::Geometry&>(secondGeom) = std::move(healedGeom);
+#ifdef _DEBUG
+                        printf("[CSG_CLEANUP] stage=subtractor-heal escalated=1 openEdgesBefore=%u openEdgesAfter=0 facesAfter=%u\n", subInfo.numOpenEdges, secondGeom.numFaces);
+#endif
+                    }
+                }
+            }
+        }
+
         for (auto &firstGeom : firstGeoms)
         {
             IfcGeometry firstOperand = firstGeom;
+            if (firstOperand.numFaces > 0 && firstOperand.numFaces <= 2000)
+            {
+                const uint32_t removed = meshCleanup::RemoveExactDuplicateFaces(firstOperand);
+                if (removed > 0)
+                {
+#ifdef _DEBUG
+                    printf("[CSG_CLEANUP] stage=ingress operand=first removedFaces=%u facesAfter=%u\n", removed, firstOperand.numFaces);
+#endif
+                }
+            }
             for (auto &secondGeom : secondGeoms)
             {
                 if (secondGeom.numFaces == 0)
@@ -2380,6 +2441,33 @@ namespace webifc::geometry
 #endif
             }
             finalResult.AddGeometry(firstOperand);
+        }
+
+        // Chain-exit dedup (stage 2): this result feeds either a parent boolean
+        // (nested IFCBOOLEANRESULT chains resolve through _expressIDToGeometry)
+        // or export. Deduping at BoolProcess entry and exit keeps chain joints
+        // clean without perturbing the ops inside a chain; mid-op mutation
+        // destabilises fuzzy-bools results (v5_engine1/v5_engine2 evidence).
+        if (finalResult.numFaces > 0 && finalResult.numFaces <= 2000)
+        {
+            const uint32_t removed = meshCleanup::RemoveExactDuplicateFaces(finalResult);
+            if (removed > 0)
+            {
+#ifdef _DEBUG
+                printf("[CSG_CLEANUP] stage=intermediate escalated=1 pass=chain-exit-dedup removedFaces=%u facesAfter=%u\n", removed, finalResult.numFaces);
+#endif
+            }
+        }
+
+        // Every BoolProcess output is a boolean product by definition. The ops
+        // above can bail (empty operand) or abort (budget) and return operand
+        // data whose mBoolOpCount was never incremented; without the stamp,
+        // export-side CSG-gated cleanup wrongly treats such debris as
+        // as-imported geometry and preserves it (observed in test43##: a
+        // stored all-sheet membrane geometry with mBoolOpCount == 0).
+        if (finalResult.numFaces > 0)
+        {
+            finalResult.mBoolOpCount = std::max(finalResult.mBoolOpCount, 1u);
         }
 
         return finalResult;
