@@ -545,7 +545,12 @@ namespace webifc::geometry
                     flipWinding = true;
                 }
 
-                double d = EXTRUSION_DISTANCE_HALFSPACE_M / _cache.GetLinearScalingFactor();
+                // Unit-size template. BoolProcess rescales half-space subtractors to ~2x the operand
+                // extent (see the secondGeom.halfSpace branch), so it expects a unit box here. Using the
+                // literal extrusion distance (100 m / scale = 1e5 mm) compounds with that rescale into a
+                // ~1e8 mm box; the ~10^5 size disparity vs a normal element overwhelms the fuzzy-bools
+                // tolerance classifier and deletes the entire operand (Hudson wall angled end-cut).
+                double d = 1.0;
 
                 IfcProfile profile;
                 profile.isConvex = false;
@@ -2394,6 +2399,14 @@ namespace webifc::geometry
         spdlog::debug("[BoolProcess({})]");
         IfcGeometry finalResult;
 
+        // Hard wall-clock failsafe for one element's whole boolean chain. The
+        // per-op BooleanBudget bounds a single kernel call (up to minutes), but
+        // an element with hundreds of operands can multiply that into hours.
+        // When the cap trips we keep the partial result and log it -- bounded
+        // time without silently deleting operands up front.
+        const auto boolProcessStart = std::chrono::steady_clock::now();
+        bool boolProcessTimedOut = false;
+
         // Operand ingress cleanup (stage 1). Exact same-winding duplicate and
         // collapsed faces poison inside/outside classification in fuzzy-bools;
         // removing them keeps the surface identical, so this is always on.
@@ -2413,6 +2426,7 @@ namespace webifc::geometry
                 printf("[CSG_CLEANUP] stage=ingress operand=second removedFaces=%u facesAfter=%u\n", removed, secondGeom.numFaces);
 #endif
             }
+            meshCleanup::FlipIfInsideOut(secondGeom);
 
             // Subtractor solidity heal (stage 3, metric-gated): a subtractor in a
             // DIFFERENCE is intended to be a solid by IFC semantics. If it arrives
@@ -2533,6 +2547,23 @@ namespace webifc::geometry
         auto runChain = [&](std::vector<IfcGeometry>& seconds) -> IfcGeometry
         {
         IfcGeometry chainResult;
+        // The disjointness gate below changes more than wall time: in the old
+        // code even a non-touching subtractor re-meshed the first operand
+        // through Normalize, and some small chains depend on that side effect
+        // (test63/63a/64 regressed when gated unconditionally). Engage the
+        // scalability path only where it matters; small chains keep the exact
+        // historical behaviour.
+        const bool largeChain = seconds.size() > 32;
+        // Cached per-subtractor boxes for the disjointness gate below (the
+        // second operands never change inside the chain).
+        std::vector<fuzzybools::AABB> secondBoxes(seconds.size());
+        std::vector<double> secondDiags(seconds.size(), 0.0);
+        for (size_t sb = 0; sb < seconds.size(); ++sb)
+        {
+            if (seconds[sb].halfSpace || seconds[sb].numFaces == 0) continue;
+            secondBoxes[sb] = seconds[sb].GetAABB();
+            secondDiags[sb] = glm::length(secondBoxes[sb].max - secondBoxes[sb].min);
+        }
         for (auto &firstGeom : firstGeoms)
         {
             IfcGeometry firstOperand = firstGeom;
@@ -2545,9 +2576,25 @@ namespace webifc::geometry
                     printf("[CSG_CLEANUP] stage=ingress operand=first removedFaces=%u facesAfter=%u\n", removed, firstOperand.numFaces);
 #endif
                 }
+                meshCleanup::FlipIfInsideOut(firstOperand);
             }
-            for (auto &secondGeom : seconds)
+            fuzzybools::AABB firstBox = firstOperand.GetAABB();
+            double firstDiag = glm::length(firstBox.max - firstBox.min);
+
+
+            for (size_t si = 0; si < seconds.size(); ++si)
             {
+                auto &secondGeom = seconds[si];
+                if (boolProcessTimedOut)
+                {
+                    break;
+                }
+                if (std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - boolProcessStart).count() >= 180)
+                {
+                    boolProcessTimedOut = true;
+                    spdlog::warn("[BoolProcess()] element exceeded 180s boolean wall clock; keeping partial result and skipping remaining operands");
+                    break;
+                }
                 if (secondGeom.numFaces == 0)
                 {
                     spdlog::error("[BoolProcess()] bool aborted due to empty source or target");
@@ -2564,6 +2611,22 @@ namespace webifc::geometry
                     // bail out because we will get strange meshes
                     // if this happens, probably there's an issue parsing the mesh that occurred earlier
                     break;
+                }
+
+                // Dynamic disjointness gate (sequential large chains only):
+                // a subtractor that does not touch the CURRENT first operand
+                // cannot change a DIFFERENCE result; skipping is exact and
+                // avoids the re-mesh noise a no-op kernel pass would add.
+                if (largeChain && op == "DIFFERENCE" && !secondGeom.halfSpace && firstOperand.numFaces > 0)
+                {
+                    const double inflate = 1e-3 * std::max(firstDiag, secondDiags[si]);
+                    fuzzybools::AABB inflated = firstBox;
+                    inflated.min -= glm::dvec3(inflate);
+                    inflated.max += glm::dvec3(inflate);
+                    if (!inflated.intersects(secondBoxes[si]))
+                    {
+                        continue;
+                    }
                 }
 
                 IfcGeometry secondOperand;
@@ -2628,6 +2691,8 @@ namespace webifc::geometry
                 {
                     firstOperand = Union(firstOperand, secondOperand);
                 }
+                firstBox = firstOperand.GetAABB();
+                firstDiag = glm::length(firstBox.max - firstBox.min);
 #ifdef _DEBUG_PRINT
                 std::cout << "[BoolProcess] result.faces=" << firstOperand.numFaces << std::endl;
 #endif
@@ -2645,7 +2710,10 @@ namespace webifc::geometry
         // re-run the chain with the original per-solid operand order and keep
         // whichever result scores better (open edges weigh 1, non-manifold
         // edges weigh 3 -- they are harder to repair downstream).
-        if (batchingApplied && finalResult.numFaces > 0 && finalResult.numFaces <= 20000)
+        // The sequential re-run doubles the whole chain cost; it was built for
+        // small chains (test53d class). Large operand counts keep the batched
+        // result.
+        if (batchingApplied && unbatchedSeconds.size() <= 32 && finalResult.numFaces > 0 && finalResult.numFaces <= 20000)
         {
             auto wiBatched = meshCleanup::isMeshWatertight(finalResult);
             if (wiBatched.numOpenEdges + wiBatched.numNonManifoldEdges > 0)

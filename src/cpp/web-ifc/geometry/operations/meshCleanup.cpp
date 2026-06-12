@@ -3335,6 +3335,30 @@ static Geometry FilterDroppedFaces(const Geometry& src, const std::vector<bool>&
 	return cleaned;
 }
 
+
+uint32_t meshCleanup::FlipIfInsideOut(fuzzybools::Geometry& input)
+{
+	if (input.numFaces == 0) return 0;
+	auto info = isMeshWatertight(input);
+	// Only a closed shell has a well-defined global orientation.
+	if (info.numOpenEdges > 0 || info.numNonManifoldEdges > 0) return 0;
+	double vol6 = 0.0;
+	for (uint32_t i = 0; i < input.numFaces; i++)
+	{
+		fuzzybools::Face f = input.GetFace(i);
+		glm::dvec3 a = input.GetPoint(f.i0);
+		glm::dvec3 b = input.GetPoint(f.i1);
+		glm::dvec3 c = input.GetPoint(f.i2);
+		vol6 += glm::dot(a, glm::cross(b, c));
+	}
+	if (vol6 >= 0.0) return 0;
+	for (uint32_t i = 0; i < input.numFaces; i++)
+	{
+		std::swap(input.indexData[i * 3 + 0], input.indexData[i * 3 + 1]);
+	}
+	return input.numFaces;
+}
+
 uint32_t meshCleanup::RemoveExactDuplicateFaces(fuzzybools::Geometry& input) {
 	const uint32_t nFaces = input.numFaces;
 	if (nFaces < 2) return 0;

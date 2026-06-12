@@ -58,6 +58,14 @@ namespace meshCleanup
 	// sensitive to input changes (validated in v5 runs engine1-engine3).
 	uint32_t RemoveExactDuplicateFaces(fuzzybools::Geometry& input);
 
+	// Orientation heal for boolean operands: a closed shell whose total signed
+	// volume is negative is wound inside-out (inward normals). The fuzzy-bools
+	// classifier derives inside/outside from face winding, so an inside-out
+	// operand inverts every verdict and the boolean output is garbage (Allplan
+	// IFCTRIANGULATEDFACESET walls arrive like this). Flips every triangle and
+	// returns the number flipped; no-op on open or correctly wound meshes.
+	uint32_t FlipIfInsideOut(fuzzybools::Geometry& input);
+
 	void PostBooleanOperationMeshCleanup(fuzzybools::Geometry& input);
 
 	void DumpDebugGeometry(const webifc::geometry::IfcGeometry& webifcGeom, const std::string& filename);
