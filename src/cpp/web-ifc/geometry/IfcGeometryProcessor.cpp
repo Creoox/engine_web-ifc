@@ -2399,22 +2399,16 @@ namespace webifc::geometry
         spdlog::debug("[BoolProcess({})]");
         IfcGeometry finalResult;
 
-        // Hard wall-clock failsafe for one element's whole boolean chain. The
-        // per-op BooleanBudget bounds a single kernel call (up to minutes), but
-        // an element with hundreds of operands can multiply that into hours.
-        // When the cap trips we keep the partial result and log it -- bounded
-        // time without silently deleting operands up front.
+        // Hard wall-clock failsafe for one element's whole boolean chain. The per-op BooleanBudget bounds a single kernel call (up to
+        // minutes), but an element with hundreds of operands can multiply that into hours. When the cap trips we keep the partial result
+        // and log it -- bounded time without silently deleting operands up front.
         const auto boolProcessStart = std::chrono::steady_clock::now();
         bool boolProcessTimedOut = false;
 
-        // Operand ingress cleanup (stage 1). Exact same-winding duplicate and
-        // collapsed faces poison inside/outside classification in fuzzy-bools;
-        // removing them keeps the surface identical, so this is always on.
-        // Half-space subtractors are synthetic closed boxes and are skipped.
-        // Dedup and heal are capped at the same 2000-face scale as the
-        // post-boolean repair: the defect evidence lives in small operands, and
-        // per-operand spatial hashing on large real-world meshes costs far more
-        // than it returns (v5 smoke set evidence).
+        // Operand ingress cleanup (stage 1). Exact same-winding duplicate and collapsed faces poison inside/outside classification in
+        // fuzzy-bools; removing them keeps the surface identical, so this is always on. Half-space subtractors are synthetic closed boxes
+        // and are skipped. Dedup and heal are capped at the same 2000-face scale as the post-boolean repair: the defect evidence lives in
+        // small operands, and per-operand spatial hashing on large real-world meshes costs far more than it returns (v5 smoke set evidence).
         for (auto &secondGeom : secondGeoms)
         {
             if (secondGeom.halfSpace || secondGeom.numFaces == 0 || secondGeom.numFaces > 2000)
@@ -2428,16 +2422,12 @@ namespace webifc::geometry
             }
             meshCleanup::FlipIfInsideOut(secondGeom);
 
-            // Subtractor solidity heal (stage 3, metric-gated): a subtractor in a
-            // DIFFERENCE is intended to be a solid by IFC semantics. If it arrives
-            // GROSSLY open (e.g. a box missing a whole side; open edges >= 25% of
-            // all edges), subtraction leaves membrane sheets in the result. Heal
-            // on a copy and commit ONLY a fully watertight result: a partially
-            // healed subtractor is still broken, just differently, and produces
-            // unpredictable cuts. The ratio gate matches the documented scenario;
-            // v5_export2 evidence: healing mildly-open subtractors (2-12% open)
-            // showed no measurable benefit (test54/54a passed at baseline anyway)
-            // and correlated with a non-manifold regression on test61.
+            // Subtractor solidity heal (stage 3, metric-gated): a subtractor in a DIFFERENCE is intended to be a solid by IFC semantics. If
+            // it arrives GROSSLY open (e.g. a box missing a whole side; open edges >= 25% of all edges), subtraction leaves membrane sheets
+            // in the result. Heal on a copy and commit ONLY a fully watertight result: a partially healed subtractor is still broken, just
+            // differently, and produces unpredictable cuts. The ratio gate matches the documented scenario; v5_export2 evidence: healing
+            // mildly-open subtractors (2-12% open) showed no measurable benefit (test54/54a passed at baseline anyway) and correlated with
+            // a non-manifold regression on test61.
             if (op == "DIFFERENCE" && secondGeom.numFaces <= 2000)
             {
                 auto subInfo = meshCleanup::isMeshWatertight(secondGeom);
@@ -2458,29 +2448,23 @@ namespace webifc::geometry
             }
         }
 
-        // Subtractor chain collapse: A - B1 - B2 - ... - Bn runs the fuzzy-bools
-        // pipeline n times, and every pass re-normalizes the previous result, so
-        // classification damage compounds geometrically along the chain
-        // (measured on test42: 42 open edges after step 2, 506 after step 6).
-        // Mathematically A - B1 - B2 = A - (B1 u B2), and IFC opening solids are
-        // almost always pairwise disjoint, where the union is plain shell
-        // concatenation with no kernel call at all. So: greedily batch the
-        // non-halfspace subtractors into groups whose inflated AABBs are
-        // pairwise disjoint, concatenate each group into one subtractor solid,
-        // and subtract group by group. Overlapping subtractors land in
-        // different groups and keep their sequential semantics; kernel-unioning
-        // them instead was measured to be both slow (test44: 1.1s -> 116s) and
-        // lower quality (test50: membranes 11 -> 38).
+        // Subtractor chain collapse: A - B1 - B2 - ... - Bn runs the fuzzy-bools pipeline n times, and every pass re-normalizes the
+        // previous result, so classification damage compounds geometrically along the chain (measured on test42: 42 open edges after
+        // step 2, 506 after step 6). Mathematically A - B1 - B2 = A - (B1 u B2), and IFC opening solids are almost always pairwise
+        // disjoint, where the union is plain shell concatenation with no kernel call at all. So: greedily batch the non-halfspace
+        // subtractors into groups whose inflated AABBs are pairwise disjoint, concatenate each group into one subtractor solid, and
+        // subtract group by group. Overlapping subtractors land in different groups and keep their sequential semantics; kernel-unioning
+        // them instead was measured to be both slow (test44: 1.1s -> 116s) and lower quality (test50: membranes 11 -> 38).
         std::vector<IfcGeometry> unbatchedSeconds;
         bool batchingApplied = false;
         if (op == "DIFFERENCE" && secondGeoms.size() > 1)
         {
-            std::vector<IfcGeometry> finalSeconds;
+            std::vector<IfcGeometry> finalSecondOperands;
             std::vector<size_t> solidIdx;
             for (size_t i = 0; i < secondGeoms.size(); i++)
             {
                 if (secondGeoms[i].halfSpace || secondGeoms[i].numFaces == 0)
-                    finalSeconds.push_back(secondGeoms[i]);
+                    finalSecondOperands.push_back(secondGeoms[i]);
                 else
                     solidIdx.push_back(i);
             }
@@ -2539,29 +2523,25 @@ namespace webifc::geometry
                     for (size_t m : batch) concat.AddGeometry(secondGeoms[solidIdx[m]]);
                     grouped.push_back(std::move(concat));
                 }
-                finalSeconds.insert(finalSeconds.begin(), std::make_move_iterator(grouped.begin()), std::make_move_iterator(grouped.end()));
-                secondGeoms = std::move(finalSeconds);
+                finalSecondOperands.insert(finalSecondOperands.begin(), std::make_move_iterator(grouped.begin()), std::make_move_iterator(grouped.end()));
+                secondGeoms = std::move(finalSecondOperands);
             }
         }
 
-        auto runChain = [&](std::vector<IfcGeometry>& seconds) -> IfcGeometry
+        auto runChain = [&](std::vector<IfcGeometry>& secondOperands) -> IfcGeometry
         {
         IfcGeometry chainResult;
-        // The disjointness gate below changes more than wall time: in the old
-        // code even a non-touching subtractor re-meshed the first operand
-        // through Normalize, and some small chains depend on that side effect
-        // (test63/63a/64 regressed when gated unconditionally). Engage the
-        // scalability path only where it matters; small chains keep the exact
-        // historical behaviour.
-        const bool largeChain = seconds.size() > 32;
-        // Cached per-subtractor boxes for the disjointness gate below (the
-        // second operands never change inside the chain).
-        std::vector<fuzzybools::AABB> secondBoxes(seconds.size());
-        std::vector<double> secondDiags(seconds.size(), 0.0);
-        for (size_t sb = 0; sb < seconds.size(); ++sb)
+        // The disjointness gate below changes more than wall time: in the old code even a non-touching subtractor re-meshed the first
+        // operand through Normalize, and some small chains depend on that side effect (test63/63a/64 regressed when gated unconditionally).
+        // Engage the scalability path only where it matters; small chains keep the exact historical behaviour.
+        const bool largeChain = secondOperands.size() > 32;
+        // Cached per-subtractor boxes for the disjointness gate below (the second operands never change inside the chain).
+        std::vector<fuzzybools::AABB> secondBoxes(secondOperands.size());
+        std::vector<double> secondDiags(secondOperands.size(), 0.0);
+        for (size_t sb = 0; sb < secondOperands.size(); ++sb)
         {
-            if (seconds[sb].halfSpace || seconds[sb].numFaces == 0) continue;
-            secondBoxes[sb] = seconds[sb].GetAABB();
+            if (secondOperands[sb].halfSpace || secondOperands[sb].numFaces == 0) continue;
+            secondBoxes[sb] = secondOperands[sb].GetAABB();
             secondDiags[sb] = glm::length(secondBoxes[sb].max - secondBoxes[sb].min);
         }
         for (auto &firstGeom : firstGeoms)
@@ -2582,9 +2562,9 @@ namespace webifc::geometry
             double firstDiag = glm::length(firstBox.max - firstBox.min);
 
 
-            for (size_t si = 0; si < seconds.size(); ++si)
+            for (size_t si = 0; si < secondOperands.size(); ++si)
             {
-                auto &secondGeom = seconds[si];
+                auto &secondGeom = secondOperands[si];
                 if (boolProcessTimedOut)
                 {
                     break;
@@ -2613,10 +2593,8 @@ namespace webifc::geometry
                     break;
                 }
 
-                // Dynamic disjointness gate (sequential large chains only):
-                // a subtractor that does not touch the CURRENT first operand
-                // cannot change a DIFFERENCE result; skipping is exact and
-                // avoids the re-mesh noise a no-op kernel pass would add.
+                // Dynamic disjointness gate (sequential large chains only): a subtractor that does not touch the CURRENT first operand
+                // cannot change a DIFFERENCE result; skipping is exact and avoids the re-mesh noise a no-op kernel pass would add.
                 if (largeChain && op == "DIFFERENCE" && !secondGeom.halfSpace && firstOperand.numFaces > 0)
                 {
                     const double inflate = 1e-3 * std::max(firstDiag, secondDiags[si]);
@@ -2704,25 +2682,19 @@ namespace webifc::geometry
 
         finalResult = runChain(secondGeoms);
 
-        // Batched-subtract verification: the disjoint-batch concatenation is a
-        // semantic no-op in exact arithmetic but can interact differently with
-        // the tolerance-based classifier. If the batched result is not clean,
-        // re-run the chain with the original per-solid operand order and keep
-        // whichever result scores better (open edges weigh 1, non-manifold
-        // edges weigh 3 -- they are harder to repair downstream).
-        // The sequential re-run doubles the whole chain cost; it was built for
-        // small chains (test53d class). Large operand counts keep the batched
-        // result.
+        // Batched-subtract verification: the disjoint-batch concatenation is a semantic no-op in exact arithmetic but can interact
+        // differently with the tolerance-based classifier. If the batched result is not clean, re-run the chain with the original
+        // per-solid operand order and keep whichever result scores better (open edges weigh 1, non-manifold edges weigh 3 -- they are
+        // harder to repair downstream). The sequential re-run doubles the whole chain cost; it was built for small chains (test53d class).
+        // Large operand counts keep the batched result.
         if (batchingApplied && unbatchedSeconds.size() <= 32 && finalResult.numFaces > 0 && finalResult.numFaces <= 20000)
         {
             auto wiBatched = meshCleanup::isMeshWatertight(finalResult);
             if (wiBatched.numOpenEdges + wiBatched.numNonManifoldEdges > 0)
             {
                 IfcGeometry seqResult = runChain(unbatchedSeconds);
-                // Full quality score (open + 3*nm + 10*membranes): an edge-only
-                // census picked sequential results full of interior sheets
-                // (test53d: 11 vs 2) because the n-pass chain compounds
-                // membrane debris the census cannot see.
+                // Full quality score (open + 3*nm + 10*membranes): an edge-only census picked sequential results full of interior sheets
+                // (test53d: 11 vs 2) because the n-pass chain compounds membrane debris the census cannot see.
                 const uint64_t scoreBatched = fuzzybools::MeshQualityScore(finalResult);
                 const uint64_t scoreSeq = fuzzybools::MeshQualityScore(seqResult);
                 if (scoreSeq < scoreBatched)
@@ -2732,11 +2704,9 @@ namespace webifc::geometry
             }
         }
 
-        // Chain-exit dedup (stage 2): this result feeds either a parent boolean
-        // (nested IFCBOOLEANRESULT chains resolve through _expressIDToGeometry)
-        // or export. Deduping at BoolProcess entry and exit keeps chain joints
-        // clean without perturbing the ops inside a chain; mid-op mutation
-        // destabilises fuzzy-bools results (v5_engine1/v5_engine2 evidence).
+        // Chain-exit dedup (stage 2): this result feeds either a parent boolean (nested IFCBOOLEANRESULT chains resolve through
+        // _expressIDToGeometry) or export. Deduping at BoolProcess entry and exit keeps chain joints clean without perturbing the ops
+        // inside a chain; mid-op mutation destabilises fuzzy-bools results (v5_engine1/v5_engine2 evidence).
         if (finalResult.numFaces > 0 && finalResult.numFaces <= 2000)
         {
             const uint32_t removed = meshCleanup::RemoveExactDuplicateFaces(finalResult);
@@ -2748,12 +2718,9 @@ namespace webifc::geometry
             }
         }
 
-        // Every BoolProcess output is a boolean product by definition. The ops
-        // above can bail (empty operand) or abort (budget) and return operand
-        // data whose mBoolOpCount was never incremented; without the stamp,
-        // export-side CSG-gated cleanup wrongly treats such debris as
-        // as-imported geometry and preserves it (observed in test43##: a
-        // stored all-sheet membrane geometry with mBoolOpCount == 0).
+        // Every BoolProcess output is a boolean product by definition. The ops above can bail (empty operand) or abort (budget) and return
+        // operand data whose mBoolOpCount was never incremented; without the stamp, export-side CSG-gated cleanup wrongly treats such
+        // debris as as-imported geometry and preserves it (observed in test43##: a stored all-sheet membrane geometry with mBoolOpCount == 0).
         if (finalResult.numFaces > 0)
         {
             finalResult.mBoolOpCount = std::max(finalResult.mBoolOpCount, 1u);
