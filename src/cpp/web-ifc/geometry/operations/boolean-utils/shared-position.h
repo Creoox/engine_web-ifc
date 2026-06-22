@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <set>
 #include <ranges>
+#include <cmath>
 
 #include <glm/glm.hpp>
 
@@ -1460,6 +1461,22 @@ namespace fuzzybools
                 if (newIdx < newToOld.size() && newToOld[newIdx] == SIZE_MAX)
                 {
                     newToOld[newIdx] = oldIdx;
+                }
+            }
+
+            // CDT's spatial locate infinite-loops on non-finite coordinates, and being a
+            // synchronous third-party call no budget deadline check can break it. Non-finite
+            // projected coordinates come from a degenerate plane: a zero-length / non-finite
+            // normal makes MakeBasis produce a NaN basis, and a non-finite plane distance makes
+            // the projection origin NaN -- either way every projected point becomes NaN. Such a
+            // plane has no real area and yields no valid triangles, so skip its triangulation
+            // rather than hang the kernel. Observed on near-coplanar hollow-core-slab cuts
+            // (DLGKF2-WNCSE-Bovenbouw.ifc, element 433835).
+            for (const auto& v : cdt_verts)
+            {
+                if (!std::isfinite(v.x) || !std::isfinite(v.y))
+                {
+                    return;
                 }
             }
 

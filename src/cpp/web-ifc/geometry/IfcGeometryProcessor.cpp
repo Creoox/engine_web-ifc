@@ -2455,7 +2455,7 @@ namespace webifc::geometry
         // subtractors into groups whose inflated AABBs are pairwise disjoint, concatenate each group into one subtractor solid, and
         // subtract group by group. Overlapping subtractors land in different groups and keep their sequential semantics; kernel-unioning
         // them instead was measured to be both slow (test44: 1.1s -> 116s) and lower quality (test50: membranes 11 -> 38).
-        std::vector<IfcGeometry> unbatchedSeconds;
+        std::vector<IfcGeometry> unbatchedSecondOperands;
         bool batchingApplied = false;
         if (op == "DIFFERENCE" && secondGeoms.size() > 1)
         {
@@ -2509,7 +2509,7 @@ namespace webifc::geometry
                 if (anyGrouping)
                 {
                     batchingApplied = true;
-                    unbatchedSeconds = secondGeoms;
+                    unbatchedSecondOperands = secondGeoms;
                 }
                 std::vector<IfcGeometry> grouped;
                 for (auto& batch : batches)
@@ -2687,12 +2687,12 @@ namespace webifc::geometry
         // per-solid operand order and keep whichever result scores better (open edges weigh 1, non-manifold edges weigh 3 -- they are
         // harder to repair downstream). The sequential re-run doubles the whole chain cost; it was built for small chains (test53d class).
         // Large operand counts keep the batched result.
-        if (batchingApplied && unbatchedSeconds.size() <= 32 && finalResult.numFaces > 0 && finalResult.numFaces <= 20000)
+        if (batchingApplied && unbatchedSecondOperands.size() <= 32 && finalResult.numFaces > 0 && finalResult.numFaces <= 20000)
         {
             auto wiBatched = meshCleanup::isMeshWatertight(finalResult);
             if (wiBatched.numOpenEdges + wiBatched.numNonManifoldEdges > 0)
             {
-                IfcGeometry seqResult = runChain(unbatchedSeconds);
+                IfcGeometry seqResult = runChain(unbatchedSecondOperands);
                 // Full quality score (open + 3*nm + 10*membranes): an edge-only census picked sequential results full of interior sheets
                 // (test53d: 11 vs 2) because the n-pass chain compounds membrane debris the census cannot see.
                 const uint64_t scoreBatched = fuzzybools::MeshQualityScore(finalResult);
