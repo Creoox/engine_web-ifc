@@ -2577,7 +2577,7 @@ namespace webifc::geometry
                 }
                 if (secondGeom.numFaces == 0)
                 {
-                    spdlog::error("[BoolProcess()] bool aborted due to empty source or target");
+                    spdlog::warn("[BoolProcess()] bool aborted due to empty source or target");
 
                     // bail out because we will get strange meshes
                     // if this happens, probably there's an issue parsing the mesh that occurred earlier
@@ -2586,7 +2586,7 @@ namespace webifc::geometry
 
                 if (firstOperand.numFaces == 0 && op != "UNION")
                 {
-                    spdlog::error("[BoolProcess()] bool aborted due to empty source or target");
+                    spdlog::warn("[BoolProcess()] bool aborted due to empty source or target");
 
                     // bail out because we will get strange meshes
                     // if this happens, probably there's an issue parsing the mesh that occurred earlier
