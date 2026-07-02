@@ -52,9 +52,17 @@ namespace webifc::geometry
 
     static fuzzybools::BooleanBudget MakeBooleanBudget(const IfcGeometrySettings& settings, uint64_t inputFaces)
     {
+        double budgetSeconds = ComputeBooleanBudgetSeconds(settings, inputFaces);
+        // Diagnostic-only override (opt-in): force the per-op budget so a timing probe can let a
+        // pathological op run to completion and report where the time goes.
+        if (const char* overrideSeconds = getenv("CXDIAG_CSG_BUDGET_S"))
+        {
+            const double parsed = atof(overrideSeconds);
+            if (parsed > 0.0) budgetSeconds = parsed;
+        }
         return fuzzybools::BooleanBudget::FromSeconds(
             inputFaces,
-            ComputeBooleanBudgetSeconds(settings, inputFaces),
+            budgetSeconds,
             IfcGeometrySettings::CSG_INPROGRESS_FACE_FACTOR);
     }
 
@@ -2835,14 +2843,34 @@ namespace webifc::geometry
                 secondOperand.numFaces,
                 ElapsedMilliseconds(startedAt),
                 e.what());
+            if (getenv("CXDIAG_CSG"))
+            {
+                // The spdlog sink is redirected by cxconverter and these warnings never reach the
+                // console or the suite logs; echo aborts to stderr when CSG diagnostics are on.
+                std::cerr << "DIAG: Subtract ABORT entity=" << firstOperand.entityID
+                          << " facesA=" << firstOperand.numFaces << " facesB=" << secondOperand.numFaces
+                          << " elapsedMs=" << ElapsedMilliseconds(startedAt) << " reason=\"" << e.what() << "\"" << std::endl;
+            }
             return firstOperand;
         }
+        const int64_t kernelMs = ElapsedMilliseconds(startedAt);
 
         if (inputFaces > 0 && result.numFaces > kPathologicalFactor * inputFaces)
         {
             CheapCollapseAfterBoolean(result);
         }
         meshCleanup::PostBooleanOperationMeshCleanup(result);
+        if (getenv("CXDIAG_CSG"))
+        {
+            const int64_t totalMs = ElapsedMilliseconds(startedAt);
+            if (totalMs > 1000)
+            {
+                std::cerr << "DIAG: Subtract SLOW entity=" << firstOperand.entityID
+                          << " facesA=" << firstOperand.numFaces << " facesB=" << secondOperand.numFaces
+                          << " resultFaces=" << result.numFaces << " kernelMs=" << kernelMs
+                          << " cleanupMs=" << (totalMs - kernelMs) << std::endl;
+            }
+        }
         IfcGeometry out;
         static_cast<fuzzybools::Geometry&>(out) = std::move(result);
         return out;

@@ -6,6 +6,8 @@
 #include <set>
 #include <ranges>
 #include <cmath>
+#include <cstdlib>
+#include <iostream>
 
 #include <glm/glm.hpp>
 
@@ -1476,6 +1478,21 @@ namespace fuzzybools
             {
                 if (!std::isfinite(v.x) || !std::isfinite(v.y))
                 {
+                    if (getenv("CXDIAG_CSG"))
+                    {
+                        // Attribute the non-finite coordinates to their source: a degenerate plane
+                        // (basis/origin NaN poisons every projection) or non-finite 3D points.
+                        size_t badPoints = 0;
+                        for (auto& pointId : pointsOnPlane)
+                        {
+                            const glm::dvec3& loc = points[pointId].location3D;
+                            if (!std::isfinite(loc.x) || !std::isfinite(loc.y) || !std::isfinite(loc.z)) badPoints++;
+                        }
+                        std::cerr << "DIAG: TP NaN-skip plane=" << p.id << " refPlane=" << p.refPlane
+                                  << " n=(" << p.normal.x << "," << p.normal.y << "," << p.normal.z << ") d=" << p.distance
+                                  << " pointsOnPlane=" << pointsOnPlane.size() << " nonFinite3DPoints=" << badPoints
+                                  << " verts=" << cdt_verts.size() << std::endl;
+                    }
                     return;
                 }
             }
@@ -1626,7 +1643,16 @@ namespace fuzzybools
                 //    continue;
                 //}
 
-                // TODO: why is this swapped? winding doesnt matter much, but still
+                // Emission winding: the (ptB, ptA, ptC) swap compensates the uniformly left-handed
+                // plane basis (right = cross(left, up) makes left x right = -up), so emitted
+                // fragments follow the shared plane's normal.
+                // Session 8 measured-and-reverted: orienting each fragment by the boundary-probe
+                // normal (posA/posB) instead fixed the coplanar backfacing-strip class at its
+                // source (test61 slm 100 -> 39, suite nm 10 -> 2) but the single-probe normal is
+                // too noisy as an oracle -- 8 other files regressed (test51 slm 11 -> 29, test62
+                // opens 0 -> 79, suite pass 25 -> 23). A reliable per-fragment surface reference
+                // (e.g. the operand face id from the BVH boundary hit instead of one jittered ray)
+                // is the exact next lever for this class.
                 geom.AddFace(ptB, ptA, ptC, p.refPlane);
                 budget.CheckFaceCount(geom.numFaces, "Normalize TriangulatePlane output");
 
@@ -1773,25 +1799,21 @@ namespace fuzzybools
         distances (projected onto lineA) are sorted and deduplicated.
         Returns a sorted vector of distances along lineA.
     */
-    inline std::vector<double> ComputeInitialIntersections(Plane &p, SharedPosition &sp, const Line &lineA, const BooleanBudget& budget)
+    inline std::vector<double> ComputeInitialIntersections(Plane &p, SharedPosition &sp, const Line &lineA, const BooleanBudget& budget, double maxPointRadius)
     {
         budget.CheckDeadline("Normalize ComputeInitialIntersections start");
 
-        double size = 1.0E+08; // TODO: this is bad
+        // The ray along lineA only has to span the whole geometry. The historical code scanned
+        // ALL sp.points on EVERY call to find the farthest point from lineA.origin -- an
+        // O(points) pass per executed plane pair that dominated Normalize on high-plane-count
+        // operands (hollow-core slab: the whole 18.5 s budget burned in this scan). The caller
+        // now passes the point-cloud radius (computed once per Normalize); together with
+        // |lineA.origin| it upper-bounds the farthest point from the ray origin. The 1e4 floor
+        // reproduces the historical minimum (the old scan seeded its max with 1e8 distance^2),
+        // so models below that scale get the exact same ray span as before.
+        const double size = std::max(1.0E+04, 2.0 * (maxPointRadius + glm::length(lineA.origin)));
 
         uint64_t iteration = 0;
-        for (auto &point : sp.points)
-        {
-            if ((iteration++ & 1023ULL) == 0)
-            {
-                budget.CheckDeadline("Normalize ComputeInitialIntersections points");
-            }
-
-            const auto d2 = glm::distance2(lineA.origin, point.location3D);
-            size = std::max(size, d2);
-        }
-
-        size = std::sqrt(size);
 
         auto Astart = lineA.origin + lineA.direction * (size * 2);
         auto Aend = lineA.origin - lineA.direction * (size * 2);
@@ -2127,6 +2149,24 @@ namespace fuzzybools
             AddLineLineIsects(plane, sp, budget);
         }
 
+        // Gated diagnostics (CXDIAG_CSG): phase stopwatch + pair-loop counters. The budget
+        // timeout only names the phase whose deadline check happened to fire; these numbers
+        // attribute the real cost.
+        const bool normDiag = getenv("CXDIAG_CSG") != nullptr;
+        const auto tPairs0 = std::chrono::steady_clock::now();
+        size_t dPairsAabbSkip = 0, dPairsParallelSkip = 0, dPairsExec = 0, dPairsSegments = 0;
+
+        // Point-cloud radius for ComputeInitialIntersections ray spans, computed once instead
+        // of the historical per-call scan over all shared points (see the comment there).
+        // Points created later (segment intersections) lie within the existing cloud up to
+        // tolerance; the 2x margin in the per-call bound covers them.
+        double maxPointRadius2 = 0.0;
+        for (auto &point : sp.points)
+        {
+            maxPointRadius2 = std::max(maxPointRadius2, glm::length2(point.location3D));
+        }
+        const double maxPointRadius = std::sqrt(maxPointRadius2);
+
         // intersect planes
         // Inner loop starts at planeAIndex+1: each unordered pair {A,B} is processed
         // exactly once. AddSegments is called on both planes inside every iteration,
@@ -2151,6 +2191,7 @@ namespace fuzzybools
 
                 if (!planeA.aabb.intersects(planeB.aabb))
                 {
+                    dPairsAabbSkip++;
                     continue;
                 }
 
@@ -2161,8 +2202,10 @@ namespace fuzzybools
                 if (std::fabs(glm::dot(planeA.normal, planeB.normal)) > 1.0 - EPS_BIG)
                 {
                     // parallel planes, don't care
+                    dPairsParallelSkip++;
                     continue;
                 }
+                dPairsExec++;
 
                 // calculate plane intersection line
                 auto result = PlanePlaneIsect(planeA.normal, planeA.distance, planeB.normal, planeB.distance);
@@ -2195,8 +2238,8 @@ namespace fuzzybools
                 }
 
                 // get all intersection points with the shared line and both planes
-                auto isectA = ComputeInitialIntersections(planeA, sp, intersectionLine, budget);
-                auto isectB = ComputeInitialIntersections(planeB, sp, intersectionLine, budget);
+                auto isectA = ComputeInitialIntersections(planeA, sp, intersectionLine, budget, maxPointRadius);
+                auto isectB = ComputeInitialIntersections(planeB, sp, intersectionLine, budget, maxPointRadius);
 
                 // from these, figure out the shared segments on the current line produced by these two planes
                 auto segments = sp.BuildSegments(isectA, isectB);
@@ -2208,11 +2251,13 @@ namespace fuzzybools
                 }
                 else
                 {
+                    dPairsSegments++;
                     AddSegments(planeA, sp, intersectionLine, segments, budget);
                     AddSegments(planeB, sp, intersectionLine, segments, budget);
                 }
             }
         }
+        const auto tPairs1 = std::chrono::steady_clock::now();
 
         for (auto &plane : sp.planes)
         {
@@ -2223,6 +2268,7 @@ namespace fuzzybools
 
             AddLineLineIsects(plane, sp, budget);
         }
+        const auto tLineIsects1 = std::chrono::steady_clock::now();
 
         for (auto &p : sp.points)
         {
@@ -2243,6 +2289,25 @@ namespace fuzzybools
                     sp.AddRefPlaneToPoint(p.id, plane.id);
                 }
             }
+        }
+        if (normDiag)
+        {
+            const auto tRefs1 = std::chrono::steady_clock::now();
+            auto ms = [](std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b)
+            { return std::chrono::duration_cast<std::chrono::milliseconds>(b - a).count(); };
+            size_t totalLines = 0, maxLines = 0, totalSegs = 0;
+            for (auto& pl : sp.planes)
+            {
+                totalLines += pl.lines.size();
+                maxLines = std::max(maxLines, pl.lines.size());
+                for (auto& ln : pl.lines) totalSegs += ln.GetSegments().size();
+            }
+            std::cerr << "DIAG: Normalize planes=" << sp.planes.size() << " points=" << sp.points.size()
+                      << " pairsExec=" << dPairsExec << " pairsSeg=" << dPairsSegments
+                      << " aabbSkip=" << dPairsAabbSkip << " parSkip=" << dPairsParallelSkip
+                      << " lines(total/max)=" << totalLines << "/" << maxLines << " segs=" << totalSegs
+                      << " pairMs=" << ms(tPairs0, tPairs1) << " lineIsectMs=" << ms(tPairs1, tLineIsects1)
+                      << " refsMs=" << ms(tLineIsects1, tRefs1) << std::endl;
         }
 
         // from the inserted geometries, all lines planes and points are now merged into a single set of shared planes lines and points
