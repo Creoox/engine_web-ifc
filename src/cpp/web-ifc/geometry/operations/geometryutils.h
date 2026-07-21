@@ -857,13 +857,15 @@ namespace webifc::geometry
 						glm::dvec3 b = matrix * glm::dvec4(newMeshGeom.GetPoint(f.i1), 1);
 						glm::dvec3 c = matrix * glm::dvec4(newMeshGeom.GetPoint(f.i2), 1);
 
+						// Keep degenerate faces: this is a copy, and dropping slivers here
+						// tears watertight shells open (see AddFaceKeepDegenerate).
 						if (transformationBreaksWinding)
 						{
-							newGeom.AddFace(b, a, c);
+							newGeom.AddFaceKeepDegenerate(b, a, c);
 						}
 						else
 						{
-							newGeom.AddFace(a, b, c);
+							newGeom.AddFaceKeepDegenerate(a, b, c);
 						}
 					}
 
@@ -894,13 +896,15 @@ namespace webifc::geometry
 					glm::dvec3 b = matrix * glm::dvec4(sourceGeom.GetPoint(f.i1), 1);
 					glm::dvec3 c = matrix * glm::dvec4(sourceGeom.GetPoint(f.i2), 1);
 
+					// Keep degenerate faces: this is a copy, and dropping slivers here
+					// tears watertight shells open (see AddFaceKeepDegenerate).
 					if (transformationBreaksWinding)
 					{
-						newGeom.AddFace(b, a, c);
+						newGeom.AddFaceKeepDegenerate(b, a, c);
 					}
 					else
 					{
-						newGeom.AddFace(a, b, c);
+						newGeom.AddFaceKeepDegenerate(a, b, c);
 					}
 				}
 

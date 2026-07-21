@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include <algorithm>
 #include <glm/glm.hpp>
 
 #include "math.h"
@@ -150,6 +151,23 @@ namespace fuzzybools
 			AddFace(numPoints - 3, numPoints - 2, numPoints - 1, pId);
 		}
 
+		// Copy-faithful variant: keeps zero-area (degenerate) triangles instead of dropping
+		// them. Copy operations (flatten transform, batch concatenation) must not change the
+		// face set -- the direct triangulation path (indexed AddFace) keeps degenerates, and
+		// silently dropping them in copies tears watertight shells into open T-junction seams
+		// (test61 subtractor class). The kernel already skips degenerate faces internally.
+		inline void AddFaceKeepDegenerate(const glm::dvec3& a, const glm::dvec3& b, const glm::dvec3& c, uint32_t pId = UINT32_MAX)
+		{
+			glm::dvec3 normal(0.0);
+			computeSafeNormal(a, b, c, normal, toleranceAddFace);
+
+			AddPoint(a, normal);
+			AddPoint(b, normal);
+			AddPoint(c, normal);
+
+			AddFace(numPoints - 3, numPoints - 2, numPoints - 1, pId);
+		}
+
 		inline void AddFace(uint32_t a, uint32_t b, uint32_t c, uint32_t pId = UINT32_MAX)
 		{
 			//			indexData.reserve((numFaces + 1) * 3);  // TODO: check if this is faster
@@ -226,17 +244,18 @@ namespace fuzzybools
 			vertexData[index * VERTEX_FORMAT_SIZE_FLOATS + 2] = z;
 		}
 
-		// Merge another geometry into this one. Face vertices are re-added
-		// through AddFace so any zero-area faces are filtered the same way
-		// as during direct construction. The destination preserves the
-		// highest mBoolOpCount so the CSG provenance survives merges.
+		// Merge another geometry into this one. The face set is copied verbatim
+		// (including zero-area faces): dropping them here tore watertight shells
+		// into open seams when operands were concatenated for batched subtraction.
+		// The destination preserves the highest mBoolOpCount so the CSG
+		// provenance survives merges.
 		inline void AddGeometry(const Geometry& other)
 		{
 			mBoolOpCount = std::max(mBoolOpCount, other.mBoolOpCount);
 			for (uint32_t i = 0; i < other.numFaces; i++)
 			{
 				Face f = other.GetFace(i);
-				AddFace(other.GetPoint(f.i0), other.GetPoint(f.i1), other.GetPoint(f.i2), UINT32_MAX);
+				AddFaceKeepDegenerate(other.GetPoint(f.i0), other.GetPoint(f.i1), other.GetPoint(f.i2), UINT32_MAX);
 			}
 			// Plane table: preserve the offset bimGeometry::AddGeometry used.
 			uint32_t planeDataOffset = static_cast<uint32_t>(planes.size());
@@ -268,20 +287,11 @@ namespace fuzzybools
 			return p.id;
 		}
 
-		// Planar-refit pass: classify every face to a plane and pull its vertices toward that plane. Iterates _PLANE_REFIT_ITERATIONS times.
-		// This replaces the bim-geometry implementation verbatim.
+		// Classify every face to a (merged) plane and build the face->plane table. Vertices are
+		// never moved (see the NOTE inside). Iterates _PLANE_REFIT_ITERATIONS times.
 		inline void buildPlanes()
 		{
 			if (hasPlanes) return;
-
-			std::vector<double> storedVertexData = vertexData;
-			auto GetStoredPoint = [&](size_t index) -> glm::dvec3
-			{
-				return glm::dvec3(
-					storedVertexData[index * VERTEX_FORMAT_SIZE_FLOATS + 0],
-					storedVertexData[index * VERTEX_FORMAT_SIZE_FLOATS + 1],
-					storedVertexData[index * VERTEX_FORMAT_SIZE_FLOATS + 2]);
-			};
 
 			for (uint32_t r = 0; r < _PLANE_REFIT_ITERATIONS; r++)
 			{
@@ -318,40 +328,16 @@ namespace fuzzybools
 					}
 				}
 
-				for (size_t i = 0; i < numFaces; i++)
-				{
-					Face f = GetFace(i);
-					glm::dvec3 a = GetPoint(f.i0);
-					glm::dvec3 b = GetPoint(f.i1);
-					glm::dvec3 c = GetPoint(f.i2);
-					if (f.pId != -1)
-					{
-						SimplePlane p = planes[f.pId];
-						double da = p.distance - glm::dot(p.normal, a - centroid);
-						double db = p.distance - glm::dot(p.normal, b - centroid);
-						double dc = p.distance - glm::dot(p.normal, c - centroid);
-
-						glm::dvec3 va = a + p.normal * da;
-						glm::dvec3 vb = b + p.normal * db;
-						glm::dvec3 vc = c + p.normal * dc;
-
-						glm::dvec3 dsa = GetStoredPoint(f.i0) - va;
-						glm::dvec3 dsb = GetStoredPoint(f.i1) - vb;
-						glm::dvec3 dsc = GetStoredPoint(f.i2) - vc;
-
-						double fa = glm::length(dsa) / reconstructTolerance;
-						double fb = glm::length(dsb) / reconstructTolerance;
-						double fc = glm::length(dsc) / reconstructTolerance;
-
-						if (fa > 1) { fa = glm::length(dsa) / fa; dsa = glm::normalize(dsa) * fa; va = va + dsa; }
-						if (fb > 1) { fb = glm::length(dsb) / fb; dsb = glm::normalize(dsb) * fb; vb = vb + dsb; }
-						if (fc > 1) { fc = glm::length(dsc) / fc; dsc = glm::normalize(dsc) * fc; vc = vc + dsc; }
-
-						SetPoint(va.x, va.y, va.z, f.i0);
-						SetPoint(vb.x, vb.y, vb.z, f.i1);
-						SetPoint(vc.x, vc.y, vc.z, f.i2);
-					}
-				}
+				// NOTE: the historical "planar refit" vertex-snapping that lived here was removed.
+				// It pulled every face's PRIVATE copies of its corners onto that face's own merged
+				// plane, so copies of one shared vertex drifted up to the plane-merge tolerance
+				// apart -- tearing watertight operands into open T-junction seams before every
+				// boolean (test61 class: closed chain intermediates re-measured with hundreds of
+				// open edges after buildPlanes). Position-consistent variants (per-position plane
+				// intersection projection, with pruning or a trust region) were measured as well:
+				// every mutation of the operand vertices redraws fragment-classification luck on
+				// the chaos-sensitive suite files, and none beat simply not moving vertices at
+				// all. The kernel only needs the face->plane table; vertices stay untouched.
 			}
 
 			for (size_t i = 0; i < numFaces; i++)

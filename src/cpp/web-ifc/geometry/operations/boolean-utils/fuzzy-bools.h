@@ -1,5 +1,9 @@
 #pragma once
 
+#include <cstdlib>
+#include <fstream>
+#include <string>
+
 #include "boolean-budget.h"
 #include "geometry.h"
 #include "shared-position.h"
@@ -32,6 +36,24 @@ namespace fuzzybools
 
 		auto geom = Normalize(A, B, sp, false, budget);
 		budget.CheckFaceCount(geom.numFaces, "Subtract Normalize");
+
+		if (const char* dumpDir = std::getenv("CXDIAG_CSG_NORM_DUMP"))
+		{
+			static int normDumpCounter = 0;
+			std::string path = std::string(dumpDir) + "/norm" + std::to_string(normDumpCounter++) + ".obj";
+			std::ofstream out(path);
+			out.precision(17);
+			for (uint32_t i = 0; i < geom.numPoints; i++)
+			{
+				const glm::dvec3 p = geom.GetPoint(i);
+				out << "v " << p.x << " " << p.y << " " << p.z << "\n";
+			}
+			for (uint32_t i = 0; i < geom.numFaces; i++)
+			{
+				const Face f = geom.GetFace(i);
+				out << "f " << (f.i0 + 1) << " " << (f.i1 + 1) << " " << (f.i2 + 1) << "\n";
+			}
+		}
 
 #ifdef CSG_DEBUG_OUTPUT
 //	DumpGeometry(geom, L"Post-normalize.obj");

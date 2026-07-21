@@ -153,7 +153,9 @@ namespace webifc::geometry {
 				double ccz = glm::dot(trans[2], glm::dvec4(c - origin, 1)) * scz;
 				c = origin + glm::dvec3(ccx * trans[0]) + glm::dvec3(ccy * trans[1]) + glm::dvec3(ccz * trans[2]);
 			}
-			AddFace(a, b, c);
+			// Copy operation: keep degenerate faces, dropping them tears watertight
+			// shells open (see fuzzybools::Geometry::AddFaceKeepDegenerate).
+			AddFaceKeepDegenerate(a, b, c);
 		}
 		AddPart(geom);
 	}
@@ -167,7 +169,7 @@ namespace webifc::geometry {
 			glm::dvec3 a = geom.GetPoint(f.i0);
 			glm::dvec3 b = geom.GetPoint(f.i1);
 			glm::dvec3 c = geom.GetPoint(f.i2);
-			AddFace(a, b, c);
+			AddFaceKeepDegenerate(a, b, c);
 		}
 	}
 }

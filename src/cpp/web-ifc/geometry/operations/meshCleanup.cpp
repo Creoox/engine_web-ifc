@@ -586,7 +586,7 @@ uint32_t meshCleanup::RemoveDegeneratedTriangles(Geometry& workingMesh, std::str
 // edge lies on another face's surface without topological connection.
 // ---------------------------------------------------------------
 uint32_t meshCleanup::ResolveTJunctions(Geometry& geom, std::string step,
-	const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult) {
+	const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult, double tolOverride) {
 	const uint32_t nFaces = geom.numFaces;
 	if (nFaces == 0) {
 		meshInfoResult = meshInfoInput;
@@ -599,7 +599,7 @@ uint32_t meshCleanup::ResolveTJunctions(Geometry& geom, std::string step,
 	}
 
 	// -- vertex deduplication (same spatial-hash pattern) --
-	const double cellSize = toleranceVectorEquality;
+	const double cellSize = tolOverride > 0.0 ? tolOverride : toleranceVectorEquality;
 	const double cellSizeSq = cellSize * cellSize;
 
 	using GridKey = std::tuple<int64_t, int64_t, int64_t>;
@@ -1141,7 +1141,227 @@ uint32_t meshCleanup::RemoveTinyBoundaryBridgeFaces(Geometry& geom, std::string 
 
 // Patch coplanar holes: find boundary-edge loops and fill them with earcut triangulation 
 // when all loop vertices are coplanar.
-uint32_t meshCleanup::PatchCoplanarHoles(Geometry& geom, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult) {
+uint32_t meshCleanup::FillPlanarBoundaryLoops(Geometry& geom, std::string step,
+	const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult, double weldTol) {
+	meshInfoResult = meshInfoInput;
+	const uint32_t nFaces = geom.numFaces;
+	if (nFaces == 0 || meshInfoInput.numOpenEdges == 0) {
+		return 0;
+	}
+
+	const double cellSize = weldTol > 0.0 ? weldTol : toleranceVectorEquality;
+	const double cellSizeSq = cellSize * cellSize;
+
+	// -- vertex weld (same spatial-hash pattern as the other passes) --
+	using GridKey = std::tuple<int64_t, int64_t, int64_t>;
+	struct GridKeyHash {
+		size_t operator()(const GridKey& k) const {
+			size_t h = std::hash<int64_t>()(std::get<0>(k));
+			h ^= std::hash<int64_t>()(std::get<1>(k)) + 0x9e3779b9 + (h << 6) + (h >> 2);
+			h ^= std::hash<int64_t>()(std::get<2>(k)) + 0x9e3779b9 + (h << 6) + (h >> 2);
+			return h;
+		}
+	};
+	std::unordered_map<GridKey, std::vector<std::pair<uint32_t, Vec>>, GridKeyHash> vtxGrid;
+	std::vector<Vec> canonPos;
+	auto findOrAdd = [&](const Vec& p) -> uint32_t {
+		GridKey center = { static_cast<int64_t>(std::floor(p.x / cellSize)),
+						static_cast<int64_t>(std::floor(p.y / cellSize)),
+						static_cast<int64_t>(std::floor(p.z / cellSize)) };
+		for (int dx = -1; dx <= 1; ++dx)
+			for (int dy = -1; dy <= 1; ++dy)
+				for (int dz = -1; dz <= 1; ++dz) {
+					GridKey nk = { std::get<0>(center) + dx,
+									std::get<1>(center) + dy,
+									std::get<2>(center) + dz };
+					auto it = vtxGrid.find(nk);
+					if (it == vtxGrid.end()) continue;
+					for (auto& [id, pos] : it->second) {
+						Vec d = p - pos;
+						if (glm::dot(d, d) < cellSizeSq) return id;
+					}
+				}
+		uint32_t id = static_cast<uint32_t>(canonPos.size());
+		canonPos.push_back(p);
+		vtxGrid[center].emplace_back(id, p);
+		return id;
+	};
+
+	// -- directed edge census: boundary edges keep their owner's traversal direction
+	// and their EXACT endpoint positions (the weld only provides connectivity; the
+	// fill must reuse exact positions so its edges pair with the existing mesh at
+	// full precision, not just at weld tolerance) --
+	struct EdgeUse { uint32_t count = 0; uint32_t fromVid = 0; Vec fromPos{ 0.0 }; Vec toPos{ 0.0 }; };
+	std::unordered_map<uint64_t, EdgeUse> edgeUse;
+	auto ukey = [](uint32_t a, uint32_t b) -> uint64_t {
+		return (static_cast<uint64_t>(std::min(a, b)) << 32) | static_cast<uint64_t>(std::max(a, b));
+	};
+	for (uint32_t i = 0; i < nFaces; i++) {
+		Face f = geom.GetFace(i);
+		const Vec pos[3] = { geom.GetPoint(f.i0), geom.GetPoint(f.i1), geom.GetPoint(f.i2) };
+		const uint32_t vid[3] = { findOrAdd(pos[0]), findOrAdd(pos[1]), findOrAdd(pos[2]) };
+		for (int e = 0; e < 3; e++) {
+			uint32_t a = vid[e], b = vid[(e + 1) % 3];
+			if (a == b) continue;
+			auto& u = edgeUse[ukey(a, b)];
+			if (u.count == 0) { u.fromVid = a; u.fromPos = pos[e]; u.toPos = pos[(e + 1) % 3]; }
+			++u.count;
+		}
+	}
+	std::unordered_map<uint32_t, std::vector<uint32_t>> boundaryAdj;
+	std::set<std::pair<uint32_t, uint32_t>> boundaryEdges;
+	for (auto& [k, u] : edgeUse) {
+		if (u.count != 1) continue;
+		uint32_t a = static_cast<uint32_t>(k >> 32), b = static_cast<uint32_t>(k & 0xffffffffu);
+		boundaryAdj[a].push_back(b);
+		boundaryAdj[b].push_back(a);
+		boundaryEdges.insert({ std::min(a, b), std::max(a, b) });
+	}
+	if (boundaryEdges.empty()) return 0;
+
+	// -- trace simple closed loops through degree-2 vertices only --
+	uint32_t filled = 0;
+	std::set<std::pair<uint32_t, uint32_t>> usedEdges;
+	for (const auto& seed : boundaryEdges) {
+		if (usedEdges.count(seed)) continue;
+		if (boundaryAdj[seed.first].size() != 2 || boundaryAdj[seed.second].size() != 2) continue;
+
+		std::vector<uint32_t> loop = { seed.first, seed.second };
+		bool closed = false;
+		while (loop.size() <= 64) {
+			uint32_t cur = loop.back(), prev = loop[loop.size() - 2];
+			auto& nbs = boundaryAdj[cur];
+			if (nbs.size() != 2) break;
+			uint32_t nxt = nbs[0] == prev ? nbs[1] : nbs[0];
+			if (nxt == loop.front()) { closed = true; break; }
+			bool revisit = false;
+			for (uint32_t v : loop) { if (v == nxt) { revisit = true; break; } }
+			if (revisit) break;
+			loop.push_back(nxt);
+		}
+		if (!closed || loop.size() < 3) continue;
+
+		// Orientation: the completing surface must traverse each boundary edge OPPOSITE
+		// to the existing owner face. Check the first loop edge against the recorded owner
+		// traversal and reverse the loop when it matches the owner's direction.
+		{
+			auto& firstUse = edgeUse[ukey(loop[0], loop[1])];
+			if (firstUse.fromVid == loop[0]) {
+				std::reverse(loop.begin(), loop.end());
+			}
+		}
+
+		// Build the fill polygon from EXACT boundary-edge endpoints. The weld only
+		// provided connectivity; the two sides of a slit-shaped gash can sit up to the
+		// weld tolerance apart, and reusing one representative position per welded
+		// cluster would leave every original edge without an exact partner. Walking the
+		// edges' own endpoints keeps each existing boundary edge exactly matched; the
+		// sub-tolerance connector jumps between cluster members become tiny polygon
+		// edges of their own.
+		std::vector<Vec> poly;
+		poly.reserve(loop.size() * 2);
+		bool exactOk = true;
+		for (size_t i = 0; i < loop.size() && exactOk; i++) {
+			uint32_t a = loop[i], b = loop[(i + 1) % loop.size()];
+			auto itU = edgeUse.find(ukey(a, b));
+			if (itU == edgeUse.end()) { exactOk = false; break; }
+			Vec pFrom = itU->second.fromPos, pTo = itU->second.toPos;
+			if (itU->second.fromVid != a) std::swap(pFrom, pTo);
+			if (poly.empty() || poly.back() != pFrom) poly.push_back(pFrom);
+			poly.push_back(pTo);
+		}
+		if (!exactOk || poly.size() < 3) continue;
+		if (poly.size() > 1 && poly.front() == poly.back()) poly.pop_back();
+		if (poly.size() < 3 || poly.size() > 160) continue;
+
+		// Newell normal + planarity at weld scale.
+		Vec centroid(0.0);
+		for (const Vec& p : poly) centroid += p;
+		centroid /= static_cast<double>(poly.size());
+		Vec normal(0.0);
+		for (size_t i = 0; i < poly.size(); i++) {
+			const Vec& p = poly[i];
+			const Vec& q = poly[(i + 1) % poly.size()];
+			normal.x += (p.y - q.y) * (p.z + q.z);
+			normal.y += (p.z - q.z) * (p.x + q.x);
+			normal.z += (p.x - q.x) * (p.y + q.y);
+		}
+		double nLen = glm::length(normal);
+		if (nLen < 1e-12) continue;
+		normal /= nLen;
+		bool planar = true;
+		for (const Vec& p : poly) {
+			if (std::abs(glm::dot(p - centroid, normal)) > cellSize * 1.5) { planar = false; break; }
+		}
+		if (!planar) continue;
+
+		// Project onto a basis of the loop plane, oriented so the polygon is CCW,
+		// then CDT-fill the polygon.
+		Vec axis = std::abs(normal.z) < 0.9 ? Vec(0, 0, 1) : Vec(1, 0, 0);
+		Vec u = glm::normalize(glm::cross(axis, normal));
+		Vec v = glm::cross(normal, u);
+		std::vector<std::array<double, 2>> p2d(poly.size());
+		for (size_t i = 0; i < poly.size(); i++) {
+			Vec d = poly[i] - centroid;
+			p2d[i] = { glm::dot(d, u), glm::dot(d, v) };
+		}
+		double area2 = 0.0;
+		for (size_t i = 0; i < poly.size(); i++) {
+			const auto& a = p2d[i];
+			const auto& b = p2d[(i + 1) % poly.size()];
+			area2 += a[0] * b[1] - b[0] * a[1];
+		}
+		if (std::abs(area2) < 1e-12) continue;
+		if (area2 < 0.0) {
+			for (auto& pt : p2d) pt[1] = -pt[1];
+		}
+
+		try {
+			CDT::Triangulation<double> cdt(CDT::VertexInsertionOrder::AsProvided);
+			std::vector<CDT::V2d<double>> cdtVerts;
+			std::vector<CDT::Edge> cdtEdges;
+			cdtVerts.reserve(poly.size());
+			for (size_t i = 0; i < poly.size(); i++) {
+				cdtVerts.push_back(CDT::V2d<double>::make(p2d[i][0], p2d[i][1]));
+				cdtEdges.push_back(CDT::Edge(static_cast<uint32_t>(i), static_cast<uint32_t>((i + 1) % poly.size())));
+			}
+			auto mapping = CDT::RemoveDuplicatesAndRemapEdges(cdtVerts, cdtEdges).mapping;
+			std::vector<size_t> newToOld(cdtVerts.size(), SIZE_MAX);
+			for (size_t oldIdx = 0; oldIdx < mapping.size(); ++oldIdx) {
+				size_t newIdx = mapping[oldIdx];
+				if (newIdx < newToOld.size() && newToOld[newIdx] == SIZE_MAX) newToOld[newIdx] = oldIdx;
+			}
+			cdt.insertVertices(cdtVerts);
+			cdt.insertEdges(cdtEdges);
+			cdt.eraseOuterTrianglesAndHoles();
+			if (cdt.triangles.empty()) continue;
+			for (const auto& tri : cdt.triangles) {
+				const Vec a = poly[newToOld[tri.vertices[0]]];
+				const Vec b = poly[newToOld[tri.vertices[1]]];
+				const Vec c = poly[newToOld[tri.vertices[2]]];
+				// CDT outputs CCW triangles in the 2D space it sees; the mirror above makes
+				// the polygon CCW in that space, so CDT's index order traverses the boundary
+				// along the (reversed) loop -- opposite to the existing owner faces -- in
+				// both the mirrored and unmirrored case. Emit verbatim.
+				geom.AddFace(a, b, c, UINT32_MAX);
+			}
+			for (size_t i = 0; i < loop.size(); i++) {
+				usedEdges.insert({ std::min(loop[i], loop[(i + 1) % loop.size()]), std::max(loop[i], loop[(i + 1) % loop.size()]) });
+			}
+			filled++;
+		}
+		catch (...) {
+			continue;
+		}
+	}
+
+	if (filled > 0) {
+		meshInfoResult = isMeshWatertight(geom);
+	}
+	return filled;
+}
+
+uint32_t meshCleanup::PatchCoplanarHoles(Geometry& geom, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult, double weldTolOverride) {
 	if (meshInfoInput.numOpenEdges == 0) {
 		meshInfoResult = meshInfoInput;
 		return 0;
@@ -1156,7 +1376,7 @@ uint32_t meshCleanup::PatchCoplanarHoles(Geometry& geom, std::string step, const
 	Geometry backup = geom;
 
 	// -- vertex deduplication (same spatial-hash as PostBooleanOperationMeshCleanup)
-	const double cellSize = toleranceVectorEquality;
+	const double cellSize = weldTolOverride > 0.0 ? weldTolOverride : toleranceVectorEquality;
 	const double cellSizeSq = cellSize * cellSize;
 
 	using GridKey = std::tuple<int64_t, int64_t, int64_t>;
@@ -1284,8 +1504,8 @@ uint32_t meshCleanup::PatchCoplanarHoles(Geometry& geom, std::string step, const
 		}
 	}
 
-	const double PLANE_EPS = 5e-5;
-	const double EDGE_LOOP_PLANE_EPS = std::max(PLANE_EPS * 4.0, toleranceVectorEquality * 3.0);
+	const double PLANE_EPS = std::max(5e-5, cellSize * 0.5);
+	const double EDGE_LOOP_PLANE_EPS = std::max(PLANE_EPS * 4.0, cellSize * 3.0);
 	const double EDGE_LOOP_PLANE_DOT = 0.985;
 
 	std::vector<std::vector<uint32_t>> loops;
