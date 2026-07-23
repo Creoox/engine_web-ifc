@@ -1258,9 +1258,15 @@ namespace webifc::geometry
       }
       return {};
     }
+    case schema::IFCTEXTSTYLE:
+    {
+        // not handled
+        spdlog::warn("[GetColor()] IfcTextStyle currently not handled, #{}", expressID);
+        break;
+    }
     default:
         std::string lineTypeString = _loader.GetSchemaManager().IfcTypeCodeToType(lineType);
-        spdlog::error("[GetColor()] unexpected style type at entity #{}: {}", expressID, lineTypeString);
+        spdlog::warn("[GetColor()] unexpected style type at entity #{}: {}", expressID, lineTypeString);
         break;
     }
 

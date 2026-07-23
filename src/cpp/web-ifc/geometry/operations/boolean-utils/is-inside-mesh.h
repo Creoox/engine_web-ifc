@@ -14,6 +14,7 @@
 #pragma once
 
 #include <glm/glm.hpp>
+#include <algorithm>
 #include <iostream>
 #include <stack>
 #include "intersect-ray-tri.h"

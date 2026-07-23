@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <fstream>
 #include <unordered_set>
 #include <glm/gtx/transform.hpp>
 #include "representation/geometry.h"
@@ -2291,6 +2292,16 @@ namespace webifc::geometry
                 AddFaceToGeometry(faceID, geometry);
             }
             geometry.entityID = expressID;
+            if (getenv("CXDIAG_CSG_TRACE"))
+            {
+                fuzzybools::Geometry fuzzyGeom = geometry;
+                const meshCleanup::MeshInfo wi = meshCleanup::isMeshWatertight(fuzzyGeom);
+                if (wi.numOpenEdges > 0 || wi.numNonManifoldEdges > 0)
+                {
+                    std::cerr << "DIAG: TRACE GetBrep shell=" << expressID << " faces=" << geometry.numFaces
+                              << " open=" << wi.numOpenEdges << " nm=" << wi.numNonManifoldEdges << std::endl;
+                }
+            }
 #ifdef DUMP_CSG_MESHES
             if( lineType == schema::IFCCLOSEDSHELL )
             {
@@ -2421,7 +2432,24 @@ namespace webifc::geometry
         {
             if (secondGeom.halfSpace || secondGeom.numFaces == 0 || secondGeom.numFaces > 2000)
                 continue;
+            const bool traceIngress = getenv("CXDIAG_CSG_TRACE") != nullptr;
+            meshCleanup::MeshInfo preIngress;
+            if (traceIngress)
+            {
+                preIngress = meshCleanup::isMeshWatertight(secondGeom);
+            }
             const uint32_t removed = meshCleanup::RemoveExactDuplicateFaces(secondGeom);
+            if (traceIngress)
+            {
+                const meshCleanup::MeshInfo postDedup = meshCleanup::isMeshWatertight(secondGeom);
+                if (preIngress.numOpenEdges != postDedup.numOpenEdges || removed > 0)
+                {
+                    std::cerr << "DIAG: TRACE ingress subtractor entity=" << secondGeom.entityID
+                              << " faces=" << secondGeom.numFaces << " removed=" << removed
+                              << " open " << preIngress.numOpenEdges << "->" << postDedup.numOpenEdges
+                              << " nm " << preIngress.numNonManifoldEdges << "->" << postDedup.numNonManifoldEdges << std::endl;
+                }
+            }
             if (removed > 0)
             {
 #ifdef _DEBUG
@@ -2664,8 +2692,24 @@ namespace webifc::geometry
                 // Empirically the scale-up trick trades one class of artifact for another (window-opening membranes 
                 // disappear but edge-bleed membranes appear), so we leave the operand untouched and clean up post hoc.
 
-                firstOperand.buildPlanes();
-                secondOperand.buildPlanes();
+                if (getenv("CXDIAG_CSG_TRACE"))
+                {
+                    const meshCleanup::MeshInfo preA = meshCleanup::isMeshWatertight(firstOperand);
+                    const meshCleanup::MeshInfo preB = meshCleanup::isMeshWatertight(secondOperand);
+                    firstOperand.buildPlanes();
+                    secondOperand.buildPlanes();
+                    const meshCleanup::MeshInfo postA = meshCleanup::isMeshWatertight(firstOperand);
+                    const meshCleanup::MeshInfo postB = meshCleanup::isMeshWatertight(secondOperand);
+                    std::cerr << "DIAG: TRACE buildPlanes A open " << preA.numOpenEdges << "->" << postA.numOpenEdges
+                              << " nm " << preA.numNonManifoldEdges << "->" << postA.numNonManifoldEdges
+                              << " | B open " << preB.numOpenEdges << "->" << postB.numOpenEdges
+                              << " nm " << preB.numNonManifoldEdges << "->" << postB.numNonManifoldEdges << std::endl;
+                }
+                else
+                {
+                    firstOperand.buildPlanes();
+                    secondOperand.buildPlanes();
+                }
 
                 fuzzybools::SetEpsilons(_settings.TOLERANCE_PLANE_INTERSECTION, _settings.TOLERANCE_PLANE_DEVIATION, _settings.TOLERANCE_BACK_DEVIATION_DISTANCE, _settings.TOLERANCE_INSIDE_OUTSIDE_PERIMETER, _settings.TOLERANCE_BOUNDING_BOX, BOOLSTATUS);
 
@@ -2694,8 +2738,9 @@ namespace webifc::geometry
         // differently with the tolerance-based classifier. If the batched result is not clean, re-run the chain with the original
         // per-solid operand order and keep whichever result scores better (open edges weigh 1, non-manifold edges weigh 3 -- they are
         // harder to repair downstream). The sequential re-run doubles the whole chain cost; it was built for small chains (test53d class).
-        // Large operand counts keep the batched result.
-        if (batchingApplied && unbatchedSecondOperands.size() <= 32 && finalResult.numFaces > 0 && finalResult.numFaces <= 20000)
+        // The cap bounds the doubling for opening-farm elements (HDW class, hundreds of operands); test53d's damaged element carries
+        // ~40 small subtractors and needs the re-run, hence 64 rather than the original 32.
+        if (batchingApplied && unbatchedSecondOperands.size() <= 64 && finalResult.numFaces > 0 && finalResult.numFaces <= 20000)
         {
             auto wiBatched = meshCleanup::isMeshWatertight(finalResult);
             if (wiBatched.numOpenEdges + wiBatched.numNonManifoldEdges > 0)
@@ -2725,6 +2770,12 @@ namespace webifc::geometry
 #endif
             }
         }
+
+        // Chain-exit hole healing (ResolveTJunctions + PatchCoplanarHoles + FillPlanarBoundaryLoops at visible-scale tolerance,
+        // census-gated) was implemented and REMOVED here: it contributed nothing measurable to the suite -- the exported crack-pair
+        // class is closed by the export-side tolerance weld instead -- and its re-triangulation fans rendered as creased/flipped
+        // patches in edge-drawing viewers (user harness screenshot on test57-allOpenings#). The passes themselves remain available
+        // in meshCleanup with tolerance overrides.
 
         // Every BoolProcess output is a boolean product by definition. The ops above can bail (empty operand) or abort (budget) and return
         // operand data whose mBoolOpCount was never incremented; without the stamp, export-side CSG-gated cleanup wrongly treats such
@@ -2869,6 +2920,40 @@ namespace webifc::geometry
                           << " facesA=" << firstOperand.numFaces << " facesB=" << secondOperand.numFaces
                           << " resultFaces=" << result.numFaces << " kernelMs=" << kernelMs
                           << " cleanupMs=" << (totalMs - kernelMs) << std::endl;
+            }
+        }
+        if (getenv("CXDIAG_CSG_TRACE"))
+        {
+            static int subtractOpCounter = 0;
+            const int opId = subtractOpCounter++;
+            const meshCleanup::MeshInfo wiA = meshCleanup::isMeshWatertight(firstOperand);
+            const meshCleanup::MeshInfo wiB = meshCleanup::isMeshWatertight(secondOperand);
+            const meshCleanup::MeshInfo wiR = meshCleanup::isMeshWatertight(result);
+            std::cerr << "DIAG: TRACE subtract op=" << opId << " entity=" << firstOperand.entityID
+                      << " A(f=" << firstOperand.numFaces << ",open=" << wiA.numOpenEdges << ",nm=" << wiA.numNonManifoldEdges << ")"
+                      << " B(f=" << secondOperand.numFaces << ",open=" << wiB.numOpenEdges << ",nm=" << wiB.numNonManifoldEdges << ")"
+                      << " R(f=" << result.numFaces << ",open=" << wiR.numOpenEdges << ",nm=" << wiR.numNonManifoldEdges << ")" << std::endl;
+            if (const char* dumpDir = getenv("CXDIAG_CSG_TRACE_DUMP"))
+            {
+                auto writeObj = [](const std::string& path, const fuzzybools::Geometry& g)
+                {
+                    std::ofstream out(path);
+                    out.precision(17);
+                    for (uint32_t i = 0; i < g.numPoints; i++)
+                    {
+                        const glm::dvec3 p = g.GetPoint(i);
+                        out << "v " << p.x << " " << p.y << " " << p.z << "\n";
+                    }
+                    for (uint32_t i = 0; i < g.numFaces; i++)
+                    {
+                        const fuzzybools::Face f = g.GetFace(i);
+                        out << "f " << (f.i0 + 1) << " " << (f.i1 + 1) << " " << (f.i2 + 1) << "\n";
+                    }
+                };
+                const std::string prefix = std::string(dumpDir) + "/op" + std::to_string(opId);
+                writeObj(prefix + "-A.obj", firstOperand);
+                writeObj(prefix + "-B.obj", secondOperand);
+                writeObj(prefix + "-R.obj", result);
             }
         }
         IfcGeometry out;

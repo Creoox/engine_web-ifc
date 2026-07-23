@@ -210,6 +210,16 @@ namespace fuzzybools
         const AABB meshBox = mesh.GetAABB();
         const double meshDiag = glm::length(meshBox.max - meshBox.min);
         const double cutTol = std::max(_TOLERANCE_PLANE_DEVIATION, meshDiag * 5e-6);
+        // Cut-EDGE detection tolerance is deliberately coarser than cutTol: operand
+        // vertices are no longer snapped onto their registered planes (the buildPlanes
+        // refit is gone), so fragment vertices sit off the plane by up to the plane-merge
+        // error (~diag * 5e-5). With the tight tolerance the region flood-fill leaked
+        // across undetected cut curves and subtractor-surface wedges OUTSIDE the first
+        // operand inherited the KEEP vote of the legitimate reveal region they touched
+        // (test57-allOpenings#: solid corner flags protruding into every opening).
+        // Coarser detection only shrinks regions, which is correctness-neutral by
+        // construction (see the provenance comment above).
+        const double cutDetectTol = std::max(cutTol, meshDiag * 5e-5);
         const double weldTol = std::max(1.0E-07, meshDiag * 1e-9);
 
         // ---- per-face data ------------------------------------------------
@@ -378,7 +388,7 @@ namespace fuzzybools
                 for (uint32_t pi = 0; pi < mesh.planes.size(); pi++)
                 {
                     double dist = std::fabs(glm::dot(mesh.planes[pi].normal, p) - mesh.planes[pi].distance);
-                    if (dist <= cutTol)
+                    if (dist <= cutDetectTol)
                     {
                         vertexOnPlane.insert((uint64_t)vid << 20 | (uint64_t)pi);
                     }
@@ -487,8 +497,10 @@ namespace fuzzybools
         }
 
         // ---- classify per region (majority over the largest fragments) -----
-        for (auto& region : regions)
+        std::vector<std::pair<size_t, bool>> sweepKillCandidates; // (regionIdx, isInteriorSheet)
+        for (size_t regionIdx = 0; regionIdx < regions.size(); ++regionIdx)
         {
+            auto& region = regions[regionIdx];
             if ((iteration++ & 63ULL) == 0)
             {
                 budget.CheckDeadline("clip region classify");
@@ -507,11 +519,30 @@ namespace fuzzybools
             ClipDecision decision = ClipDecision::DROP;
             ClipDecision first = ClipDecision::DROP;
             bool decided = false;
+            static const bool dumpRegions = std::getenv("CXDIAG_CSG_REGIONS") != nullptr;
+            ClipVotes lastVotes;
             for (size_t s = 0; s < region.size() && s < 3; s++)
             {
                 const FaceData& f = fd[region[s]];
                 ClipVotes votes = castClipVotes(f.center, f.n, bvh1, bvh2, isUnion);
+                lastVotes = votes;
                 ClipDecision d = isUnion ? decideUnion(votes, f.n) : decideSubtract(votes, f.n);
+                if (dumpRegions)
+                {
+                    double regionArea = 0.0;
+                    for (uint32_t fi : region) regionArea += fd[fi].area;
+                    if (regionArea > 0.005)
+                    {
+                        std::cerr << "DIAG: REGION faces=" << region.size() << " area=" << regionArea
+                                  << " sample=" << s
+                                  << " rep=(" << f.center.x << "," << f.center.y << "," << f.center.z << ")"
+                                  << " n=(" << f.n.x << "," << f.n.y << "," << f.n.z << ")"
+                                  << " loc1=" << (int)votes.loc1 << " loc2=" << (int)votes.loc2
+                                  << " n1=(" << votes.normal1.x << "," << votes.normal1.y << "," << votes.normal1.z << ")"
+                                  << " n2=(" << votes.normal2.x << "," << votes.normal2.y << "," << votes.normal2.z << ")"
+                                  << " d=" << (int)d << std::endl;
+                    }
+                }
                 if (s == 0)
                 {
                     first = d;
@@ -551,7 +582,17 @@ namespace fuzzybools
             // with the uncertainty guard is the validated configuration.
             {
                 const FaceData& rep = fd[region[0]];
-                const double probeEps = 5.0 * cutTol;
+                // Probe distance defines the smallest material thickness the sweep treats as
+                // real. 5*cutTol (~0.4mm at building scale) kept sub-millimetre residual
+                // wedges (subtractor sill vs tilted layer face, test66/test61) as "material":
+                // they export as open double-sheet shells the user sees as membranes.
+                // diag*1e-4 matches the validator's membrane test, so wedges thinner than
+                // the visible scale are swept with the rest of the zero-volume debris.
+                // (A region-area-gated variant and a diag*5e-5 middle scale were measured:
+                // both trade user-visible membranes on test61/test66 for open-edge counts on
+                // already-failing files; this scale minimizes suite-wide membranes.)
+                static const bool noBigProbe = std::getenv("CX_CSG_NO_BIGPROBE") != nullptr;
+                const double probeEps = noBigProbe ? 5.0 * cutTol : std::max(5.0 * cutTol, meshDiag * 1.0e-4);
                 bool uncertain = false;
                 bool inMat[2];
                 for (int side = 0; side < 2; side++)
@@ -570,7 +611,13 @@ namespace fuzzybools
                 }
                 if (!uncertain && inMat[0] == inMat[1])
                 {
-                    continue; // membrane (neither side) or interior sheet (both)
+                    // Membrane (neither side) or interior sheet (both). Do NOT kill
+                    // immediately: a sub-probe-thickness REAL slab (e.g. a 1mm layer
+                    // remnant that is the ONLY cover of a rim band) reads as a
+                    // membrane too, and killing it rips holes. Tentatively keep and
+                    // defer to the gated sweep below. Interior sheets (material on
+                    // BOTH sides) can never be visible sole-cover and always die.
+                    sweepKillCandidates.emplace_back(regionIdx, inMat[0]);
                 }
             }
 
@@ -589,6 +636,181 @@ namespace fuzzybools
                 state[fi] = flip ? ST_KEEP_FLIP : ST_KEEP;
             }
         }
+
+        // ---- census-gated material sweep ------------------------------------
+        // Apply the deferred membrane/interior kills, each gated on the kept
+        // set's weld-level edge census: removing the region must not increase
+        // the number of open edges. Debris sheets (their seams are already
+        // open) pass the gate and die; a thin slab that is the sole cover of a
+        // surface band fails it and survives (test57-allOpenings#: 1mm layer
+        // remnants between per-layer opening rims).
+        if (!sweepKillCandidates.empty())
+        {
+            std::unordered_map<uint64_t, int32_t> keptEdgeCount;
+            keptEdgeCount.reserve((size_t)nClassify * 2);
+            auto globalEdgeKey = [](uint32_t va, uint32_t vb) -> uint64_t {
+                if (va > vb) std::swap(va, vb);
+                return ((uint64_t)va << 32) | (uint64_t)vb;
+            };
+            for (uint32_t i = 0; i < nClassify; i++)
+            {
+                if (state[i] != ST_KEEP && state[i] != ST_KEEP_FLIP && state[i] != ST_PRE_KEEP) continue;
+                const auto& v = fvid[i];
+                for (int e = 0; e < 3; e++)
+                {
+                    if (v[e] == v[(e + 1) % 3]) continue;
+                    keptEdgeCount[globalEdgeKey(v[e], v[(e + 1) % 3])]++;
+                }
+            }
+            for (auto& [regionIdx, isInteriorSheet] : sweepKillCandidates)
+            {
+                auto& region = regions[regionIdx];
+                bool anyKept = false;
+                for (uint32_t fi : region)
+                {
+                    if (state[fi] == ST_KEEP || state[fi] == ST_KEEP_FLIP) { anyKept = true; break; }
+                }
+                if (!anyKept) continue;
+                std::unordered_set<uint32_t> inRegion(region.begin(), region.end());
+                int64_t deltaOpen = 0;
+                for (uint32_t fi : region)
+                {
+                    if (state[fi] != ST_KEEP && state[fi] != ST_KEEP_FLIP) continue;
+                    const auto& v = fvid[fi];
+                    for (int e = 0; e < 3; e++)
+                    {
+                        if (v[e] == v[(e + 1) % 3]) continue;
+                        auto it = keptEdgeCount.find(globalEdgeKey(v[e], v[(e + 1) % 3]));
+                        if (it == keptEdgeCount.end()) continue;
+                        if (it->second == 1) deltaOpen -= 1;      // region-owned open edge disappears
+                        else if (it->second == 2)
+                        {
+                            // pair edge: if the partner is outside the region it becomes open
+                            auto ownersIt = edgeFaces.find(makeEdgeKey(fd[fi].pId, v[e], v[(e + 1) % 3]));
+                            bool partnerInRegion = false;
+                            if (ownersIt != edgeFaces.end())
+                            {
+                                for (uint32_t owner : ownersIt->second)
+                                {
+                                    if (owner != fi && inRegion.count(owner)) { partnerInRegion = true; break; }
+                                }
+                            }
+                            if (!partnerInRegion) deltaOpen += 1;
+                        }
+                        // count > 2: non-manifold either way, no open-edge change
+                    }
+                }
+                bool kill = isInteriorSheet || deltaOpen <= 0;
+                if (!kill && region.size() <= 64)
+                {
+                    // Killing leaks open edges -- still allowed when the region is
+                    // REDUNDANT double-cover: every sampled point lies on kept surface
+                    // of the same geometric plane owned by other regions, so removing
+                    // it leaves surface behind (debris sheets welded onto real faces).
+                    // A sole-cover slab fails this and survives.
+                    static const bool noBigProbe2 = std::getenv("CX_CSG_NO_BIGPROBE") != nullptr;
+                    const double coverTol = noBigProbe2 ? 5.0 * cutTol : std::max(5.0 * cutTol, meshDiag * 1.0e-4);
+                    bool redundant = true;
+                    for (uint32_t fi : region)
+                    {
+                        if (!redundant) break;
+                        if (state[fi] != ST_KEEP && state[fi] != ST_KEEP_FLIP) continue;
+                        const FaceData& f = fd[fi];
+                        const Vec samples[4] = { f.center,
+                                                 (f.center + f.a) * 0.5,
+                                                 (f.center + f.b) * 0.5,
+                                                 (f.center + f.c) * 0.5 };
+                        for (const Vec& sample : samples)
+                        {
+                            bool covered = false;
+                            for (uint32_t j = 0; j < nClassify && !covered; j++)
+                            {
+                                if (state[j] != ST_KEEP && state[j] != ST_KEEP_FLIP && state[j] != ST_PRE_KEEP) continue;
+                                if (inRegion.count(j)) continue;
+                                const FaceData& g = fd[j];
+                                if (std::fabs(glm::dot(f.n, g.n)) < 0.98) continue;
+                                if (std::fabs(glm::dot(g.n, sample - g.a)) > coverTol) continue;
+                                // 2D containment on the dominant axis of g's normal
+                                double gx = std::fabs(g.n.x), gy = std::fabs(g.n.y), gz = std::fabs(g.n.z);
+                                int drop = (gz >= gx && gz >= gy) ? 2 : (gy >= gx ? 1 : 0);
+                                auto p2 = [&](const Vec& p, double& u, double& v) {
+                                    switch (drop)
+                                    {
+                                    case 0: u = p.y; v = p.z; break;
+                                    case 1: u = p.x; v = p.z; break;
+                                    default: u = p.x; v = p.y; break;
+                                    }
+                                };
+                                double su, sv, au, av, bu, bv, cu, cv;
+                                p2(sample, su, sv); p2(g.a, au, av); p2(g.b, bu, bv); p2(g.c, cu, cv);
+                                double d1 = (su - bu) * (av - bv) - (au - bu) * (sv - bv);
+                                double d2 = (su - cu) * (bv - cv) - (bu - cu) * (sv - cv);
+                                double d3 = (su - au) * (cv - av) - (cu - au) * (sv - av);
+                                bool hasNeg = (d1 < 0) || (d2 < 0) || (d3 < 0);
+                                bool hasPos = (d1 > 0) || (d2 > 0) || (d3 > 0);
+                                covered = !(hasNeg && hasPos);
+                            }
+                            if (!covered) { redundant = false; break; }
+                        }
+                    }
+                    kill = redundant;
+                    if (!kill)
+                    {
+                        // Final tier: re-probe at the SMALL scale (5*cutTol). A genuine
+                        // zero-volume flap reads membrane/interior at every scale -- kill
+                        // it and accept the leaked opens (the pre-gate behaviour, which the
+                        // validator prefers over a surviving membrane). A real
+                        // sub-probe-thickness slab reads material-on-one-side here and
+                        // survives as the band's sole cover.
+                        const FaceData& rep = fd[region[0]];
+                        const double smallEps = 5.0 * cutTol;
+                        bool uncertainSmall = false;
+                        bool inMatSmall[2] = { false, false };
+                        for (int side = 0; side < 2; side++)
+                        {
+                            const Vec pt = rep.center + rep.n * (side == 0 ? smallEps : -smallEps);
+                            auto lA = isInsideMesh(pt, rep.n, *bvh1.ptr, bvh1, rep.n, isUnion);
+                            auto lB = isInsideMesh(pt, rep.n, *bvh2.ptr, bvh2, rep.n, isUnion);
+                            if (lA.loc == MeshLocation::BOUNDARY || lB.loc == MeshLocation::BOUNDARY)
+                            {
+                                uncertainSmall = true;
+                                break;
+                            }
+                            const bool inA = lA.loc == MeshLocation::INSIDE;
+                            const bool inB = lB.loc == MeshLocation::INSIDE;
+                            inMatSmall[side] = isUnion ? (inA || inB) : (inA && !inB);
+                        }
+                        kill = !uncertainSmall && inMatSmall[0] == inMatSmall[1];
+                    }
+                }
+                if (kill)
+                {
+                    for (uint32_t fi : region)
+                    {
+                        if (state[fi] == ST_KEEP || state[fi] == ST_KEEP_FLIP)
+                        {
+                            const auto& v = fvid[fi];
+                            for (int e = 0; e < 3; e++)
+                            {
+                                if (v[e] == v[(e + 1) % 3]) continue;
+                                auto it = keptEdgeCount.find(globalEdgeKey(v[e], v[(e + 1) % 3]));
+                                if (it != keptEdgeCount.end() && it->second > 0) it->second--;
+                            }
+                            state[fi] = ST_PRE_DROP;
+                        }
+                    }
+                }
+            }
+        }
+
+        // NOTE: a "thin-strip rescue" (dropped small region adjacent to kept same-plane
+        // faces adopts the neighbours' decision) was implemented and measured here in two
+        // variants (unconditional and BOUNDARY-ambiguity-gated): both were net negative
+        // (suite 26 -> 25, interior sheets up, test53b/53d sharply worse) because the
+        // rescue cannot distinguish rim strips that belong to the surface from strips
+        // that were correctly cut away. The strip-vote problem needs provenance-aware
+        // voting (which rim pair the strip lies between), not adjacency heuristics.
+        // Run labels fable5_rescue / fable5_rescue2 in csg_test/v5.
 
         // ---- same-plane overlap resolution ----------------------------------
         // The normalized mesh is not a perfect partition: verbatim re-added
@@ -699,6 +921,45 @@ namespace fuzzybools
                             }
                             state[faces[s]] = ST_PRE_DROP;
                             break;
+                        }
+                    }
+
+                    // Union coverage (second chance): a strip fragment overlapping SEVERAL
+                    // larger kept fragments is contained in none of them individually, so the
+                    // single-coverer test above keeps it and the overlap surfaces as
+                    // non-manifold triples along the strip's edges (test53d: bottom-edge
+                    // strips, nm=3 edge census). Sample the fragment (vertices, edge
+                    // midpoints, centroid): when every sample lies in SOME larger kept
+                    // fragment of the same oriented plane, the strip is redundant surface and
+                    // the smaller fragment loses. Any uncovered sample keeps it.
+                    static const bool noUnionCov = std::getenv("CX_CSG_NO_UNIONCOV") != nullptr;
+                    if (!noUnionCov && state[faces[s]] != ST_PRE_DROP)
+                    {
+                        const double sampleU[7] = { pu, p0u, p1u, p2u, (p0u + p1u) / 2.0, (p1u + p2u) / 2.0, (p2u + p0u) / 2.0 };
+                        const double sampleV[7] = { pv, p0v, p1v, p2v, (p0v + p1v) / 2.0, (p1v + p2v) / 2.0, (p2v + p0v) / 2.0 };
+                        bool allCovered = true;
+                        for (int sp = 0; sp < 7 && allCovered; sp++)
+                        {
+                            bool covered = false;
+                            for (size_t l = 0; l < s; l++)
+                            {
+                                if (state[faces[l]] == ST_PRE_DROP) continue;
+                                const FaceData& big = fd[faces[l]];
+                                double au, av, bu, bv, cu, cv;
+                                proj(big.a, au, av);
+                                proj(big.b, bu, bv);
+                                proj(big.c, cu, cv);
+                                if (pointInTri2D(sampleU[sp], sampleV[sp], au, av, bu, bv, cu, cv))
+                                {
+                                    covered = true;
+                                    break;
+                                }
+                            }
+                            allCovered = covered;
+                        }
+                        if (allCovered)
+                        {
+                            state[faces[s]] = ST_PRE_DROP;
                         }
                     }
                 }

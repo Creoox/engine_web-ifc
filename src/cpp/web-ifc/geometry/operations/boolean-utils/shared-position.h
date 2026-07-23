@@ -1548,8 +1548,29 @@ namespace fuzzybools
                     std::abs(rs2) > 1 - toleranceThinTriangle ||
                     std::abs(rs3) > 1 - toleranceThinTriangle)
                 {
+                    // Thin CDT sliver. Rejecting it outright abandons surface area the CDT
+                    // assigned to this plane, leaving its neighbours' edges unpaired
+                    // (test53d: open-edge fans + double-cover along the wall bottom edge).
+                    // The ray gates below are unreliable for slivers (their winding normal is
+                    // numerically unstable), so decide purely in 2D: emit the sliver when it
+                    // lies inside the face's boundary polygon, otherwise it is fill outside
+                    // the real contour (super-triangle artifacts) and stays rejected.
+                    static const bool noThinKeep = std::getenv("CX_CSG_NO_THINKEEP") != nullptr;
+                    glm::dvec2 s1 = projectedPoints[newToOld[tri.vertices[0]]];
+                    glm::dvec2 s2 = projectedPoints[newToOld[tri.vertices[1]]];
+                    glm::dvec2 s3 = projectedPoints[newToOld[tri.vertices[2]]];
+                    if (!noThinKeep && isInsideBoundary(s1, s2, s3, edges, projectedPoints))
+                    {
 #if 1 // CLIP_DIAG
-                    if (messages){
+                        if (messages){
+                            if (std::fabs(p.normal.z) > 0.99) printf("[TPDIAG] thin-keep z=%.1f c=(%.1f,%.1f)\n", ptA.z, ((ptA+ptB+ptC)/3.0).x, ((ptA+ptB+ptC)/3.0).y);
+                        }
+#endif
+                        geom.AddFace(ptB, ptA, ptC, p.refPlane);
+                        budget.CheckFaceCount(geom.numFaces, "Normalize TriangulatePlane output");
+                    }
+#if 1 // CLIP_DIAG
+                    else if (messages){
                         if (std::fabs(p.normal.z) > 0.99) printf("[TPDIAG] thin-reject z=%.1f c=(%.1f,%.1f)\n", ptA.z, ((ptA+ptB+ptC)/3.0).x, ((ptA+ptB+ptC)/3.0).y);
                     }
 #endif

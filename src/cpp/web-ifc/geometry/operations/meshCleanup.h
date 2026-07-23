@@ -45,8 +45,19 @@ namespace meshCleanup
 
 	uint32_t RemoveDegeneratedTriangles(fuzzybools::Geometry& input, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult);
 	uint32_t RemoveDisconnectedFragments(fuzzybools::Geometry& input, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult);
-	uint32_t ResolveTJunctions(fuzzybools::Geometry& input, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult);
-	uint32_t PatchCoplanarHoles(fuzzybools::Geometry& input, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult);
+	// tolOverride > 0 replaces the default insertion tolerance (toleranceVectorEquality);
+	// chain-exit healing passes use a scale-aware tolerance to close visible slit gashes.
+	uint32_t ResolveTJunctions(fuzzybools::Geometry& input, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult, double tolOverride = 0.0);
+	// weldTolOverride > 0 replaces the default boundary weld tolerance (toleranceVectorEquality);
+	// chain-exit healing uses a scale-aware tolerance so slit-shaped gashes close into loops.
+	uint32_t PatchCoplanarHoles(fuzzybools::Geometry& input, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult, double weldTolOverride = 0.0);
+
+	// Fill simple closed planar boundary loops (weld at weldTol, walk degree-2 chains,
+	// CDT-fill the polygon, winding oriented against the adjacent surface). Unlike
+	// PatchCoplanarHoles this does not require the loop's adjacent faces to share one
+	// plane, so it closes hole loops whose rims touch perpendicular surfaces (opening
+	// sill/jamb gashes). Kill-nothing / add-only; gate with a census check at the call site.
+	uint32_t FillPlanarBoundaryLoops(fuzzybools::Geometry& input, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult, double weldTol);
 	uint32_t RemoveTinyBoundaryBridgeFaces(fuzzybools::Geometry& input, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult);
 	uint32_t RemoveThinMembranes(fuzzybools::Geometry& input, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult, double thinThresholdOverride = 0);
 	uint32_t RemoveOpposedEdgeMembranes(fuzzybools::Geometry& input, std::string step, const MeshInfo& meshInfoInput, MeshInfo& meshInfoResult);
