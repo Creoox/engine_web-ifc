@@ -683,6 +683,187 @@ namespace webifc::geometry
         }
     }
 
+    // A face on an IfcSphericalSurface(Position, Radius). The face is charted by stereographic
+    // projection from the point of the sphere opposite the face's middle: conformal, and singular
+    // only at that one point, so any cap up to nearly the whole sphere maps to a plain disc
+    // (longitude/latitude would put a whole singular line through the centre of every cap).
+    // Boundary and interior edges are split on the sphere until no chord spans more than one
+    // circle-tessellation step. Triangles come out wound to the sphere's outward normal (the
+    // parametric normal); `sameSense` only places the chart's pole away from the face.
+    inline void TriangulateSphericalSurface( IfcGeometry& geometry, const std::vector<IfcBound3D>& bounds, const IfcSurface& surface, bool sameSense, const CurveTessellationSettings& tessellation)
+    {
+        spdlog::debug("[TriangulateSphericalSurface()]");
+
+        const glm::dvec3 centre = surface.transformation[3];
+        const double radius = surface.SphereSurface.Radius;
+        if (!(radius > 0.0) || bounds.empty()) return;
+
+        // Direction from the centre into the face's middle: the outer loop's Newell normal, which
+        // points along the face normal, and the face normal is the outward normal when SameSense.
+        // Falls back to the loop centroid when the loop is degenerate for Newell (a near-great circle
+        // seen edge-on still has a usable centroid unless it is a hemisphere).
+        glm::dvec3 towards(0.0);
+        glm::dvec3 centroid(0.0);
+        size_t loopPoints = 0;
+        {
+            const auto& outer = bounds.front().curve.points;
+            for (size_t i = 0; i < outer.size(); i++)
+            {
+                const glm::dvec3& a = outer[i];
+                const glm::dvec3& b = outer[(i + 1) % outer.size()];
+                towards += glm::cross(a, b);
+                centroid += a;
+            }
+            loopPoints = outer.size();
+        }
+        if (sameSense == false) towards = -towards;
+        if (glm::length(towards) < 1e-12 && loopPoints > 0)
+        {
+            towards = centroid / static_cast<double>(loopPoints) - centre;
+        }
+        if (glm::length(towards) < 1e-12) towards = glm::dvec3(surface.transformation[2]);
+        const glm::dvec3 axisZ = glm::normalize(towards);
+        glm::dvec3 seed = std::abs(axisZ.x) < 0.9 ? glm::dvec3(1, 0, 0) : glm::dvec3(0, 1, 0);
+        const glm::dvec3 axisX = glm::normalize(glm::cross(seed, axisZ));
+        const glm::dvec3 axisY = glm::cross(axisZ, axisX);
+
+        auto toChart = [&](const glm::dvec3& p, glm::dvec2& out) -> bool
+        {
+            const glm::dvec3 rel = (p - centre) / radius;
+            const glm::dvec3 local(glm::dot(axisX, rel), glm::dot(axisY, rel), glm::dot(axisZ, rel));
+            const double below = 1.0 + local.z;
+            if (below <= 1e-9) return false;
+            out = glm::dvec2(local.x / below, local.y / below);
+            return std::abs(out.x) < 8.0 && std::abs(out.y) < 8.0;
+        };
+        auto fromChart = [&](const glm::dvec2& q) -> glm::dvec3
+        {
+            const double r2 = q.x * q.x + q.y * q.y;
+            const glm::dvec3 local(2.0 * q.x, 2.0 * q.y, 1.0 - r2);
+            const glm::dvec3 unit = local / (1.0 + r2);
+            return centre + radius * (unit.x * axisX + unit.y * axisY + unit.z * axisZ);
+        };
+
+        // The chord budget: one step of the circle tessellation at this radius.
+        const int segments = ComputeArcSegments(radius, 2.0 * CONST_PI, tessellation, tessellation.minArcSegments);
+        const double maxChord = 2.0 * radius * std::sin(CONST_PI / std::max(segments, 3));
+
+        // Bounds into the chart, boundary chords split on the sphere.
+        std::vector<std::vector<glm::dvec2>> loops;
+        for (const auto& bound : bounds)
+        {
+            const auto& pts = bound.curve.points;
+            if (pts.size() < 3) continue;
+            std::vector<glm::dvec2> loop;
+            loop.reserve(pts.size());
+            for (const auto& p : pts)
+            {
+                glm::dvec2 q;
+                if (!toChart(p, q)) return;
+                if (!loop.empty() && glm::distance(loop.back(), q) < 1e-12) continue;
+                loop.push_back(q);
+            }
+            while (loop.size() >= 2 && glm::distance(loop.front(), loop.back()) < 1e-12) loop.pop_back();
+            if (loop.size() < 3) continue;
+            std::vector<glm::dvec2> dense;
+            for (size_t i = 0; i < loop.size(); i++)
+            {
+                const glm::dvec2& a = loop[i];
+                const glm::dvec2& b = loop[(i + 1) % loop.size()];
+                const double chord = glm::distance(fromChart(a), fromChart(b));
+                const int n = std::max(1, static_cast<int>(std::ceil(chord / maxChord)));
+                for (int k = 0; k < n; k++)
+                {
+                    const double t = static_cast<double>(k) / n;
+                    dense.push_back(a + (b - a) * t);
+                }
+            }
+            loops.push_back(std::move(dense));
+        }
+        if (loops.empty()) return;
+
+        std::vector<CDT::V2d<double>> cdtVerts;
+        std::vector<CDT::Edge> cdtEdges;
+        for (const auto& loop : loops)
+        {
+            const uint32_t base = static_cast<uint32_t>(cdtVerts.size());
+            for (const auto& q : loop) cdtVerts.push_back(CDT::V2d<double>::make(q.x, q.y));
+            const uint32_t n = static_cast<uint32_t>(loop.size());
+            for (uint32_t i = 0; i < n; i++) cdtEdges.push_back(CDT::Edge(base + i, base + (i + 1) % n));
+        }
+        CDT::RemoveDuplicatesAndRemapEdges(cdtVerts, cdtEdges);
+        cdtEdges.erase(std::remove_if(cdtEdges.begin(), cdtEdges.end(), [](const CDT::Edge& e) { return e.v1() == e.v2(); }), cdtEdges.end());
+        if (cdtVerts.size() < 3) return;
+        CDT::Triangulation<double> cdt(CDT::VertexInsertionOrder::AsProvided);
+        try
+        {
+            cdt.insertVertices(cdtVerts);
+            cdt.insertEdges(cdtEdges);
+            cdt.eraseSuperTriangle();
+        }
+        catch (...)
+        {
+            spdlog::warn("[TriangulateSphericalSurface] CDT failed; skipping face");
+            return;
+        }
+
+        auto insideLoops = [&](const glm::dvec2& q) -> bool
+        {
+            int crossings = 0;
+            for (const auto& loop : loops)
+            {
+                const size_t n = loop.size();
+                for (size_t i = 0, j = n - 1; i < n; j = i++)
+                {
+                    const double yi = loop[i].y, yj = loop[j].y;
+                    if ((yi > q.y) != (yj > q.y))
+                    {
+                        const double xCross = loop[j].x + (q.y - yj) / (yi - yj) * (loop[i].x - loop[j].x);
+                        if (q.x < xCross) crossings++;
+                    }
+                }
+            }
+            return (crossings & 1) != 0;
+        };
+
+        // Interior: split every triangle with a chord over budget into four, evaluating the new
+        // corners on the sphere, down to a depth that bounds the count on degenerate input.
+        struct ChartTri { glm::dvec2 a, b, c; int depth; };
+        std::vector<ChartTri> work;
+        for (const auto& tri : cdt.triangles)
+        {
+            const auto& v0 = cdt.vertices[tri.vertices[0]];
+            const auto& v1 = cdt.vertices[tri.vertices[1]];
+            const auto& v2 = cdt.vertices[tri.vertices[2]];
+            const glm::dvec2 a(v0.x, v0.y), b(v1.x, v1.y), c(v2.x, v2.y);
+            if (!insideLoops((a + b + c) / 3.0)) continue;
+            work.push_back({ a, b, c, 0 });
+        }
+        const int maxDepth = 6;
+        while (!work.empty())
+        {
+            const ChartTri t = work.back();
+            work.pop_back();
+            const glm::dvec3 p0 = fromChart(t.a), p1 = fromChart(t.b), p2 = fromChart(t.c);
+            const double longest = std::max({ glm::distance(p0, p1), glm::distance(p1, p2), glm::distance(p2, p0) });
+            if (t.depth < maxDepth && longest > maxChord)
+            {
+                const glm::dvec2 mab = (t.a + t.b) * 0.5, mbc = (t.b + t.c) * 0.5, mca = (t.c + t.a) * 0.5;
+                work.push_back({ t.a, mab, mca, t.depth + 1 });
+                work.push_back({ mab, t.b, mbc, t.depth + 1 });
+                work.push_back({ mca, mbc, t.c, t.depth + 1 });
+                work.push_back({ mab, mbc, mca, t.depth + 1 });
+                continue;
+            }
+            // Wind to the sphere's outward normal at the centroid: that is the surface's parametric
+            // normal, and the caller reverses every face when SameSense is false.
+            const glm::dvec3 outward = (p0 + p1 + p2) / 3.0 - centre;
+            const bool ccwOutward = glm::dot(glm::cross(p1 - p0, p2 - p0), outward) >= 0.0;
+            if (ccwOutward) geometry.AddFace(p0, p1, p2);
+            else geometry.AddFace(p0, p2, p1);
+        }
+    }
+
     inline void TriangulateExtrusion( IfcGeometry& geometry, const std::vector<IfcBound3D>&, const IfcSurface& surface)
     {
         spdlog::debug("[TriangulateExtrusion()]");

@@ -89,6 +89,12 @@ namespace webifc::geometry {
 			double Radius;
 		};
 
+		struct Sphere
+		{
+			bool Active = false;
+			double Radius;
+		};
+
 		struct BSpline
 		{
 			bool Active = false;
@@ -295,6 +301,7 @@ namespace webifc::geometry {
 			glm::dmat4 transformation;
 			BSpline BSplineSurface;
 			Cylinder CylinderSurface;
+			Sphere SphereSurface;
 			Revolution RevolutionSurface;
 			Extrusion ExtrusionSurface;
 

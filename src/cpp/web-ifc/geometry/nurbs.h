@@ -8,6 +8,8 @@
 namespace tinynurbs{
 	template<typename T>
 	struct RationalSurface;
+	template<typename T>
+	class array2;
 	typedef RationalSurface<double> RationalSurface3d;
 }
 
@@ -35,6 +37,7 @@ namespace webifc::geometry{
 		private:
 
 		void init();
+		glm::dvec3 surface_point(double u, double v) const;
 		std::vector<double> get_weights() const;
 		std::vector<double> get_knots(std::vector<double>const & bs_knots, std::vector<uint32_t> const & bs_mults) const;
 		std::vector<glm::dvec3> get_control_points() const;
@@ -53,6 +56,7 @@ namespace webifc::geometry{
 		double minError	{ 0.0001 };
 		double maxError	{ 0.01 };
 		std::shared_ptr<tinynurbs::RationalSurface3d> nurbs;
+		std::shared_ptr<tinynurbs::array2<glm::dvec4>> weighted_control_points;
 		uv_point_t range_knots_u{0.0};
 		uv_point_t range_knots_v{0.0};
 		glm::dvec3 ptc{0.0};

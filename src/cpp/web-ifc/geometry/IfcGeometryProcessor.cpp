@@ -72,6 +72,31 @@ namespace webifc::geometry
         return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
     }
 
+	static void AddSweptDiskEndCap(IfcGeometry& geom, const IfcGeometry& outerGeom, const IfcGeometry& innerGeom,
+		uint32_t ringOffset, uint32_t pointCount, bool normalTowardStart)
+	{
+		for (uint32_t pointIndex = 1; pointIndex < pointCount; pointIndex++)
+		{
+			const uint32_t previousPointIndex = ringOffset + pointIndex - 1;
+			const uint32_t currentPointIndex = ringOffset + pointIndex;
+			const glm::dvec3 outerPrev = outerGeom.GetPoint(previousPointIndex);
+			const glm::dvec3 outerCurr = outerGeom.GetPoint(currentPointIndex);
+			const glm::dvec3 innerPrev = innerGeom.GetPoint(previousPointIndex);
+			const glm::dvec3 innerCurr = innerGeom.GetPoint(currentPointIndex);
+
+			if (normalTowardStart)
+			{
+				geom.AddFace(outerPrev, outerCurr, innerPrev);
+				geom.AddFace(outerCurr, innerCurr, innerPrev);
+			}
+			else
+			{
+				geom.AddFace(outerPrev, innerPrev, outerCurr);
+				geom.AddFace(outerCurr, innerPrev, innerCurr);
+			}
+		}
+	}
+
     IfcGeometryProcessor::IfcGeometryProcessor(webifc::parsing::IfcLoader &loader, const webifc::schema::IfcSchemaManager &schemaManager, uint16_t circleSegments, bool coordinateToOrigin, double TOLERANCE_PLANE_INTERSECTION, double TOLERANCE_PLANE_DEVIATION, double TOLERANCE_BACK_DEVIATION_DISTANCE, double TOLERANCE_INSIDE_OUTSIDE_PERIMETER, double TOLERANCE_SCALAR_EQUALITY, double PLANE_REFIT_ITERATIONS, double maxCurveSegmentLength, double maxCurveSagittaError, uint32_t maxAdaptiveCurveSegments, uint16_t minArcSegments)
         : _loader(loader), _cache(loader), _schemaManager(schemaManager), _geometryLoader(loader, _cache, MakeCurveTessellationSettings(circleSegments, maxCurveSegmentLength, maxCurveSagittaError, maxAdaptiveCurveSegments, minArcSegments))
     {
@@ -1112,36 +1137,69 @@ namespace webifc::geometry
                 auto directrixRef = _loader.GetRefArgument();
 
                 double radius = _loader.GetDoubleArgument();
-                // double innerRadius = 0.0;
+                double innerRadius = _loader.GetOptionalDoubleParam(0.0);
 
-                if (_loader.GetTokenType() == parsing::IfcTokenType::REAL)
+                if (innerRadius < 0.0)
                 {
-                    spdlog::error("[GetMesh()] Inner radius of IFCSWEPTDISKSOLID currently not supported {}", expressID);
-                    _loader.StepBack();
-                    _loader.GetDoubleArgument();
+                    spdlog::warn("[GetMesh()] Ignoring invalid InnerRadius {} for IFCSWEPTDISKSOLID {}", innerRadius, expressID);
+                    innerRadius = 0.0;
+                }
+                else if (innerRadius > 0.0 && innerRadius >= radius)
+                {
+                    spdlog::warn("[GetMesh()] Ignoring invalid InnerRadius {} for IFCSWEPTDISKSOLID {}", innerRadius, expressID);
+                    innerRadius = 0.0;
                 }
 
-                // double startParam = 0;
-                // double endParam = 0;
-
-                if (_loader.GetTokenType() == parsing::IfcTokenType::REAL)
-                {
-                    _loader.StepBack();
-                    _loader.GetDoubleArgument();
-                }
-
-                if (_loader.GetTokenType() == parsing::IfcTokenType::REAL)
-                {
-                    _loader.StepBack();
-                    _loader.GetDoubleArgument();
-                }
+                (void)_loader.GetOptionalDoubleParam(0.0);
+                (void)_loader.GetOptionalDoubleParam(0.0);
 
                 IfcCurve directrix = _geometryLoader.GetCurve(directrixRef, 3);
 
                 IfcProfile profile;
                 profile.curve = GetCircleCurve(radius, _settings._circleSegments);
 
-                IfcGeometry geom = SweepCircular(_cache.GetLinearScalingFactor(), closed, profile, radius, directrix);
+                const double linearScalingFactor = _cache.GetLinearScalingFactor();
+                IfcGeometry geom = SweepCircular(linearScalingFactor, closed, profile, radius, directrix);
+
+                if (innerRadius > 0.0)
+                {
+                    IfcProfile innerProfile;
+                    innerProfile.isConvex = true;
+                    innerProfile.curve = GetCircleCurve(innerRadius, _settings._circleSegments);
+
+                    IfcGeometry outerGeom = geom;
+                    IfcGeometry innerGeom = SweepCircular(linearScalingFactor, closed, innerProfile, innerRadius, directrix);
+                    innerGeom.ReverseFaces();
+                    geom.MergeGeometry(innerGeom);
+
+                    const uint32_t profilePointCount = static_cast<uint32_t>(profile.curve.points.size());
+                    const bool pointCountsMatch = outerGeom.numPoints == innerGeom.numPoints;
+                    const bool ringCountIsIntegral = profilePointCount > 0 && outerGeom.numPoints % profilePointCount == 0;
+
+                    if (profilePointCount > 1 && pointCountsMatch && ringCountIsIntegral)
+                    {
+                        const uint32_t directrixRingCount = outerGeom.numPoints / profilePointCount;
+                        bool hasOpenEnds = true;
+                        if (directrix.points.size() > 2)
+                        {
+                            const glm::dvec3 firstDirectrixPoint = directrix.points.front();
+                            const glm::dvec3 lastDirectrixPoint = directrix.points.back();
+                            const double directrixEndpointDistance = glm::distance(firstDirectrixPoint, lastDirectrixPoint);
+                            hasOpenEnds = directrixEndpointDistance >= EPS_SMALL;
+                        }
+
+                        if (directrixRingCount > 1 && hasOpenEnds)
+                        {
+                            AddSweptDiskEndCap(geom, outerGeom, innerGeom, 0, profilePointCount, true);
+                            const uint32_t endRingOffset = (directrixRingCount - 1) * profilePointCount;
+                            AddSweptDiskEndCap(geom, outerGeom, innerGeom, endRingOffset, profilePointCount, false);
+                        }
+                    }
+
+                    IfcCurve innerCurve = innerProfile.curve;
+                    std::reverse(innerCurve.points.begin(), innerCurve.points.end());
+                    profile.holes.push_back(innerCurve);
+                }
 
                 geom.sweptDiskSolid.axis = std::vector<IfcCurve>{directrix};
                 geom.sweptDiskSolid.profiles = std::vector<IfcProfile>{profile};
@@ -1964,6 +2022,22 @@ namespace webifc::geometry
 
             break;
         }
+        case schema::IFCSPHERICALSURFACE:
+        {
+            IfcSurface surface;
+
+            _loader.MoveToArgumentOffset(expressID, 0);
+            uint32_t locationID = _loader.GetRefArgument();
+            surface.transformation = _geometryLoader.GetLocalPlacement(locationID);
+
+            _loader.MoveToArgumentOffset(expressID, 1);
+            double radius = _loader.GetDoubleArgument();
+
+            surface.SphereSurface.Active = true;
+            surface.SphereSurface.Radius = radius;
+
+            return surface;
+        }
         case schema::IFCSURFACEOFREVOLUTION:
         {
             IfcSurface surface;
@@ -2373,6 +2447,12 @@ namespace webifc::geometry
 
             uint32_t facesBefore = geometry.numFaces;
 
+            // The planar path winds its triangles from the bound loop, whose authored orientation
+            // already encodes SameSense (an outer bound runs counter-clockwise seen from the face
+            // normal side); the surface-parametric emitters wind to the surface normal and need the
+            // SameSense swap below.
+            bool parametricWinding = true;
+
             // TODO: place the face in the surface and tringulate
 
             if (surface.BSplineSurface.Active)
@@ -2382,6 +2462,10 @@ namespace webifc::geometry
             else if (surface.CylinderSurface.Active)
             {
                 TriangulateCylindricalSurface(geometry, bounds3D, surface, _settings.GetCurveTessellationSettings(_cache.GetLinearScalingFactor()));
+            }
+            else if (surface.SphereSurface.Active)
+            {
+                TriangulateSphericalSurface(geometry, bounds3D, surface, sameSense, _settings.GetCurveTessellationSettings(_cache.GetLinearScalingFactor()));
             }
             else if (surface.RevolutionSurface.Active)
             {
@@ -2393,12 +2477,13 @@ namespace webifc::geometry
             }
             else
             {
+                parametricWinding = false;
                 TriangulateBounds(geometry, bounds3D, expressID);
             }
 
             // If SameSense is .F., the face outward normal is opposite to the surface parametric
             // normal, so reverse the winding of all faces added by the triangulation above.
-            if (!sameSense)
+            if (!sameSense && parametricWinding)
             {
                 for (uint32_t fi = facesBefore; fi < geometry.numFaces; fi++)
                 {

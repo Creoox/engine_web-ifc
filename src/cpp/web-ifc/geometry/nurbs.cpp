@@ -6,6 +6,7 @@
 #include <tinynurbs/tinynurbs.h>
 #include <CDT.h>
 #include <numeric>
+#include <algorithm>
 #include <string>
 
 namespace webifc::geometry{
@@ -30,7 +31,7 @@ namespace webifc::geometry{
 			loop.reserve(bound.curve.points.size());
 			for (auto const& point : bound.curve.points) {
 				auto uv {this->inverse_evaluation(point)};
-				auto back {tinynurbs::surfacePoint(*this->nurbs, uv.x, uv.y)};
+				auto back {this->surface_point(uv.x, uv.y)};
 				double residual = glm::distance(glm::dvec3(back), point);
 				spdlog::debug("[NurbsBound] in=({:.4f},{:.4f},{:.4f}) uv=({:.6f},{:.6f}) back=({:.4f},{:.4f},{:.4f}) residual={:.6e} maxErr={:.6e}",
 					point.x, point.y, point.z, uv.x, uv.y, back.x, back.y, back.z, residual, this->maxError);
@@ -61,9 +62,9 @@ namespace webifc::geometry{
 					glm::dvec2 const& a = loop[i];
 					glm::dvec2 const& b = loop[j];
 					glm::dvec2 const m = (a + b) * 0.5;
-					glm::dvec3 const pa = tinynurbs::surfacePoint(*this->nurbs, a.x, a.y);
-					glm::dvec3 const pb = tinynurbs::surfacePoint(*this->nurbs, b.x, b.y);
-					glm::dvec3 const pm = tinynurbs::surfacePoint(*this->nurbs, m.x, m.y);
+					glm::dvec3 const pa = this->surface_point(a.x, a.y);
+					glm::dvec3 const pb = this->surface_point(b.x, b.y);
+					glm::dvec3 const pm = this->surface_point(m.x, m.y);
 					next.push_back(a);
 					if (glm::distance(pm, (pa + pb) * 0.5) > subdivTol) {
 						next.push_back(m);
@@ -149,16 +150,16 @@ namespace webifc::geometry{
 		while (!work.empty()) {
 			UVTri const t = work.back();
 			work.pop_back();
-			glm::dvec3 const p0 = tinynurbs::surfacePoint(*this->nurbs, t.a.x, t.a.y);
-			glm::dvec3 const p1 = tinynurbs::surfacePoint(*this->nurbs, t.b.x, t.b.y);
-			glm::dvec3 const p2 = tinynurbs::surfacePoint(*this->nurbs, t.c.x, t.c.y);
+			glm::dvec3 const p0 = this->surface_point(t.a.x, t.a.y);
+			glm::dvec3 const p1 = this->surface_point(t.b.x, t.b.y);
+			glm::dvec3 const p2 = this->surface_point(t.c.x, t.c.y);
 			if (t.depth < maxDepth) {
 				glm::dvec2 const mab = (t.a + t.b) * 0.5;
 				glm::dvec2 const mbc = (t.b + t.c) * 0.5;
 				glm::dvec2 const mca = (t.c + t.a) * 0.5;
-				glm::dvec3 const pab = tinynurbs::surfacePoint(*this->nurbs, mab.x, mab.y);
-				glm::dvec3 const pbc = tinynurbs::surfacePoint(*this->nurbs, mbc.x, mbc.y);
-				glm::dvec3 const pca = tinynurbs::surfacePoint(*this->nurbs, mca.x, mca.y);
+				glm::dvec3 const pab = this->surface_point(mab.x, mab.y);
+				glm::dvec3 const pbc = this->surface_point(mbc.x, mbc.y);
+				glm::dvec3 const pca = this->surface_point(mca.x, mca.y);
 				double const dev = std::max({
 					glm::distance(pab, (p0 + p1) * 0.5),
 					glm::distance(pbc, (p1 + p2) * 0.5),
@@ -184,6 +185,23 @@ namespace webifc::geometry{
 			num_v{this->bspline_surface.ControlPoints.empty() ? 0 : this->bspline_surface.ControlPoints.front().size()},
 			scaling{scaling} {
 			this->init();
+	}
+
+	glm::dvec3 Nurbs::surface_point(double u, double v) const
+	{
+		if (!this->weighted_control_points) {
+			return tinynurbs::surfacePoint(*this->nurbs, u, v);
+		}
+
+		glm::dvec4 const point = tinynurbs::internal::surfacePoint(
+			this->nurbs->degree_u,
+			this->nurbs->degree_v,
+			this->nurbs->knots_u,
+			this->nurbs->knots_v,
+			*this->weighted_control_points,
+			u,
+			v);
+		return tinynurbs::util::homogenousToCartesian(point);
 	}
 
 	void Nurbs::init() {
@@ -277,6 +295,15 @@ namespace webifc::geometry{
 			this->nurbs->knots_v[this->nurbs->degree_v],
 			this->nurbs->knots_v[this->nurbs->knots_v.size() - this->nurbs->degree_v - 1]
 		};
+		this->weighted_control_points = std::make_shared<tinynurbs::array2<glm::dvec4>>(
+			this->nurbs->control_points.rows(), this->nurbs->control_points.cols());
+		for (size_t row = 0; row < this->nurbs->control_points.rows(); ++row) {
+			for (size_t col = 0; col < this->nurbs->control_points.cols(); ++col) {
+				glm::dvec3 const controlPoint = this->nurbs->control_points(row, col);
+				double const weight = this->nurbs->weights(row, col);
+				(*this->weighted_control_points)(row, col) = tinynurbs::util::cartesianToHomogenous(controlPoint, weight);
+			}
+		}
 		spdlog::debug("[Nurbs::init] degree=({},{}) grid={}x{} u_range=[{},{}] v_range=[{},{}]",
 			this->bspline_surface.UDegree, this->bspline_surface.VDegree,
 			this->num_u, this->num_v,
@@ -284,9 +311,9 @@ namespace webifc::geometry{
 			this->range_knots_v.x, this->range_knots_v.y);
 
 		// Compute sample surface points.
-		this->ptc = tinynurbs::surfacePoint(*this->nurbs, EPS_TINY, EPS_TINY);
-		this->pth = tinynurbs::surfacePoint(*this->nurbs, 1.0, EPS_TINY);
-		this->ptv = tinynurbs::surfacePoint(*this->nurbs, EPS_TINY, 1.0);
+		this->ptc = this->surface_point(this->range_knots_u.x, this->range_knots_v.x);
+		this->pth = this->surface_point(this->range_knots_u.y, this->range_knots_v.x);
+		this->ptv = this->surface_point(this->range_knots_u.x, this->range_knots_v.y);
 
 		if (!std::isfinite(this->ptc.x)) this->ptc.x = 0.0;
 		if (!std::isfinite(this->ptc.y)) this->ptc.y = 0.0;
@@ -367,7 +394,7 @@ namespace webifc::geometry{
         for (int j = 0; j < grid_size; ++j) {
 					auto const step_v {portion_v * j};
 					auto const v {range_v.x + (step_v != 0.0 ? step_v : std::numeric_limits<double>::epsilon())};
-					auto const pt_grid {tinynurbs::surfacePoint(*this->nurbs, u, v)};
+					auto const pt_grid {this->surface_point(u, v)};
 					auto const dist {glm::distance(pt_grid, pt)};
 					if (dist < min_distance) {
 							min_distance = dist;
@@ -425,7 +452,7 @@ namespace webifc::geometry{
 							else if (ffU > range_knots_u.y) ffU = closedU ? range_knots_u.x + (ffU - range_knots_u.y) : range_knots_u.y;
 							if (ffV < range_knots_v.x) ffV = closedV ? range_knots_v.y - (range_knots_v.x - ffV) : range_knots_v.x;
 							else if (ffV > range_knots_v.y) ffV = closedV ? range_knots_v.x + (ffV - range_knots_v.y) : range_knots_v.y;
-							pt00 = tinynurbs::surfacePoint(*this->nurbs, ffU, ffV);
+							pt00 = this->surface_point(ffU, ffV);
 							auto const di {glm::distance(pt00, pt)};
 							if (di < max_distance)
 							{
@@ -466,6 +493,13 @@ namespace webifc::geometry{
 			result[0] = 0.0;
 			result[1] = 1.0;
 			return result;
+		}
+		// A monotone knot vector is valid as written, however uneven its spacing: CATIA's geometric
+		// sequences (0, 1.9e-6, 2.9e-6, ... doubling up to 1) have z-score "outliers" at the tail,
+		// and averaging those away produced a non-monotone vector that init() then rejected,
+		// dropping every face on the surface. Only a vector that is not monotone gets repaired.
+		if (std::is_sorted(knots.begin(), knots.end())) {
+			return knots;
 		}
 		auto threshold {3.0};
 		auto zscores {get_zscores(knots)};

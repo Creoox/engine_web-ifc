@@ -1397,7 +1397,13 @@ namespace webifc::geometry
             // Check connection and reverse if needed
             auto& ec = edgeCurve.points; // referència per brevetat
             if (!ec.empty()) {
-                if (nearEqual(curve.points.back(), ec.back())) {
+                // The closing edge of every loop ends where the loop started, so the front-to-back
+                // test below matched it and reversed the whole loop (every advanced-brep bound came
+                // out wound against its authored orientation). An edge that starts where the loop
+                // currently ends is the plain continuation and needs no reorientation.
+                if (nearEqual(curve.points.back(), ec.front())) {
+                }
+                else if (nearEqual(curve.points.back(), ec.back())) {
                     std::reverse(ec.begin(), ec.end());
                 }
                 else if (nearEqual(curve.points.front(), ec.front())) {
@@ -1530,10 +1536,18 @@ namespace webifc::geometry
       uint32_t CurveRef = _loader.GetRefArgument();
       IfcCurve curve;
 
+      // SameSense (arg 3): .F. means EdgeStart -> EdgeEnd runs against the curve's own parameter
+      // direction. For a circle that picks the OTHER arc between the two vertices: a 10 cm frame
+      // edge on a 47 m circle (CATIA hull frames) read as a 359 degree sweep without it, which then
+      // triangulated into a 94 m disc through the ship.
+      _loader.MoveToArgumentOffset(expressID, 3);
+      std::string_view edgeSense = _loader.GetStringArgument();
+      bool const edgeSameSense = edgeSense != "F";
+
       edgeParams.dimensions = 3;
       edgeParams.edge = true;
       edgeParams.sameSense = -1;
-      edgeParams.trimSense = TRIM_SENSE_SAME;
+      edgeParams.trimSense = edgeSameSense ? TRIM_SENSE_SAME : TRIM_SENSE_REVERSE;
 
       ComputeCurve(CurveRef, curve, edgeParams);
 
@@ -2260,6 +2274,14 @@ namespace webifc::geometry
                     double dyS = vecY.x * v1.x + vecY.y * v1.y + vecY.z * v1.z;
                     double dxE = vecX.x * v2.x + vecX.y * v2.y + vecX.z * v2.z;
                     double dyE = vecY.x * v2.x + vecY.y * v2.y + vecY.z * v2.z;
+                    // Parameter angle, not geometric angle: (r1 cos t, r2 sin t) puts the vertex at
+                    // t = atan2(dy / r2, dx / r1). Identical for circles; on an ellipse the geometric
+                    // angle lands the arc ends away from the edge's vertices.
+                    if (radius1 > 0 && radius2 > 0)
+                    {
+                        dxS /= radius1; dyS /= radius2;
+                        dxE /= radius1; dyE /= radius2;
+                    }
                     startRad = VectorToAngle2D(dxS, dyS) * CONST_PI / 180.0;  // VectorToAngle2D returns degrees
                     endRad = VectorToAngle2D(dxE, dyE) * CONST_PI / 180.0;  // VectorToAngle2D returns degrees
                 }
