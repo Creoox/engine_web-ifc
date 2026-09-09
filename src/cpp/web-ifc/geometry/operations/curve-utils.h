@@ -39,29 +39,13 @@ inline IfcCurve Build3DArc3Pt(const glm::dvec3 &p1, const glm::dvec3 &p2, const 
     }
     else
     {
-        // Calculate the center of the circle
-        double Cx = p2.x-p1.x;
-        double Cy = p2.y-p1.y;
-        double Cz = p2.z-p1.z;
-        double Bx = p3.x-p1.x;
-        double By = p3.y-p1.y;
-        double Bz = p3.z-p1.z;
-        double B2 = p1.x*p1.x-p3.x*p3.x+p1.y*p1.y-p3.y*p3.y+p1.z*p1.z-p3.z*p3.z;
-        double C2 = p1.x*p1.x-p2.x*p2.x+p1.y*p1.y-p2.y*p2.y+p1.z*p1.z-p2.z*p2.z;
-
-        double CByz = Cy*Bz-Cz*By;
-        double CBxz = Cx*Bz-Cz*Bx;
-        double CBxy = Cx*By-Cy*Bx;
-        double ZZ1 = -(Bz-Cz*Bx/Cx)/(By-Cy*Bx/Cx);
-        double Z01 = -(B2-Bx/Cx*C2)/(2*(By-Cy*Bx/Cx));
-        double ZZ2 = -(ZZ1*Cy+Cz)/Cx;
-        double Z02 = -(2*Z01*Cy+C2)/(2*Cx);
-
-        double dz = -((Z02-p1.x)*CByz-(Z01-p1.y)*CBxz-p1.z*CBxy)/(ZZ2*CByz-ZZ1*CBxz+CBxy);
-        double dx = ZZ2*dz + Z02;
-        double dy = ZZ1*dz + Z01;
-
-		center = glm::dvec3(dx, dy, dz);
+        // Circumcenter of the triangle p1, p2, p3. This vector form is valid for any plane orientation; the previous
+        // coordinate-wise elimination divided by (p3.y - p1.y) terms and produced NaN for arcs lying in a y = const plane.
+        double v1LengthSq = glm::dot(v1, v1);
+        double v2LengthSq = glm::dot(v2, v2);
+        double normalLengthSq = glm::dot(planeNormal, planeNormal);
+        glm::dvec3 toCenter = (glm::cross(planeNormal, v1) * v2LengthSq + glm::cross(v2, planeNormal) * v1LengthSq) / (2.0 * normalLengthSq);
+        center = p1 + toCenter;
     }
 
     // Calculate the radius
@@ -152,7 +136,14 @@ inline IfcCurve Build3DArc3Pt(const glm::dvec3 &p1, const glm::dvec3 &p2, const 
 			}
 			else
 			{
-				spdlog::error("3 Point Arc - Error: wrong points");
+				// Collinear or coincident points (e.g. start == end): no circle is defined. Fall back to straight segments
+				// through the distinct points instead of producing NaN coordinates.
+				spdlog::warn("3 Point Arc - degenerate points ({}, {}) ({}, {}) ({}, {}), using straight segments", p1.x, p1.y, p2.x, p2.y, p3.x, p3.y);
+				IfcCurve fallback;
+				fallback.Add(p1);
+				fallback.Add(p2);
+				fallback.Add(p3);
+				return fallback;
 			}
 		}
 

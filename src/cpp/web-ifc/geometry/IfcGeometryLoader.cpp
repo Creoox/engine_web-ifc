@@ -1235,7 +1235,27 @@ namespace webifc::geometry
         return foundColor;
       return {};
     }
+    case schema::IFCMATERIALPROFILESETUSAGETAPERING:
+    {
+      // ForProfileSet (start), then ForProfileEndSet (end)
+      _loader.MoveToArgumentOffset(expressID, 0);
+      auto profileSet = _loader.GetRefArgument();
+      auto foundColor = GetColor(profileSet);
+      if (foundColor)
+        return foundColor;
+      _loader.MoveToArgumentOffset(expressID, 3);
+      if (_loader.GetTokenType() == parsing::IfcTokenType::REF)
+      {
+        _loader.StepBack();
+        auto endProfileSet = _loader.GetRefArgument();
+        foundColor = GetColor(endProfileSet);
+        if (foundColor)
+          return foundColor;
+      }
+      return {};
+    }
     case schema::IFCMATERIALPROFILE:
+    case schema::IFCMATERIALPROFILEWITHOFFSETS:
     {
       _loader.MoveToArgumentOffset(expressID, 2);
       auto profileSet = _loader.GetRefArgument();
