@@ -138,7 +138,8 @@ inline IfcCurve Build3DArc3Pt(const glm::dvec3 &p1, const glm::dvec3 &p2, const 
 			{
 				// Collinear or coincident points (e.g. start == end): no circle is defined. Fall back to straight segments
 				// through the distinct points instead of producing NaN coordinates.
-				spdlog::warn("3 Point Arc - degenerate points ({}, {}) ({}, {}) ({}, {}), using straight segments", p1.x, p1.y, p2.x, p2.y, p3.x, p3.y);
+				spdlog::warn("3 Point Arc - invalid input data: points ({}, {}) ({}, {}) ({}, {}) are collinear or coincident, no circle defined, using straight segments",
+					p1.x, p1.y, p2.x, p2.y, p3.x, p3.y);
 				IfcCurve fallback;
 				fallback.Add(p1);
 				fallback.Add(p2);
