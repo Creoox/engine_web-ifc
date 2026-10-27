@@ -426,10 +426,13 @@ namespace webifc::geometry{
 		double fU {std::get<1>(seed)};
 		double fV {std::get<2>(seed)};
 		auto max_distance {std::get<0>(seed)};
-		if (max_distance <= maxError) return {fU, fV};
+		// Refine to minError, not maxError: maxError (0.01 / scaling = 10 mm in a millimetre file) is only the "projection
+		// failed" threshold. Stopping there left the inner edge of a 16 mm Revit wall edge strip 2.6 mm off its true position,
+		// an open seam against the planar neighbour faces that emit the exact bound points.
+		if (max_distance <= minError) return {fU, fV};
 
 		double divisor {100.0};
-		while (max_distance > maxError && divisor < 10000)
+		while (max_distance > minError && divisor < 10000)
 		{
 			for (double r = 1; r < 5; r++)
 			{
@@ -452,6 +455,11 @@ namespace webifc::geometry{
 							else if (ffU > range_knots_u.y) ffU = closedU ? range_knots_u.x + (ffU - range_knots_u.y) : range_knots_u.y;
 							if (ffV < range_knots_v.x) ffV = closedV ? range_knots_v.y - (range_knots_v.x - ffV) : range_knots_v.x;
 							else if (ffV > range_knots_v.y) ffV = closedV ? range_knots_v.x + (ffV - range_knots_v.y) : range_knots_v.y;
+							// A direction whose dominant component is clamped at an open parameter bound leaves only the trig rounding
+							// of the other one (sin(pi) / 100 = 1.2e-18 per step). Each such step still lowered the distance by float
+							// noise, so for a bound point 16 mm along a clamped patch edge from the seed the walk crawled ~1e8 steps a
+							// minute and never ended (Revit bilinear B-spline wall faces). Stop once clamping has swallowed the step.
+							if (std::abs(ffU - fU) + std::abs(ffV - fV) < 1e-6 * (std::abs(incU) + std::abs(incV))) break;
 							pt00 = this->surface_point(ffU, ffV);
 							auto const di {glm::distance(pt00, pt)};
 							if (di < max_distance)
